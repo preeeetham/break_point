@@ -31,6 +31,7 @@ faultline heal --restart                       # reset: clear the lock, drop cha
 faultline resume                               # make sure no stale reports/STOP is latched
 faultline setup                                # Docker ok, stack ok, Pumba images present, LLM reachable
 faultline status                               # every container running, guardian offline (not started yet), no active experiment
+faultline approvals                            # expect "no decision is pending"; ADMIN_EMAIL is a placeholder, so the gate is unconfigured by design
 ```
 
 Read the `llm ...` line from `faultline setup` carefully. It is the single most common demo surprise:
@@ -149,6 +150,8 @@ Then the **Resilience scorecard** panel: "Zero to a hundred per service, graded,
 ### 5:15–6:00  Close
 
 Say: "Everything you saw is on disk in `reports/` as JSON that validates against one set of Pydantic schemas — the control room and the CLI are two front ends over the same files, and every button maps to a `faultline` subcommand. Limits we know about: single node, Compose only, and Java cold start dominates crash recovery times, so a killed Ditto service mostly measures JVM boot. Next: a Kubernetes backend, OpenTelemetry traces so cascades are attributed per hop instead of inferred, and a regression mode that re-runs an experiment after a fix and reports the delta."
+
+If a judge asks about a human in the loop: "There is an approval gate, `faultline/agents/approval.py`. An experiment the protected-services policy would otherwise have needed `--allow-protected` for is held before injection while it emails one admin and waits for `APPROVE`, `APPROVE REDUCED`, `SKIP` or `STOP RUN` on the first line of the reply; after a high or critical result it asks again with `FIX <n>`, `WAIT` or `CONTINUE`. The vocabulary is closed, so nothing has to guess what the admin meant, and `APPROVE REDUCED` halves duration and intensity with the catalog's own bounds still clamping the result — no raw parameter ever arrives by email. The wait is 120 s on an independent watchdog, and a timeout, an unreachable mailbox or a missing credential all apply the safe default: skip before an injection, continue after one. A gate that cannot reach the admin never becomes a no-op that approves everything." Say plainly where it does and does not apply: it holds an experiment **you** picked that the policy would otherwise have refused, not one the planner proposed — a protected pair never enters the ranked list in the first place — and it is off unless `ADMIN_EMAIL` and the mail credentials are set, which on this machine they are not. `faultline approvals` shows that there is nothing pending, and nothing on the demo screen depends on it. Do not try to demonstrate it live: it waits up to 120 s for a reply.
 
 Stop. Take questions with the control room on screen. If a judge asks to pick a target, switch to MANUAL and let them — the locked cards and clamped dials mean you cannot be talked into anything unsafe.
 
