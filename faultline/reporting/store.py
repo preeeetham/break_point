@@ -8,7 +8,16 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
-from ..schemas import Baseline, ExperimentReport, FixRecommendation, RiskAssessment, Scorecard, Topology
+from ..schemas import (
+    Baseline,
+    ExperimentReport,
+    FixRecommendation,
+    RiskAssessment,
+    Scorecard,
+    Topology,
+    WeaknessReconciliation,
+    WeaknessReport,
+)
 
 
 class ReportStore:
@@ -94,6 +103,21 @@ class ReportStore:
     def scorecard(self) -> Optional[Scorecard]:
         d = self._read(self.root / "scorecard.json")
         return Scorecard.model_validate(d) if d else None
+
+    # ---------------------------------------------------------- weakness scout
+    def write_weaknesses(self, w: WeaknessReport) -> Path:
+        return self._write(self.root / "weaknesses.json", w)
+
+    def weaknesses(self) -> Optional[WeaknessReport]:
+        d = self._read(self.root / "weaknesses.json")
+        return WeaknessReport.model_validate(d) if d else None
+
+    def write_reconciliation(self, r: WeaknessReconciliation) -> Path:
+        return self._write(self.root / "weaknesses_reconcile.json", r)
+
+    def reconciliation(self) -> Optional[WeaknessReconciliation]:
+        d = self._read(self.root / "weaknesses_reconcile.json")
+        return WeaknessReconciliation.model_validate(d) if d else None
 
     # ---------------------------------------------------------- coordination files
     @property

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def utcnow() -> datetime:
@@ -274,3 +274,171 @@ class Scorecard(BaseModel):
     ranking: list[ServiceScore]
     experiments_total: int
     summary: str
+
+
+# ---------------------------------------------------------------- repo onboarding
+# What `config/<slug>_knowledge.yaml` carries: facts about a target application that a compose
+# file cannot express. The fields here are exactly the ones `faultline/topology/compose.py` and
+# `render.py` read — nothing is invented, because an unread field is dead weight in a config file.
+ROLES = ("datastore", "app", "proxy", "ui", "other")
+
+
+class DocumentedEdge(BaseModel):
+    """`src` needs `dst` to work, asserted by documentation rather than by the deployment files."""
+    src: str
+    dst: str
+    evidence: str = "documented"
+
+    @field_validator("src", "dst")
+    @classmethod
+    def _nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("service name must not be empty")
+        return v
+
+
+class RepoKnowledge(BaseModel):
+    """The knowledge file. Consumed by topology.compose.service_nodes/documented_edges."""
+    health_port: Optional[int] = None
+    cluster_alias: Optional[str] = None
+    roles: dict[str, str] = Field(default_factory=dict)
+    documented_edges: list[DocumentedEdge] = Field(default_factory=list)
+    references: list[str] = Field(default_factory=list)
+
+    @field_validator("health_port")
+    @classmethod
+    def _port_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 65535):
+            raise ValueError(f"health_port {v} is not a TCP port")
+        return v
+
+    @field_validator("roles")
+    @classmethod
+    def _known_roles(cls, v: dict[str, str]) -> dict[str, str]:
+        bad = {k: r for k, r in v.items() if r not in ROLES}
+        if bad:
+            raise ValueError(f"unknown role(s) {bad}; allowed: {ROLES}")
+        return v
+
+
+class OnboardingReport(BaseModel):
+    """What `faultline onboard` did, so the operator can judge whether to trust the output."""
+    slug: str
+    source: str
+    resolved_path: str
+    compose_path: str
+    readme_path: Optional[str] = None
+    nginx_conf_path: Optional[str] = None
+    services: list[str] = Field(default_factory=list)
+    structural_edges: int = 0
+    generated_by: Literal["llm", "structural-only"] = "structural-only"
+    model: str = ""
+    knowledge: RepoKnowledge = Field(default_factory=RepoKnowledge)
+    rejected: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    output_path: str = ""
+
+
+# ---------------------------------------------------------------- weakness scout
+# Everything below is PREDICTED from static configuration, never measured. The label is carried on
+# every record so that no consumer can mistake a prediction for one of the Risk agent's post-hoc,
+# empirically-measured severities. The discipline mirrors the Fix agent's "[LLM suggestion,
+# unverified]" tagging: a prediction stays unconfirmed until an experiment confirms or clears it.
+PREDICTED_LABEL = "[predicted, unconfirmed]"
+
+WEAKNESS_CATEGORIES = (
+    "shallow_health_check",
+    "missing_health_check",
+    "no_redundancy",
+    "no_resource_limits",
+    "weak_restart_policy",
+    "no_retry_or_backoff",
+    "port_beyond_ingress",
+    "no_rate_limiting",
+)
+
+
+class SuggestedExperiment(BaseModel):
+    """Which EXISTING catalog failure type would actually test this prediction, and against whom.
+
+    `target_service` is not always the weak service: the way to test a liveness-only health check on
+    `things` is to break what `things` depends on and watch whether its /ready notices.
+    """
+    failure_type: str
+    target_service: str
+    reason: str = ""
+    policy_note: str = ""
+
+
+class PredictedWeakness(BaseModel):
+    weakness_id: str
+    category: Literal[
+        "shallow_health_check", "missing_health_check", "no_redundancy", "no_resource_limits",
+        "weak_restart_policy", "no_retry_or_backoff", "port_beyond_ingress", "no_rate_limiting",
+    ]
+    services: list[str]
+    title: str
+    evidence: str
+    predicted_severity: float
+    predicted_level: Literal["low", "medium", "high", "critical"]
+    factors: dict[str, float]
+    suggested_experiment: SuggestedExperiment
+    confirming_finding_codes: list[str]
+    why_it_matters: str
+    status: Literal["predicted", "confirmed", "cleared"] = "predicted"
+    label: str = PREDICTED_LABEL
+    generated_by: Literal["rules", "llm+rules"] = "rules"
+
+
+class SystemicPattern(BaseModel):
+    """Additive LLM narrative over several deterministic findings. Never a finding of its own."""
+    title: str
+    weakness_ids: list[str]
+    narrative: str
+    generated_by: Literal["llm"] = "llm"
+
+
+class WeaknessReport(BaseModel):
+    schema_version: str = "1.0"
+    generated_at: datetime = Field(default_factory=utcnow)
+    project: str
+    compose_file: str
+    knowledge_file: Optional[str] = None
+    label: str = PREDICTED_LABEL
+    weaknesses: list[PredictedWeakness] = []
+    systemic_patterns: list[SystemicPattern] = []
+    checks_run: list[str] = []
+    notes: list[str] = []
+    generated_by: Literal["rules", "llm+rules"] = "rules"
+
+    def by_id(self, weakness_id: str) -> Optional[PredictedWeakness]:
+        return next((w for w in self.weaknesses if w.weakness_id == weakness_id), None)
+
+
+class WeaknessOutcome(BaseModel):
+    """One prediction, judged against the experiments that have since run."""
+    weakness_id: str
+    category: str
+    services: list[str]
+    predicted_severity: float
+    predicted_level: str
+    state: Literal["confirmed", "cleared", "untested"]
+    experiments: list[str] = []
+    confirming_findings: list[str] = []
+    detail: str = ""
+
+
+class WeaknessReconciliation(BaseModel):
+    """Closing the loop: predicted-vs-confirmed at whole-system level, the same hypothesis-vs-observed
+    discipline the injector applies per experiment via `hypothesis_result.held`."""
+    generated_at: datetime = Field(default_factory=utcnow)
+    project: str
+    predicted_at: Optional[datetime] = None
+    predicted_total: int = 0
+    confirmed: int = 0
+    cleared: int = 0
+    untested: int = 0
+    experiments_considered: int = 0
+    outcomes: list[WeaknessOutcome] = []
+    summary: str = ""
