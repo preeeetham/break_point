@@ -248,7 +248,12 @@ def _planner(sess: Session, use_llm: bool, allow_protected: bool):
     from .planning.planner import Planner
 
     images = {k for k, img in (("pumba", sess.s.pumba_image), ("tc", sess.s.tc_image)) if sess.docker.has_image(img)}
-    return Planner(sess.topology, sess.policy, sess.store.experiments(), llm_client(sess.s, use_llm), sess.s, images, allow_protected)
+    # The Weakness Scout's predictions are an ADDITIONAL ranking signal, not a replacement for the
+    # criticality x untested formula: they break near-ties toward services a static read already
+    # suspects, and toward the failure type that would confirm or clear the prediction. Absent
+    # reports/weaknesses.json this is None and the ranking is exactly what it was before.
+    return Planner(sess.topology, sess.policy, sess.store.experiments(), llm_client(sess.s, use_llm), sess.s,
+                   images, allow_protected, weaknesses=sess.store.weaknesses())
 
 
 def cmd_plan(s, store, a):

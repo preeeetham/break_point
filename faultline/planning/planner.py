@@ -14,7 +14,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..chaos.catalog import CATALOG, FailureType, applicable, clamp, reproduce_commands
-from ..schemas import ExperimentReport, ExperimentSpec, Hypothesis, Topology
+from ..schemas import (
+    PREDICTED_LABEL,
+    ExperimentReport,
+    ExperimentSpec,
+    Hypothesis,
+    PredictedWeakness,
+    Topology,
+    WeaknessReport,
+)
 from .llm import LLMClient
 
 SYSTEM = """You are the planning brain of Faultline, a chaos-engineering agent for Eclipse Ditto (an IoT digital-twin
@@ -32,6 +40,14 @@ in history; be concrete. Answer with ONE JSON object:
 INFORMATIVENESS = {"network_delay": 0.4, "container_crash": 0.4, "db_flood": 0.35, "network_partition": 0.35,
                    "network_loss": 0.3, "container_stop": 0.3, "container_pause": 0.2, "traffic_spike": 0.2,
                    "cpu_stress": 0.1, "disk_pressure": 0.0}
+
+# Weight of the Weakness Scout's *predicted* (statically inferred, never measured) severities. Capped
+# deliberately low: criticality is worth up to ~1.5x the measured dependency fan-out, so +1.0 for
+# severity (10/10 -> +1.0) plus +0.5 for naming the failure type that would actually test the
+# prediction lets a prediction re-order near-ties and steer the failure type, but never lets a guess
+# outrank a markedly more critical target.
+WEAKNESS_WEIGHT = 1.0
+WEAKNESS_EXACT_MATCH_BONUS = 0.5
 
 
 @dataclass
@@ -67,7 +83,8 @@ class Policy:
 
 class Planner:
     def __init__(self, topology: Topology, policy: Policy, history: list[ExperimentReport], llm: LLMClient | None,
-                 settings, available_images: set[str] | None = None, allow_protected: bool = False):
+                 settings, available_images: set[str] | None = None, allow_protected: bool = False,
+                 weaknesses: WeaknessReport | None = None):
         self.topo = topology
         self.policy = policy
         self.history = history
@@ -75,6 +92,7 @@ class Planner:
         self.settings = settings
         self.images = available_images if available_images is not None else {"pumba", "tc"}
         self.allow_protected = allow_protected
+        self.weaknesses = weaknesses
 
     # ------------------------------------------------------------------ ranking
     def candidates(self) -> list[Candidate]:
@@ -84,6 +102,10 @@ class Planner:
                 k = (r.target["service"], r.failure_type)
                 tested[k] = tested.get(k, 0) + 1
         last_target = self.history[-1].target["service"] if self.history else None
+        predicted: dict[str, list[PredictedWeakness]] = {}
+        for w in (self.weaknesses.weaknesses if self.weaknesses else []):
+            for svc in w.services:
+                predicted.setdefault(svc, []).append(w)
         out: list[Candidate] = []
         for name, node in self.topo.services.items():
             if node.role in self.policy.skip_roles or not node.chaos_relevant:
@@ -106,6 +128,16 @@ class Planner:
                 if name == last_target:
                     prio -= 1.0
                     reasons.append("same target as last run")
+                flagged = predicted.get(name) or []
+                if flagged:
+                    worst = max(flagged, key=lambda w: w.predicted_severity)
+                    exact = next((w for w in flagged if w.suggested_experiment.failure_type == ft.key), None)
+                    prio += WEAKNESS_WEIGHT * (worst.predicted_severity / 10.0)
+                    reason = f"predicted weakness: {worst.category} {worst.predicted_severity:g}/10 {PREDICTED_LABEL}"
+                    if exact is not None:
+                        prio += WEAKNESS_EXACT_MATCH_BONUS
+                        reason += f"; exact match: {ft.key} is the experiment suggested for predicted {exact.category}"
+                    reasons.append(reason)
                 if why:
                     reasons.append(why)
                 out.append(Candidate(name, ft.key, round(prio, 2), reasons))

@@ -1,7 +1,15 @@
 import pytest
 
 from faultline.chaos.catalog import CATALOG
-from faultline.planning.planner import Candidate, Planner, Policy, describe_candidates
+from faultline.planning.planner import (
+    WEAKNESS_EXACT_MATCH_BONUS,
+    WEAKNESS_WEIGHT,
+    Candidate,
+    Planner,
+    Policy,
+    describe_candidates,
+)
+from faultline.schemas import PREDICTED_LABEL, PredictedWeakness, SuggestedExperiment, WeaknessReport
 
 
 class FakeSettings:
@@ -33,9 +41,30 @@ def policy(policy_raw):
     return Policy(policy_raw)
 
 
-def _planner(topology, policy, history=None, llm=None, images=None, allow_protected=False):
+def _planner(topology, policy, history=None, llm=None, images=None, allow_protected=False, weaknesses=None):
     return Planner(topology, policy, history or [], llm, FakeSettings(),
-                   available_images={"pumba", "tc"} if images is None else images, allow_protected=allow_protected)
+                   available_images={"pumba", "tc"} if images is None else images, allow_protected=allow_protected,
+                   weaknesses=weaknesses)
+
+
+def _weakness(services, failure_type, severity=6.2, category="shallow_health_check", weakness_id="w1"):
+    """One PREDICTED weakness, as the Weakness Scout would write it into reports/weaknesses.json."""
+    return PredictedWeakness(
+        weakness_id=weakness_id, category=category, services=list(services),
+        title=f"{category} on {', '.join(services)}", evidence="compose: healthcheck probes the process, not its deps",
+        predicted_severity=severity, predicted_level="high", factors={"fan_in": 2.0, "stateful": 0.0},
+        suggested_experiment=SuggestedExperiment(failure_type=failure_type, target_service=services[0],
+                                                 reason="breaking this is what would confirm or clear the prediction"),
+        confirming_finding_codes=["dependent_unhealthy"], why_it_matters="callers hang instead of failing fast",
+    )
+
+
+def _weakness_report(*weaknesses):
+    return WeaknessReport(project="bosch-ditto", compose_file="docker-compose.yml", weaknesses=list(weaknesses))
+
+
+def _by_pair(cands):
+    return {(c.service, c.failure_type): c for c in cands}
 
 
 # ---------------------------------------------------------------- policy
@@ -81,6 +110,115 @@ def test_missing_images_remove_netem_candidates(topology, policy):
     cands = _planner(topology, policy, images=set()).candidates()
     assert cands
     assert not any(c.failure_type in ("network_delay", "network_loss") for c in cands)
+
+
+# ------------------------------------------------- predicted weaknesses (Weakness Scout feedback)
+# Priorities below are the ones the formula
+#   crit * (1.5 if untested else 1.0) - 1.5 * tested + INFORMATIVENESS[ft] (- 0.5 degrade_only)
+# produces for the `topology` fixture; they are hand-derived from criticality (mongodb 9, policies 5,
+# things 4, connectivity/gateway/things-search 2, nginx 1), not snapshotted from a run.
+BASELINE_PRIORITIES = {
+    ("mongodb", "network_delay"): 9 * 1.5 + 0.4 - 0.5,          # 13.4, protected -> degrade-only types only
+    ("mongodb", "db_flood"): 9 * 1.5 + 0.35 - 0.5,              # 13.35
+    ("mongodb", "disk_pressure"): 9 * 1.5 + 0.0 - 0.5,          # 13.0
+    ("policies", "container_crash"): 5 * 1.5 + 0.4,             # 7.9
+    ("policies", "network_partition"): 5 * 1.5 + 0.35,          # 7.85
+    ("policies", "container_pause"): 5 * 1.5 + 0.2,             # 7.7
+    ("things", "container_crash"): 4 * 1.5 + 0.4,               # 6.4
+    ("things", "network_loss"): 4 * 1.5 + 0.3 - 0.5,            # 5.8
+    ("connectivity", "container_crash"): 2 * 1.5 + 0.4,         # 3.4
+    ("gateway", "container_crash"): 2 * 1.5 + 0.4,              # 3.4
+    ("things-search", "container_crash"): 2 * 1.5 + 0.4,        # 3.4
+    ("gateway", "traffic_spike"): 2 * 1.5 + 0.2 - 0.5,          # 2.7
+    ("nginx", "disk_pressure"): 1 * 1.5 + 0.0 - 0.5,            # 1.0
+}
+
+
+def test_candidates_without_weaknesses_are_byte_identical(topology, policy):
+    """No weakness report -> the ranking is exactly what it was before the bonus existed."""
+    cands = _planner(topology, policy).candidates()
+    assert len(cands) == 55
+    by_pair = _by_pair(cands)
+    for pair, expected in BASELINE_PRIORITIES.items():
+        assert by_pair[pair].priority == round(expected, 2), pair
+    for c in cands:
+        assert c.reasons == [f"criticality {topology.criticality_of(c.service):g}", "untested"]
+    assert [(c.service, c.failure_type) for c in cands[:3]] == [
+        ("mongodb", "network_delay"), ("mongodb", "db_flood"), ("mongodb", "network_loss")]
+
+
+def test_predicted_weakness_outranks_identical_service_without_one(topology, policy):
+    """connectivity / gateway / things-search are all criticality 2: only the prediction separates them."""
+    report = _weakness_report(_weakness(["things-search"], failure_type="container_pause", severity=6.2))
+    flagged = _by_pair(_planner(topology, policy, weaknesses=report).candidates())
+    pick = flagged[("things-search", "container_crash")]
+    assert pick.priority == round(3.4 + WEAKNESS_WEIGHT * 0.62, 2)
+    assert pick.priority > flagged[("connectivity", "container_crash")].priority
+    assert pick.priority > flagged[("gateway", "container_crash")].priority
+    assert flagged[("connectivity", "container_crash")].priority == 3.4  # unflagged services untouched
+    reason = next(r for r in pick.reasons if r.startswith("predicted weakness"))
+    assert reason == f"predicted weakness: shallow_health_check 6.2/10 {PREDICTED_LABEL}"
+    assert "exact match" not in reason
+
+
+def test_predicted_weakness_plus_criticality_outranks_criticality_alone(topology, policy, make_report):
+    """The headline: `things` (criticality 4, flagged) beats `policies` (criticality 5, unflagged).
+
+    Both pairs carry one past run so the untested multiplier is the same on each side, and the last
+    run targeted nginx so neither gets the same-target-as-last-run penalty.
+    """
+    history = [make_report(service="policies", failure_type="container_crash"),
+               make_report(service="things", failure_type="container_crash"),
+               make_report(service="nginx", failure_type="container_crash")]
+    plain = _by_pair(_planner(topology, policy, history).candidates())
+    assert plain[("policies", "container_crash")].priority == 3.9   # 5 - 1.5 + 0.4
+    assert plain[("things", "container_crash")].priority == 2.9     # 4 - 1.5 + 0.4, loses on criticality
+    report = _weakness_report(_weakness(["things"], failure_type="container_crash", severity=8.0))
+    flagged = _by_pair(_planner(topology, policy, history, weaknesses=report).candidates())
+    assert flagged[("policies", "container_crash")].priority == 3.9
+    assert flagged[("things", "container_crash")].priority == round(2.9 + 0.8 + WEAKNESS_EXACT_MATCH_BONUS, 2)
+    assert flagged[("things", "container_crash")].priority > flagged[("policies", "container_crash")].priority
+
+
+def test_exact_match_bonus_only_applies_to_the_suggested_failure_type(topology, policy):
+    report = _weakness_report(_weakness(["things"], failure_type="container_pause", severity=6.0))
+    flagged = _by_pair(_planner(topology, policy, weaknesses=report).candidates())
+    exact = flagged[("things", "container_pause")]
+    other = flagged[("things", "container_crash")]
+    assert exact.priority == round(6.2 + 0.6 + WEAKNESS_EXACT_MATCH_BONUS, 2)   # 6.2 baseline + 0.6 + 0.5
+    assert other.priority == round(6.4 + 0.6, 2)                                # severity part only
+    assert round(exact.priority - other.priority, 2) == WEAKNESS_EXACT_MATCH_BONUS - 0.2  # 0.2 = informativeness gap
+    assert "exact match: container_pause is the experiment suggested for predicted shallow_health_check" in \
+        next(r for r in exact.reasons if r.startswith("predicted weakness"))
+    assert "exact match" not in next(r for r in other.reasons if r.startswith("predicted weakness"))
+    assert PREDICTED_LABEL in next(r for r in other.reasons if r.startswith("predicted weakness"))
+
+
+def test_weaknesses_for_unknown_or_filtered_services_change_nothing(topology, policy):
+    report = _weakness_report(
+        _weakness(["mars"], failure_type="container_crash", severity=10.0, weakness_id="w-unknown"),
+        _weakness(["ditto-ui"], failure_type="container_crash", severity=10.0, weakness_id="w-skipped"),
+    )
+    plain = _planner(topology, policy).candidates()
+    flagged = _planner(topology, policy, weaknesses=report).candidates()
+    assert [(c.service, c.failure_type, c.priority, c.reasons) for c in flagged] == \
+        [(c.service, c.failure_type, c.priority, c.reasons) for c in plain]
+    assert not any("predicted weakness" in r for c in flagged for r in c.reasons)
+
+
+def test_weakness_bonus_is_bounded(topology, policy):
+    """A maximal 10/10 exact-match prediction can add 1.5 and no more."""
+    report = _weakness_report(
+        _weakness(["things"], failure_type="container_crash", severity=10.0),
+        _weakness(["things"], failure_type="container_crash", severity=3.0, weakness_id="w2", category="no_redundancy"),
+    )
+    plain = _by_pair(_planner(topology, policy).candidates())
+    flagged = _by_pair(_planner(topology, policy, weaknesses=report).candidates())
+    deltas = {pair: round(c.priority - plain[pair].priority, 2) for pair, c in flagged.items()}
+    assert max(deltas.values()) == WEAKNESS_WEIGHT + WEAKNESS_EXACT_MATCH_BONUS == 1.5
+    assert deltas[("things", "container_crash")] == 1.5          # worst severity wins, bonuses do not stack
+    assert deltas[("things", "network_delay")] == WEAKNESS_WEIGHT
+    assert all(d == 0.0 for pair, d in deltas.items() if pair[0] != "things")
 
 
 # ---------------------------------------------------------------- deterministic planning
