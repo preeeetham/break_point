@@ -6,15 +6,16 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from ..schemas import Baseline, ExperimentReport, FixRecommendation, RiskAssessment, Scorecard, Topology
+from ..schemas import (ApprovalRequest, Baseline, ExperimentReport, FixRecommendation, RiskAssessment, Scorecard,
+                       Topology)
 
 
 class ReportStore:
     def __init__(self, root: Path | str):
         self.root = Path(root)
-        for sub in ("experiments", "risk", "fixes", "logs"):
+        for sub in ("experiments", "risk", "fixes", "logs", "approvals"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
     # ---------------------------------------------------------- generic
@@ -123,6 +124,46 @@ class ReportStore:
     def clear_active(self) -> None:
         if self.lock_file.exists():
             self.lock_file.unlink()
+
+    @property
+    def pending_approval_file(self) -> Path:
+        return self.root / "PENDING_APPROVAL.json"
+
+    def set_pending_approval(self, req: ApprovalRequest) -> None:
+        self._write(self.pending_approval_file, req)
+
+    def pending_approval(self) -> Optional[ApprovalRequest]:
+        d = self._read(self.pending_approval_file)
+        if not d:
+            return None
+        try:
+            return ApprovalRequest.model_validate(d)
+        except ValidationError:
+            return None
+
+    def clear_pending_approval(self) -> None:
+        if self.pending_approval_file.exists():
+            self.pending_approval_file.unlink()
+
+    def write_approval(self, req: ApprovalRequest) -> Path:
+        """The decided record, kept for good: one file per decision, named by approval id."""
+        return self._write(self.root / "approvals" / f"{req.approval_id}.json", req)
+
+    def approval(self, approval_id: str) -> Optional[ApprovalRequest]:
+        d = self._read(self.root / "approvals" / f"{approval_id}.json")
+        return ApprovalRequest.model_validate(d) if d else None
+
+    def approval_ids(self) -> list[str]:
+        files = sorted((self.root / "approvals").glob("*.json"), key=lambda p: p.stat().st_mtime)
+        return [p.stem for p in files]
+
+    def approvals(self) -> list[ApprovalRequest]:
+        out = []
+        for aid in self.approval_ids():
+            a = self.approval(aid)
+            if a:
+                out.append(a)
+        return out
 
     def write_live(self, data: dict[str, Any]) -> None:
         data["updated_at"] = time.time()
