@@ -59,6 +59,7 @@ class Settings:
 ENV_MAP = {
     "FAULTLINE_COMPOSE_PROJECT": "compose_project",
     "FAULTLINE_COMPOSE_FILE": "compose_file",
+    "FAULTLINE_KNOWLEDGE_FILE": "knowledge_file",
     "FAULTLINE_REPORTS_DIR": "reports_dir",
     "FAULTLINE_LLM": "llm_enabled",
     "FAULTLINE_NETWORK": "network_name",

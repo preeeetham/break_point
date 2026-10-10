@@ -74,6 +74,7 @@ class Injector:
             self.log(f"[{spec.experiment_id[:8]} +{time.time() - t_start:5.1f}s] {event}{': ' + detail if detail else ''}")
 
         ev("planned", f"{spec.failure_type} on {spec.target_service} ({spec.planned_by}) — {spec.rationale}")
+        self._live("preflight", spec, t_start, self.window.stats_since(t_start - 10), {})
         issues = self.preflight(spec)
         pre_stats = self.window.stats_since(t_start - self.policy.pre_window_s, t_start)
         if issues:
@@ -134,6 +135,8 @@ class Injector:
                     safety.operator_stop = verdict.reason == "operator_stop"
                     status = "aborted"
                     ev("safety_abort", f"{verdict.reason} {json.dumps(verdict.detail)}")
+                    self._live("injecting", spec, injected_at, cur,
+                               {**verdict.detail, "abort_reason": verdict.reason})
                     break
                 if handle.finished():
                     ev("injection_ended", "fault expired on its own")
@@ -144,6 +147,8 @@ class Injector:
         finally:
             wd.disarm()
             revert_at = time.time()
+            self._live("rollback", spec, injected_at, self.window.stats_since(injected_at),
+                       {"abort_reason": safety.abort_reason})
             ev("rollback_started")
             if handle:
                 try:

@@ -26,7 +26,8 @@ faultline = "faultline.cli:main"
 include = ["faultline*"]
 
 [tool.setuptools.package-data]
-"faultline.dashboard" = ["static/*.html"]
+"faultline.dashboard" = ["static/*.html", "static/*.css", "static/*.js", "static/*.svg"]
+"faultline" = ["../config/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

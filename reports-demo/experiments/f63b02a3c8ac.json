@@ -1,0 +1,343 @@
+{
+  "schema_version": "1.0",
+  "experiment_id": "f63b02a3c8ac",
+  "started_at": "2026-10-10T10:21:04.332183Z",
+  "ended_at": "2026-10-10T10:22:02.932183Z",
+  "target": {
+    "service": "things",
+    "container": "bosch-ditto-things-1"
+  },
+  "failure_type": "container_pause",
+  "parameters": {
+    "duration_s": 20
+  },
+  "rationale": "things owns every digital twin and has never been tested with a hung process; a SIGSTOP keeps TCP connections open, so callers hang instead of failing fast.",
+  "hypothesis": {
+    "statement": "Freezing things for 20 s will fail thing reads and writes behind gateway; Ditto's health checks will flag the outage, and the API will recover within 15 s of unpause.",
+    "expected_affected": [
+      "gateway",
+      "things-search",
+      "connectivity"
+    ],
+    "expected_max_error_rate": 1.0,
+    "expected_recovery_s": 15.0
+  },
+  "hypothesis_result": {
+    "held": false,
+    "observed_max_error_rate": 1.0,
+    "observed_recovery_s": 26.0,
+    "unexpected_affected": [],
+    "notes": "error rate 100% vs <=100%; unexpected services none; recovery 26.0s vs <=22s"
+  },
+  "criticality_score": 4.0,
+  "planned_by": "deterministic",
+  "baseline": {
+    "sample_count": 80,
+    "success_rate": 1.0,
+    "p50_ms": 18.4,
+    "p95_ms": 41.2,
+    "p99_ms": 96.5,
+    "by_operation": {
+      "get_thing": {
+        "count": 30,
+        "success_rate": 1.0,
+        "p95_ms": 35.02
+      },
+      "put_property": {
+        "count": 20,
+        "success_rate": 1.0,
+        "p95_ms": 37.08
+      },
+      "search": {
+        "count": 20,
+        "success_rate": 1.0,
+        "p95_ms": 45.32
+      },
+      "get_property": {
+        "count": 10,
+        "success_rate": 1.0,
+        "p95_ms": 24.72
+      }
+    },
+    "status_counts": {
+      "200": 60,
+      "204": 20
+    }
+  },
+  "during": {
+    "sample_count": 24,
+    "success_rate": 0.0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "by_operation": {
+      "get_thing": {
+        "count": 9,
+        "success_rate": 0.0,
+        "p95_ms": null
+      },
+      "put_property": {
+        "count": 6,
+        "success_rate": 0.0,
+        "p95_ms": null
+      },
+      "search": {
+        "count": 6,
+        "success_rate": 0.0,
+        "p95_ms": null
+      },
+      "get_property": {
+        "count": 3,
+        "success_rate": 0.0,
+        "p95_ms": null
+      }
+    },
+    "status_counts": {
+      "timeout": 24
+    }
+  },
+  "after": {
+    "sample_count": 32,
+    "success_rate": 1.0,
+    "p50_ms": 23.0,
+    "p95_ms": 47.9,
+    "p99_ms": 66.1,
+    "by_operation": {
+      "get_thing": {
+        "count": 12,
+        "success_rate": 1.0,
+        "p95_ms": 40.71
+      },
+      "put_property": {
+        "count": 8,
+        "success_rate": 1.0,
+        "p95_ms": 43.11
+      },
+      "search": {
+        "count": 8,
+        "success_rate": 1.0,
+        "p95_ms": 52.69
+      },
+      "get_property": {
+        "count": 4,
+        "success_rate": 1.0,
+        "p95_ms": 28.74
+      }
+    },
+    "status_counts": {
+      "200": 24,
+      "204": 8
+    }
+  },
+  "health": [
+    {
+      "service": "mongodb",
+      "ticks": 3,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "policies",
+      "ticks": 3,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "things",
+      "ticks": 3,
+      "alive_ok_fraction": null,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "things-search",
+      "ticks": 3,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "connectivity",
+      "ticks": 3,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "gateway",
+      "ticks": 3,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "nginx",
+      "ticks": 3,
+      "alive_ok_fraction": null,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    }
+  ],
+  "recovery": {
+    "recovered": true,
+    "recovered_at": "2026-10-10T10:21:39.232183Z",
+    "time_to_recover_s": 26.0,
+    "outage_duration_s": 33.2,
+    "auto_restarted_by_docker": false,
+    "remediation_actions": [],
+    "data_integrity_ok": true,
+    "data_integrity_detail": "stored seq=431, last acknowledged write seq=431"
+  },
+  "safety": {
+    "aborted_early": true,
+    "abort_reason": "error_rate",
+    "abort_detail": {
+      "trailing_samples": 6,
+      "error_rate": 1.0,
+      "p95_ms": null,
+      "threshold": 0.3
+    },
+    "watchdog_fired": false,
+    "operator_stop": false,
+    "thresholds": {
+      "abort_error_rate_above": 0.3,
+      "abort_p95_ms_above": 3000.0,
+      "trailing_samples": 10,
+      "non_target_health_failures_in_a_row": 3,
+      "max_experiment_seconds": 90,
+      "watchdog_grace_seconds": 15,
+      "recovery_success_rate_at_least": 0.95,
+      "recovery_p95_ms_below": 300.0,
+      "recovery_consecutive_checks": 3,
+      "recovery_timeout_seconds": 300,
+      "baseline_p95_ms": 41.2
+    }
+  },
+  "affected_services_observed": [
+    "things"
+  ],
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "high",
+      "title": "API success dropped to 0% during the fault",
+      "evidence": "24 requests, status counts {'timeout': 24}, p95 None ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "health_check_masked_failure",
+      "severity": "high",
+      "title": "things-search kept reporting /ready=200 while the API was failing",
+      "evidence": "/ready OK 100% of 3 checks while API success was 0%; cf. Ditto issue #1865 (health checks ignore subsystem health)"
+    },
+    {
+      "code": "health_check_masked_failure",
+      "severity": "high",
+      "title": "connectivity kept reporting /ready=200 while the API was failing",
+      "evidence": "/ready OK 100% of 3 checks while API success was 0%; cf. Ditto issue #1865 (health checks ignore subsystem health)"
+    },
+    {
+      "code": "health_check_masked_failure",
+      "severity": "high",
+      "title": "gateway kept reporting /ready=200 while the API was failing",
+      "evidence": "/ready OK 100% of 3 checks while API success was 0%; cf. Ditto issue #1865 (health checks ignore subsystem health)"
+    },
+    {
+      "code": "no_automated_remediation",
+      "severity": "medium",
+      "title": "Nothing in the platform reacted to the outage",
+      "evidence": "target container stayed 'running' and never became 'unhealthy' during the fault; compose `restart: always` only acts on exit, never on health"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 26s",
+      "evidence": "outage as seen by clients: 33.2s"
+    },
+    {
+      "code": "slow_recovery",
+      "severity": "medium",
+      "title": "Recovery slower than hypothesised",
+      "evidence": "26s vs expected 15s"
+    },
+    {
+      "code": "safety_abort",
+      "severity": "medium",
+      "title": "Kill switch fired (error_rate)",
+      "evidence": "{\"trailing_samples\": 6, \"error_rate\": 1.0, \"p95_ms\": null, \"threshold\": 0.3}"
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-10-10T10:21:04.332183Z",
+      "t_plus_s": 0.0,
+      "event": "planned",
+      "detail": "container_pause on things (deterministic)"
+    },
+    {
+      "at": "2026-10-10T10:21:04.932183Z",
+      "t_plus_s": 0.6,
+      "event": "injected",
+      "detail": "SIGSTOP bosch-ditto-things-1 (docker pause)"
+    },
+    {
+      "at": "2026-10-10T10:21:06.032183Z",
+      "t_plus_s": 1.7,
+      "event": "target_condition_observed",
+      "detail": "docker reports paused/healthy"
+    },
+    {
+      "at": "2026-10-10T10:21:06.732183Z",
+      "t_plus_s": 2.4,
+      "event": "first_api_error",
+      "detail": "status counts {'timeout': 2}"
+    },
+    {
+      "at": "2026-10-10T10:21:12.632183Z",
+      "t_plus_s": 8.3,
+      "event": "safety_abort",
+      "detail": "error_rate {\"trailing_samples\": 6, \"error_rate\": 1.0, \"p95_ms\": null, \"threshold\": 0.3}"
+    },
+    {
+      "at": "2026-10-10T10:21:12.632183Z",
+      "t_plus_s": 8.3,
+      "event": "rollback_started",
+      "detail": ""
+    },
+    {
+      "at": "2026-10-10T10:21:12.832183Z",
+      "t_plus_s": 8.5,
+      "event": "rollback_done",
+      "detail": "fault removed"
+    },
+    {
+      "at": "2026-10-10T10:21:38.832183Z",
+      "t_plus_s": 34.5,
+      "event": "recovered",
+      "detail": "success 100%, p95 47.9 ms, 0 remediation actions"
+    },
+    {
+      "at": "2026-10-10T10:21:38.932183Z",
+      "t_plus_s": 34.6,
+      "event": "integrity_check",
+      "detail": "stored seq=431, last acknowledged write seq=431"
+    }
+  ],
+  "resources": {},
+  "reproduce": [
+    "docker pause bosch-ditto-things-1",
+    "sleep 20",
+    "docker unpause bosch-ditto-things-1"
+  ],
+  "raw_logs_ref": "reports/experiments/f63b02a3c8ac/",
+  "status": "aborted",
+  "error": null
+}

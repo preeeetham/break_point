@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def utcnow() -> datetime:
@@ -274,3 +274,67 @@ class Scorecard(BaseModel):
     ranking: list[ServiceScore]
     experiments_total: int
     summary: str
+
+
+# ---------------------------------------------------------------- repo onboarding
+# What `config/<slug>_knowledge.yaml` carries: facts about a target application that a compose
+# file cannot express. The fields here are exactly the ones `faultline/topology/compose.py` and
+# `render.py` read — nothing is invented, because an unread field is dead weight in a config file.
+ROLES = ("datastore", "app", "proxy", "ui", "other")
+
+
+class DocumentedEdge(BaseModel):
+    """`src` needs `dst` to work, asserted by documentation rather than by the deployment files."""
+    src: str
+    dst: str
+    evidence: str = "documented"
+
+    @field_validator("src", "dst")
+    @classmethod
+    def _nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("service name must not be empty")
+        return v
+
+
+class RepoKnowledge(BaseModel):
+    """The knowledge file. Consumed by topology.compose.service_nodes/documented_edges."""
+    health_port: Optional[int] = None
+    cluster_alias: Optional[str] = None
+    roles: dict[str, str] = Field(default_factory=dict)
+    documented_edges: list[DocumentedEdge] = Field(default_factory=list)
+    references: list[str] = Field(default_factory=list)
+
+    @field_validator("health_port")
+    @classmethod
+    def _port_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 65535):
+            raise ValueError(f"health_port {v} is not a TCP port")
+        return v
+
+    @field_validator("roles")
+    @classmethod
+    def _known_roles(cls, v: dict[str, str]) -> dict[str, str]:
+        bad = {k: r for k, r in v.items() if r not in ROLES}
+        if bad:
+            raise ValueError(f"unknown role(s) {bad}; allowed: {ROLES}")
+        return v
+
+
+class OnboardingReport(BaseModel):
+    """What `faultline onboard` did, so the operator can judge whether to trust the output."""
+    slug: str
+    source: str
+    resolved_path: str
+    compose_path: str
+    readme_path: Optional[str] = None
+    nginx_conf_path: Optional[str] = None
+    services: list[str] = Field(default_factory=list)
+    structural_edges: int = 0
+    generated_by: Literal["llm", "structural-only"] = "structural-only"
+    model: str = ""
+    knowledge: RepoKnowledge = Field(default_factory=RepoKnowledge)
+    rejected: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    output_path: str = ""

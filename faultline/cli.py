@@ -54,12 +54,12 @@ class Session:
                 p.stop()
 
 
-def build_topology(s: Settings, store: ReportStore, live: bool):
+def build_topology(s: Settings, store: ReportStore, live: bool, knowledge: str | None = None):
     from .topology.graph import build
     from .topology.render import markdown
 
     nginx = s.nginx_conf if Path(s.nginx_conf).is_file() else None
-    topo = build(s.compose_file, s.compose_project, nginx, s.knowledge_file, live=live)
+    topo = build(s.compose_file, s.compose_project, nginx, knowledge or s.knowledge_file, live=live)
     store.write_topology(topo)
     (store.root / "topology.md").write_text(markdown(topo))
     return topo
@@ -122,12 +122,24 @@ def cmd_setup(s, store, a):
 def cmd_topology(s, store, a):
     from .topology.graph import summary_lines
 
-    topo = build_topology(s, store, live=not a.no_live)
+    knowledge = getattr(a, "knowledge", None)
+    if knowledge and not Path(knowledge).is_file():
+        say(f"error: knowledge file {knowledge} does not exist")
+        return 1
+    say(f"knowledge file: {knowledge or s.knowledge_file}")
+    topo = build_topology(s, store, live=not a.no_live, knowledge=knowledge)
     say("\n".join(summary_lines(topo)))
     for f in topo.findings:
         say(f"finding: {f}")
     say(f"wrote {store.root / 'topology.json'} and topology.md")
     return 0
+
+
+def _table(header: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
+    """Column sizing exactly as topology.graph.summary_lines does it: widest cell per column, two spaces between."""
+    widths = [max(len(r[i]) for r in [header, *rows]) for i in range(len(header))]
+    fmt = "  ".join("{:<%d}" % w for w in widths)
+    return [fmt.format(*header), fmt.format(*("-" * w for w in widths))] + [fmt.format(*r) for r in rows]
 
 
 def cmd_baseline(s, store, a):
@@ -329,6 +341,44 @@ def cmd_heal(s, store, a):
     return 1
 
 
+def cmd_onboard(s, store, a):
+    """Generate config/<slug>_knowledge.yaml for a new target repository."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from .onboarding.agent import compare, extract, onboard
+    from .onboarding.source import SourceError, resolve
+
+    try:
+        src = resolve(a.repo, _Path(a.cache_dir), compose=a.compose, ref=a.ref, log=say)
+    except SourceError as exc:
+        say(f"error: {exc}")
+        return 1
+    report = onboard(src, llm_client(s, not a.no_llm), _Path(s.knowledge_file),
+                     _Path(a.out), log=say, write=not a.dry_run)
+    k = report.knowledge
+    say(f"\n{report.slug}: {len(report.services)} services, {report.structural_edges} structural edges, "
+        f"{len(k.documented_edges)} documented edges ({report.generated_by})")
+    for e in k.documented_edges:
+        say(f"  {e.src} -> {e.dst}  ({e.evidence})")
+    if k.roles:
+        say(f"  role overrides: {k.roles}")
+    if k.health_port or k.cluster_alias:
+        say(f"  health_port={k.health_port} cluster_alias={k.cluster_alias}")
+    for n in report.notes:
+        say(f"  note: {n}")
+    if a.dry_run:
+        say("dry run: nothing written")
+    else:
+        say(f"\nUse it with:  faultline topology --knowledge {report.output_path}")
+    if a.compare_to:
+        say("\ncomparison against " + a.compare_to)
+        say(_json.dumps(compare(k, _Path(a.compare_to), extract(src.compose_path, src.nginx_conf_path)), indent=2))
+    if a.json:
+        say(report.model_dump_json(indent=2))
+    return 0
+
+
 def cmd_stop(s, store, a):
     store.request_stop("cli")
     say("STOP requested: the running experiment rolls back within ~1s; the guardian restores anything still down. `faultline resume` clears it.")
@@ -356,7 +406,7 @@ def cmd_status(s, store, a):
 def cmd_dashboard(s, store, a):
     from .dashboard.server import serve
 
-    serve(store, a.port)
+    serve(store, a.port, settings=s)
     return 0
 
 
@@ -379,7 +429,10 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("setup", help="check Docker, the Ditto stack, helper images and the LLM").set_defaults(fn=cmd_setup)
-    t = sub.add_parser("topology", help="map services, dependencies and criticality"); t.add_argument("--no-live", action="store_true"); t.set_defaults(fn=cmd_topology)
+    t = sub.add_parser("topology", help="map services, dependencies and criticality")
+    t.add_argument("--no-live", action="store_true")
+    t.add_argument("--knowledge", help="documented-knowledge YAML to layer on (default: settings knowledge_file)")
+    t.set_defaults(fn=cmd_topology)
     b = sub.add_parser("baseline", help="measure steady state and derive safety thresholds"); b.add_argument("--duration", type=int, default=60); b.set_defaults(fn=cmd_baseline)
     sub.add_parser("catalog", help="list failure types").set_defaults(fn=cmd_catalog)
     pl = sub.add_parser("plan", help="show ranked candidates and the next pick without running"); pl.add_argument("--no-llm", action="store_true"); pl.add_argument("--allow-protected", action="store_true"); pl.set_defaults(fn=cmd_plan)
@@ -402,6 +455,17 @@ def main(argv=None) -> int:
     sub.add_parser("scorecard", help="ranked resilience score per service").set_defaults(fn=cmd_scorecard)
     n = sub.add_parser("narrate", help="plain-English play-by-play"); n.add_argument("--watch", action="store_true"); n.add_argument("--llm", action="store_true"); n.set_defaults(fn=cmd_narrate)
     g = sub.add_parser("guardian", help="independent safety process"); g.add_argument("--interval", type=float, default=5.0); g.set_defaults(fn=cmd_guardian)
+    ob = sub.add_parser("onboard", help="generate a knowledge file for a new target repo (GitHub URL, owner/name or path)")
+    ob.add_argument("repo", help="https://github.com/owner/name, owner/name, or a local path")
+    ob.add_argument("--out", default="config", help="directory for <slug>_knowledge.yaml (default: config)")
+    ob.add_argument("--compose", help="path to the compose file inside the repo, if auto-detection picks the wrong one")
+    ob.add_argument("--ref", help="git branch or tag to clone")
+    ob.add_argument("--cache-dir", default=".cache/onboarding", help="where remote repos are cloned")
+    ob.add_argument("--compare-to", help="a hand-authored knowledge file to score the result against")
+    ob.add_argument("--dry-run", action="store_true", help="print the result without writing it")
+    ob.add_argument("--json", action="store_true", help="also print the full OnboardingReport")
+    ob.add_argument("--no-llm", action="store_true")
+    ob.set_defaults(fn=cmd_onboard)
     sub.add_parser("stop", help="KILL SWITCH: abort and roll back now").set_defaults(fn=cmd_stop)
     h = sub.add_parser("heal", help="reset the sandbox: remove chaos leftovers, (optionally) restart the cluster, wait for UP")
     h.add_argument("--restart", action="store_true", help="also restart the Ditto services in dependency order"); h.set_defaults(fn=cmd_heal)

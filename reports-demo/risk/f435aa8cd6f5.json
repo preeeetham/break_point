@@ -1,0 +1,35 @@
+{
+  "experiment_id": "f435aa8cd6f5",
+  "assessed_at": "2026-10-10T11:01:04.360415Z",
+  "target_service": "gateway",
+  "failure_type": "network_delay",
+  "severity": 0.39,
+  "level": "low",
+  "blast_radius": 1,
+  "user_impact": 0.0,
+  "recovery_s": 6.2,
+  "factors": {
+    "impact": 0.0,
+    "blast": 0.286,
+    "recovery": 0.103,
+    "intervention": 0.0,
+    "findings": 0.0
+  },
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "low",
+      "title": "API stayed available (100%) but p95 latency rose 41.2 -> 788.5 ms",
+      "evidence": "112 requests, status counts {'200': 84, '204': 28}, p95 788.5 ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 6s",
+      "evidence": "outage as seen by clients: 0.0s"
+    }
+  ],
+  "summary": "Adding latency to `gateway` (network_delay) moved API success from 100% to 100% across 112 samples; 1 service affected; recovered in 6 s without intervention.",
+  "production_implication": "In production a network_delay on gateway would be absorbed with little or no user-visible impact.",
+  "generated_by": "rules"
+}
