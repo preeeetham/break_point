@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 
+import faultline.agents.approval as approval_mod
 import faultline.cli as cli
 import faultline.dashboard.control as control_mod
 from faultline.config import Settings
@@ -23,11 +25,13 @@ from faultline.dashboard.control import (
 from faultline.observe.window import SampleWindow
 from faultline.planning.planner import Policy
 from faultline.safety.thresholds import thresholds_from
+from faultline.schemas import PRE_INJECTION_REPLIES, ApprovalDecision, ApprovalRequest, utcnow
 
 from .conftest import PROJECT, ROOT
 
-STATE_KEYS = {"now", "seq", "events", "session", "job", "run", "telemetry", "stop_requested", "guardian",
-              "agents", "llm", "topology", "baseline", "experiments", "scorecard"}
+STATE_KEYS = {"now", "seq", "events", "session", "job", "run", "telemetry", "stop_requested",
+              "pending_approval", "guardian", "agents", "llm", "topology", "baseline", "experiments",
+              "scorecard"}
 
 
 def wait_for(pred, timeout: float = 5.0) -> bool:
@@ -185,6 +189,7 @@ def test_cold_state_matches_contract_and_does_not_arm(control, sessions):
     assert st["session"]["armed"] is False and st["session"]["probe"]["running"] is False
     assert st["job"] is None and st["run"]["phase"] == "idle"
     assert st["stop_requested"] is False
+    assert st["pending_approval"] is None
     assert st["telemetry"] == {"points": [], "phases": []}
     assert set(st["agents"]) == set(control_mod.AGENTS)
     assert st["llm"]["available"] is False  # LLM disabled: no availability probe over the network
@@ -409,6 +414,172 @@ def test_manual_run_uses_operator_plan_and_clears_stale_stop(control, injector, 
     # resume_stop defaults to true: launching a run is treated as an explicit resume
     assert not tmp_store.stop_requested()
     assert len(sessions) == 1 and control.state(0)["session"]["armed"] is True
+
+
+# ---------------------------------------------------------------- approval gate (scenario A)
+def make_approval_request(**kw) -> ApprovalRequest:
+    fields = dict(approval_id="7f3c1a9b4d02", scenario="pre_injection", experiment_id="exp0001",
+                  token="FL-1a2b3c4d", to="admin@example.test", target_service="mongodb",
+                  failure_type="container_crash", created_at=utcnow(),
+                  deadline=utcnow() + timedelta(seconds=90), timeout_s=90.0, default_on_timeout="skip",
+                  options=list(PRE_INJECTION_REPLIES), sent=True)
+    fields.update(kw)
+    return ApprovalRequest(**fields)
+
+
+class HeldPlanner:
+    """Wraps the real planner so every spec it hands back needs an admin decision.
+
+    The planner does not set `requires_approval` from the policy yet; the run loop's gate is what
+    these tests exercise, so the flag is set here rather than waited on.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.history = inner.history
+
+    @staticmethod
+    def _held(spec):
+        if spec is not None:
+            spec.requires_approval = True
+            spec.approval_reason = "mongodb is protected and the policy requires an explicit decision"
+        return spec
+
+    def plan_next(self):
+        return self._held(self._inner.plan_next())
+
+    def plan_operator(self, *a, **kw):
+        return self._held(self._inner.plan_operator(*a, **kw))
+
+
+class FakeApprovalAgent:
+    """Stands in for agents.approval.ApprovalAgent: the closed reply vocabulary, no SMTP, no IMAP.
+
+    Only the mail transport is faked — `approval.gate` itself still runs, so the spec mutation on
+    APPROVE REDUCED and the STOP file on STOP RUN are the production code paths.
+    """
+    reply = "approve"
+    asked: list = []
+
+    def __init__(self, settings, store, log=print, mailer=None, mailbox=None):
+        assert mailer is None and mailbox is None, "the gate must not build a live transport in tests"
+        self.s, self.store, self.log = settings, store, log
+
+    def request_pre_injection(self, spec, reason: str = "") -> ApprovalDecision:
+        FakeApprovalAgent.asked.append(spec)
+        decision = ApprovalDecision(answer=self.reply, answered=True, raw_first_line=self.reply.upper(),
+                                    reason=f"the admin replied {self.reply.replace('_', ' ').upper()!r}")
+        if self.reply == "approve_reduced":
+            decision.parameters_before = dict(spec.parameters)
+            decision.parameters_after, decision.parameter_notes = approval_mod.halve(spec.failure_type,
+                                                                                     spec.parameters)
+        elif self.reply == "stop_run":
+            self.store.request_stop(f"approval:{spec.experiment_id}")
+        return decision
+
+
+@pytest.fixture
+def approvals(control, monkeypatch):
+    """Route every planned spec through the real gate and answer it without touching a mailbox."""
+    plan = control._planner
+    monkeypatch.setattr(control, "_planner", lambda *a, **kw: HeldPlanner(plan(*a, **kw)))
+    monkeypatch.setattr(approval_mod, "ApprovalAgent", FakeApprovalAgent)
+    monkeypatch.setattr(FakeApprovalAgent, "asked", [])
+
+    def configure(reply: str) -> list:
+        monkeypatch.setattr(FakeApprovalAgent, "reply", reply)
+        return FakeApprovalAgent.asked
+
+    return configure
+
+
+def test_pending_approval_surfaces_in_state_and_degrades_to_none(control, tmp_store):
+    tmp_store.set_pending_approval(make_approval_request())
+    pending = control.state(0)["pending_approval"]
+    assert pending["approval_id"] == "7f3c1a9b4d02" and pending["scenario"] == "pre_injection"
+    assert pending["token"] == "FL-1a2b3c4d" and pending["status"] == "pending"
+    assert pending["default_on_timeout"] == "skip" and pending["decision"] is None
+    assert 0 < pending["seconds_left"] <= 90
+    tmp_store.pending_approval_file.write_text("{ not json")  # a half-written file must not break /api/state
+    assert control.state(0)["pending_approval"] is None
+    tmp_store.clear_pending_approval()
+    assert control.state(0)["pending_approval"] is None
+
+
+def test_gate_skip_never_reaches_the_injector(control, injector, approvals, tmp_store):
+    injector()
+    asked = approvals("skip")
+    control.submit("run", {"mode": "auto", "experiments": 1, "analyze": False, "llm": False})
+    job = wait_job(control)
+    assert job["status"] == "done" and job["result"] == {"experiments": []}
+    assert len(asked) == 1 and asked[0].requires_approval is True
+    assert FakeInjector.instances[0].calls == []
+    assert not tmp_store.stop_requested()  # SKIP rejects one candidate, it does not end the run
+    st = control.state(0)
+    assert st["run"]["phase"] == "idle"  # a spec that was never injected must not linger as preflight
+    assert any(e["source"] == "approval" and "Not injecting" in e["text"] for e in st["events"])
+
+
+def test_gate_approve_lets_the_experiment_run(control, injector, approvals):
+    injector()
+    asked = approvals("approve")
+    control.submit("run", {"mode": "auto", "experiments": 1, "analyze": False, "llm": False})
+    job = wait_job(control)
+    calls = FakeInjector.instances[0].calls
+    assert len(asked) == 1 and len(calls) == 1 and calls[0] is asked[0]
+    assert job["result"] == {"experiments": [calls[0].experiment_id]}
+    assert any("admin approved this experiment" in n for n in calls[0].planner_notes)
+
+
+def test_gate_stop_run_ends_the_loop_without_injecting(control, injector, approvals, tmp_store):
+    injector()
+    asked = approvals("stop_run")
+    control.submit("run", {"mode": "auto", "experiments": 3, "analyze": False, "llm": False})
+    job = wait_job(control)
+    assert len(asked) == 1  # asked once; the loop broke instead of planning a second experiment
+    assert FakeInjector.instances[0].calls == [] and job["result"] == {"experiments": []}
+    assert tmp_store.stop_requested()
+    st = control.state(0)
+    assert st["run"]["phase"] == "idle"
+    assert any(e["level"] == "error" and "Run aborted" in e["text"] for e in st["events"])
+
+
+def test_gate_approve_reduced_injects_the_halved_spec(control, injector, approvals):
+    live: dict = {}
+    injector(on_run=lambda: live.update(control.state(0)["run"]))
+    approvals("approve_reduced")
+    control.submit("run", {"mode": "manual", "target": "things", "failure": "container_crash",
+                           "params": {"duration_s": 40}, "analyze": False, "llm": False})
+    assert wait_job(control)["status"] == "done"
+    spec = FakeInjector.instances[0].calls[0]
+    assert spec.parameters["duration_s"] == 20
+    # the launcher was showing 40 s when the gate opened; it must show what the admin approved
+    assert live["parameters"]["duration_s"] == 20 and live["max_s"] == 20
+    assert any("halved 40 -> 20" in n for n in spec.planner_notes)
+
+
+def test_the_kill_switch_is_served_while_the_gate_holds_the_job_slot(control, injector, approvals,
+                                                                     monkeypatch, tmp_store):
+    """An open decision blocks the single job slot. STOP, cancel and /api/state must not queue behind it."""
+
+    class BlockingAgent(FakeApprovalAgent):
+        def request_pre_injection(self, spec, reason: str = "") -> ApprovalDecision:
+            FakeApprovalAgent.asked.append(spec)
+            assert wait_for(self.store.stop_requested, 5.0), "STOP never reached the waiting gate"
+            # what approval._wait returns when the STOP file appears: the safe default, not consent
+            return ApprovalDecision(answer="skip", answered=False,
+                                    reason="STOP was latched while waiting for the decision")
+
+    injector()
+    approvals("approve")  # never consulted: BlockingAgent answers instead
+    monkeypatch.setattr(approval_mod, "ApprovalAgent", BlockingAgent)
+    control.submit("run", {"mode": "auto", "experiments": 2, "analyze": False, "llm": False})
+    assert wait_for(lambda: bool(FakeApprovalAgent.asked), 5.0), "the gate never opened"
+    assert control.state(0)["job"]["status"] == "running"  # the slot is held by the open decision
+    assert control.stop() == {"ok": True, "stop_requested": True}
+    job = wait_job(control)
+    assert job["result"] == {"experiments": []} and FakeInjector.instances[0].calls == []
+    assert len(FakeApprovalAgent.asked) == 1  # the latched STOP stopped a second request being opened
 
 
 # ---------------------------------------------------------------- read-only previews

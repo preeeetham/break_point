@@ -103,6 +103,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "since must be an integer"})
                     return
                 self._json(200, self.control.state(since))
+            elif path == "/api/approvals":
+                # Read-only on purpose, and there is deliberately no approve/reject POST and no job
+                # kind: the answer comes back by email from the admin's own mailbox. A button here
+                # would let whoever already has the dashboard open wave through the very experiment
+                # the gate exists to hold back, which is the thing being demonstrated.
+                self._json(200, self.control.approvals())
             elif path == "/api/catalog":
                 self._json(200, self.control.catalog())
             elif path == "/api/plan":

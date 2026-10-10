@@ -15,6 +15,7 @@ import time
 import traceback
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..config import Settings
@@ -316,7 +317,7 @@ class ControlPlane:
             self.log("probe", f"Note: {n}", "warn")
         return {"p95_ms": b.api.p95_ms, "success_rate": b.api.success_rate}
 
-    def _planner(self, use_llm: bool, allow_protected: bool, arm: bool = True):
+    def _planner(self, use_llm: bool, allow_protected: bool, arm: bool = True, approval_gate: bool = False):
         """arm=False keeps this read-only: previewing a plan must never start probes by surprise."""
         from ..cli import llm_client
         from ..planning.planner import Planner, Policy
@@ -333,7 +334,7 @@ class ControlPlane:
         images = {k for k, img in (("pumba", self.s.pumba_image), ("tc", self.s.tc_image))
                   if docker is None or docker.has_image(img)}
         return Planner(topo, policy, self.store.experiments(),
-                       llm_client(self.s, use_llm), self.s, images, allow_protected)
+                       llm_client(self.s, use_llm), self.s, images, allow_protected, approval_gate)
 
     def plan(self, use_llm: bool = False, allow_protected: bool = False) -> dict:
         """Preview the ranked plan. The UI polls this, so it only narrates when the pick changes."""
@@ -372,6 +373,51 @@ class ControlPlane:
                 "criticality_score": spec.criticality_score, "planned_by": spec.planned_by,
                 "planner_notes": spec.planner_notes, "reproduce": spec.reproduce}
 
+    def _set_run_meta(self, spec, session) -> None:
+        self._run_meta = {**self._spec_dict(spec), "max_s": min(
+            float(spec.parameters.get("duration_s", 30)), session.thresholds.max_experiment_seconds)}
+
+    def _gate(self, spec, session) -> str:
+        """Hold the experiment until a human decides. Returns the answer the run loop must act on.
+
+        This blocks the single job slot for up to APPROVAL_TIMEOUT_SECONDS, deliberately: nothing is
+        injected while a decision is open. The kill switch is unaffected — /api/stop, /api/resume and
+        /api/jobs/cancel are served on HTTP handler threads, and the agent's own poll loop returns the
+        safe default as soon as the STOP file appears. The agent logs on send, on reply and once per
+        unreachable mailbox, never per poll, so a long wait cannot flush the event feed.
+        """
+        from ..agents import approval
+
+        planned = dict(spec.parameters)
+        self._agent("injector", "working", "held: waiting for an admin decision")
+        self.log("approval", f"Experiment {spec.experiment_id[:8]} is held pending an admin decision: "
+                             f"{spec.approval_reason or 'the policy requires one'}", "warn")
+        decision = approval.gate(self.s, self.store, spec, log=self._logger("approval"))
+        if decision.answer in ("skip", "stop_run"):
+            # nothing will be injected for this spec, so the launcher must not keep showing it as
+            # preflight: _run_meta is only cleared after a completed injection.
+            self._run_meta = {}
+        if decision.answer == "skip":
+            self._agent("injector", "idle", "skipped: no approval")
+            self.log("approval", f"Not injecting {spec.failure_type} on {spec.target_service} — "
+                                 f"{decision.reason}", "warn")
+        elif decision.answer == "stop_run":
+            # gate() has already written reports/STOP; the run ends here rather than at the next guard.
+            self._agent("injector", "idle", "run aborted by the admin")
+            self.log("approval", f"Run aborted before anything was injected — {decision.reason}. STOP is "
+                                 f"latched; Resume clears it.", "error")
+        else:
+            # gate() mutated the spec in place — halved parameters on APPROVE REDUCED, a planner note
+            # on both — so the launcher must stop showing what the planner asked for.
+            self._set_run_meta(spec, session)
+            delta = ", ".join(f"{k} {planned.get(k)} -> {v}" for k, v in spec.parameters.items()
+                              if planned.get(k) != v)
+            self._agent("injector", "working", f"{spec.failure_type} on {spec.target_service}"
+                                               + (" (reduced)" if delta else ""))
+            self.log("approval", f"Admin approved {spec.failure_type} on {spec.target_service} "
+                                 + (f"with {delta}" if delta else f"as planned — {decision.reason}"), "success")
+        return decision.answer
+
     def _job_run(self, body: dict) -> dict:
         from ..agents.injector import Injector
 
@@ -380,7 +426,14 @@ class ControlPlane:
             self.store.clear_stop()
         use_llm = bool(body.get("llm", True))
         allow_protected = bool(body.get("allow_protected", False))
-        planner = self._planner(use_llm, allow_protected)
+        # Without this the gate below is unreachable from the browser: nothing would ever set
+        # `requires_approval` on a spec the control room planned.
+        from ..agents.approval import ApprovalAgent, gate_available
+
+        gate_on = gate_available(self.s)
+        if gate_on:
+            self.log("approval", f"Approval gate on: {ApprovalAgent(self.s, self.store).describe()}")
+        planner = self._planner(use_llm, allow_protected, approval_gate=gate_on)
         injector = Injector(self.s, self.store, session.topology, session.docker, session.window,
                             session.api, session.health, session.thresholds, session.policy,
                             log=self._logger("injector"))
@@ -403,12 +456,17 @@ class ControlPlane:
                 self._agent("planner", "done", f"{spec.failure_type} on {spec.target_service}")
             for n in spec.planner_notes:
                 self.log("planner", n, "info")
-            self._run_meta = {**self._spec_dict(spec), "max_s": min(
-                float(spec.parameters.get("duration_s", 30)), session.thresholds.max_experiment_seconds)}
+            self._set_run_meta(spec, session)
             self._agent("injector", "working", f"{spec.failure_type} on {spec.target_service}")
             self.log("injector", f"Experiment {spec.experiment_id[:8]}: {spec.failure_type} on "
                                  f"{spec.target_service} — {spec.rationale}", "chaos")
             self.log("injector", f"Hypothesis: {spec.hypothesis.statement}", "ai" if spec.planned_by == "llm" else "info")
+            if spec.requires_approval:
+                answer = self._gate(spec, session)
+                if answer == "skip":
+                    continue
+                if answer == "stop_run":
+                    break
             report = injector.run(spec)
             planner.history.append(report)
             done.append(report.experiment_id)
@@ -643,6 +701,19 @@ class ControlPlane:
         out.sort(key=lambda e: e["started_at"], reverse=True)
         return out
 
+    def _pending_approval_state(self) -> Optional[dict]:
+        """The decision a human is being waited on, or None when nothing is open.
+
+        `seconds_left` goes negative once the deadline has passed: that is the interesting case, since
+        it means the safe default should already have fired and the UI should say so rather than hide it.
+        """
+        req = self.store.pending_approval()
+        if req is None:
+            return None
+        out = req.model_dump(mode="json")
+        out["seconds_left"] = round((req.deadline - datetime.now(timezone.utc)).total_seconds(), 1)
+        return out
+
     def _scorecard_state(self) -> Optional[dict]:
         sc = self.store.scorecard()
         if sc is None:
@@ -669,6 +740,7 @@ class ControlPlane:
             "run": safe(self._run_state, {"phase": "idle"}),
             "telemetry": self.telemetry.as_dict(),
             "stop_requested": bool(safe(self.store.stop_requested, False)),
+            "pending_approval": safe(self._pending_approval_state),
             "guardian": safe(lambda: self.store.heartbeat("guardian")),
             "agents": safe(self._agents_state, {}),
             "llm": safe(self._llm_state, {}),
@@ -677,6 +749,16 @@ class ControlPlane:
             "experiments": safe(self._experiments_state, []),
             "scorecard": safe(self._scorecard_state),
         }
+
+    def approvals(self, limit: int = 20) -> dict:
+        """What is waiting on a human, and how the last decisions went. Read-only: see server.do_GET.
+
+        A request that is still open lives in PENDING_APPROVAL.json and is reported as `pending`; it is
+        only copied into approvals/ once it ends, so a resent request never shows up in both lists.
+        """
+        decided = [a.model_dump(mode="json") for a in (_safe(self.store.approvals, []) or [])
+                   if a.status != "pending"]
+        return {"pending": _safe(self._pending_approval_state), "decided": list(reversed(decided))[:limit]}
 
     def experiment_detail(self, eid: str) -> Optional[dict]:
         from ..reporting.markdown import experiment_markdown

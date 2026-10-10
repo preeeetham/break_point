@@ -52,7 +52,7 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
   "now": 1760000000.0,
   "seq": 412,                       // latest event sequence number
   "events": [ {"seq":410,"ts":...,"level":"info|success|warn|error|chaos|ai",
-               "source":"system|topology|planner|injector|guardian|risk|fix|scorecard|probe",
+               "source":"system|topology|planner|injector|guardian|risk|fix|scorecard|probe|approval",
                "text":"...", "data":{} } ],   // only events with seq > `since`, max 300
   "session": { "armed": false, "error": null, "probe": {"running":false,"rps":4.0,
                "canary":"faultline.probe:canary","samples":0} },
@@ -72,6 +72,17 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
   "telemetry": { "points":[{"t":1760000000.0,"success":1.0,"p95":42.0,"n":8}],  // 1 Hz, last 300 s
                  "phases":[{"from":...,"to":...,"phase":"injecting","experiment_id":"ab12"}] },
   "stop_requested": false,
+  "pending_approval": {          // a human is being waited on; null when nothing is open
+    "approval_id":"7f3c1a9b4d02", "scenario":"pre_injection|problem_occurred",
+    "experiment_id":"ab12...", "token":"FL-1a2b3c4d", "message_id":"<...@faultline.local>",
+    "subject":"[Faultline FL-1a2b3c4d] approval needed: ...", "to":"admin@example.com",
+    "target_service":"mongodb", "failure_type":"container_crash",
+    "created_at":"ISO", "deadline":"ISO", "timeout_s":120.0,
+    "seconds_left":84.3,         // computed per poll; negative once the deadline has passed
+    "options":["APPROVE","APPROVE REDUCED","SKIP","STOP RUN"], "default_on_timeout":"skip",
+    "sent":true, "send_error":"", "resends":0, "status":"pending|answered|timed_out|failed",
+    "decision":null              // <ApprovalDecision> once decided, see §2.2
+  } | null,
   "guardian": {"at":..., "stop":false, "actions":[...], "down":{}} | null,
   "agents": { "topology":{"state":"idle|working|done|error","at":...,"detail":"12 services"},
               "planner":{...}, "injector":{...}, "guardian":{...},
@@ -120,6 +131,17 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
  "reproduce":["docker kill ..."] }
 ```
 
+### 2.2 `ApprovalDecision`
+How one pending decision ended. `answered: false` means nobody replied and the safe default fired.
+```jsonc
+{"answer":"approve|approve_reduced|skip|stop_run|fix|wait|continue","answered":true,
+ "reason":"the admin replied 'APPROVE REDUCED'","decided_at":"ISO",
+ "fix_index":2,"fix_title":"...",             // only for `fix` (scenario B)
+ "raw_first_line":"APPROVE REDUCED","clarifications_sent":0,
+ "parameters_before":{"duration_s":40},"parameters_after":{"duration_s":20},
+ "parameter_notes":["APPROVE REDUCED: duration_s halved 40 -> 20"]}   // only for `approve_reduced`
+```
+
 ### GET `/api/catalog`
 ```jsonc
 {"failures":[{"key":"container_crash","title":"Container crash (SIGKILL)",
@@ -144,6 +166,23 @@ Ranked candidates plus the next pick. Never runs anything.
          "planned_by":"llm|deterministic","planner_notes":[...],"reproduce":[...]} | null,
  "llm":{"used":false,"provider":"ollama","model":"phi4-mini","available":true,"error":""}}
 ```
+
+### GET `/api/approvals`
+The human-in-the-loop gate: what is waiting on a decision, and how the last ones went. `pending` is
+the same object as `state.pending_approval`; `decided` is the newest 20 closed records, each an
+`ApprovalRequest` with its `decision` filled in (§2.2).
+```jsonc
+{"pending": <pending_approval> | null,
+ "decided":[{"approval_id":"7f3c1a9b4d02","scenario":"pre_injection","experiment_id":"ab12...",
+             "token":"FL-1a2b3c4d","to":"admin@example.com","target_service":"mongodb",
+             "failure_type":"container_crash","created_at":"ISO","deadline":"ISO","timeout_s":120.0,
+             "options":[...],"default_on_timeout":"skip","sent":true,"send_error":"","resends":0,
+             "status":"answered|timed_out|failed","decision":{...}}]}
+```
+There is deliberately **no** approve/reject POST and no `approvals` job kind. The answer arrives by
+email from the admin's own mailbox; a button in the control room would let whoever already has the
+dashboard open wave through the experiment the gate exists to hold back. The UI shows the request,
+the deadline countdown and what will happen on timeout — and nothing else.
 
 ### POST job endpoints
 All return `202 {"ok":true,"job":{...}}`, or `409 {"error":"a job is already running", "job":{...}}`.
