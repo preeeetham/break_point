@@ -8,8 +8,9 @@ measured severity in the system is the Risk agent's post-hoc one.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from ..reporting.store import ReportStore
 from ..schemas import (
@@ -28,6 +29,26 @@ PROVES_NOTHING = "skipped"
 # the safety monitor, so "nothing bad happened" is a statement about the monitor, not the system.
 CLEARING_STATUS = "completed"
 SEVERE = ("high", "critical")
+
+# Findings that are ABOUT a particular service rather than about the run as a whole. The injector
+# raises one `health_check_masked_failure` per service whose /ready stayed green, so a single
+# experiment on `things` can carry three of them naming things-search, connectivity and gateway.
+# Matching on the code alone would credit all three to the prediction about `things` and leave the
+# three predictions they actually confirm sitting in the untested pile -- so for these codes the
+# finding must also name one of the weakness's own services.
+# `cascade_beyond_hypothesis` is deliberately NOT here: it names the services a failure spread INTO,
+# and `touching()` already attributes that through `affected_services_observed`, so gating it would
+# only produce false negatives.
+SERVICE_ATTRIBUTED_CODES = frozenset({
+    "health_check_masked_failure",
+    "dependency_blind_readiness",
+})
+
+
+def _names_service(text: str, services: Iterable[str]) -> bool:
+    """Does `text` name one of these services? Hyphen-aware, because a plain word-boundary match for
+    `things` also matches inside `things-search` and would confirm the wrong prediction."""
+    return any(re.search(rf"(?<![\w-]){re.escape(s)}(?![\w-])", text) for s in services)
 CONFIRMED_LABEL = "[predicted, confirmed by experiment]"
 MAX_QUOTED_EVIDENCE = 2
 EVIDENCE_CHARS = 160
@@ -77,12 +98,21 @@ def touching(weakness: PredictedWeakness, experiments: list[ExperimentReport]) -
     """
     services = set(weakness.services)
     types = set(weakness.confirming_failure_types or ())
-    return [
-        r
-        for r in experiments
-        if (target_service(r) in services or services & set(r.affected_services_observed or []))
-        and (not types or r.failure_type in types)
-    ]
+    codes = set(weakness.confirming_finding_codes)
+
+    def bears_on(r: ExperimentReport) -> bool:
+        if target_service(r) in services or services & set(r.affected_services_observed or []):
+            return True
+        # A per-service finding that NAMES one of these services is itself evidence the experiment
+        # bore on it. The injector fills `affected_services_observed` from health collapse, so an
+        # experiment on `things` records only ['things'] even when it raised three
+        # `health_check_masked_failure` findings naming things-search, connectivity and gateway --
+        # which is precisely the evidence those three services' predictions were waiting for.
+        return any(f.code in codes and f.code in SERVICE_ATTRIBUTED_CODES and f.severity != "info"
+                   and _names_service(f"{f.title} {f.evidence}", services)
+                   for f in r.findings)
+
+    return [r for r in experiments if bears_on(r) and (not types or r.failure_type in types)]
 
 
 def _confirmations(weakness: PredictedWeakness, bearing: list[ExperimentReport]) -> list[tuple[ExperimentReport, str, str]]:
@@ -96,7 +126,16 @@ def _confirmations(weakness: PredictedWeakness, bearing: list[ExperimentReport])
     confirmation. It does not block a clear either — at `info`, `api_impact` says the API held up.
     """
     codes = set(weakness.confirming_finding_codes)
-    return [(r, f.code, f.evidence) for r in bearing for f in r.findings if f.code in codes and f.severity != "info"]
+    out: list[tuple[ExperimentReport, str, str]] = []
+    for r in bearing:
+        for f in r.findings:
+            if f.code not in codes or f.severity == "info":
+                continue
+            if f.code in SERVICE_ATTRIBUTED_CODES and not _names_service(
+                    f"{f.title} {f.evidence}", weakness.services):
+                continue
+            out.append((r, f.code, f.evidence))
+    return out
 
 
 def _severe_findings(bearing: list[ExperimentReport]) -> list[tuple[ExperimentReport, str, str]]:

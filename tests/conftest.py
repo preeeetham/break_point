@@ -146,7 +146,11 @@ def make_report(thresholds):
                                      data_integrity_ok=True),
             safety=SafetyOutcome(thresholds=thresholds),
             affected_services_observed=list(affected),
-            findings=[Finding(code=c, severity="high", title=c.replace("_", " "), evidence="synthetic") for c in codes],
+            # The title names the service, as the injector's own findings do: it raises one
+            # `health_check_masked_failure` per service whose /ready stayed green, and consumers
+            # (reconcile) attribute a per-service finding by the service it names.
+            findings=[Finding(code=c, severity="high", title=f"{service} {c.replace('_', ' ')}",
+                              evidence=f"synthetic, observed on {service}") for c in codes],
             timeline=[TimelineEvent(at=started, t_plus_s=0.0, event="inject", detail=failure_type)],
             reproduce=[f"docker kill {PROJECT}-{service}-1"],
             status=status,

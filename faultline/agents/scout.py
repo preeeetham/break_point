@@ -758,9 +758,11 @@ def _pattern_payload(weaknesses: list[PredictedWeakness], ctx: ScoutContext) -> 
     }, default=str)
 
 
-def _apply_prose(data: dict, known: dict[str, PredictedWeakness]) -> int:
+def _apply_prose(data: Any, known: dict[str, PredictedWeakness]) -> int:
     """Accept only well-formed prose for ids the deterministic checks actually produced."""
     replaced = 0
+    if not isinstance(data, dict):
+        return 0
     explanations = data.get("explanations")
     if not isinstance(explanations, dict):
         return 0
@@ -776,8 +778,10 @@ def _apply_prose(data: dict, known: dict[str, PredictedWeakness]) -> int:
     return replaced
 
 
-def _collect_patterns(data: dict, known: dict[str, PredictedWeakness]) -> list[SystemicPattern]:
+def _collect_patterns(data: Any, known: dict[str, PredictedWeakness]) -> list[SystemicPattern]:
     patterns: list[SystemicPattern] = []
+    if not isinstance(data, dict):
+        return patterns
     for item in (data.get("systemic_patterns") or []):
         if not isinstance(item, dict):
             continue
@@ -807,13 +811,25 @@ def _llm_pass(
                      f"{len(weaknesses)} prediction(s)")
         return False, [], notes
 
+    def ask(system: str, user: str, max_tokens: int) -> Any:
+        """The prose is never load-bearing: losing 21 deterministic predictions because a client
+        raised on a cosmetic call would be absurd, so nothing a client does escapes this."""
+        try:
+            return llm.chat_json(system, user, max_tokens=max_tokens)
+        except Exception as exc:  # noqa: BLE001 - deliberately total; see above
+            llm.last_error = f"{type(exc).__name__}: {exc}"
+            return None
+
     known = {w.weakness_id: w for w in weaknesses}
     replaced = 0
     failures = 0
     chunks = [weaknesses[i : i + LLM_CHUNK_SIZE] for i in range(0, len(weaknesses), LLM_CHUNK_SIZE)]
     for chunk in chunks:
-        data = llm.chat_json(PROSE_SYSTEM, _prose_payload(chunk, ctx), max_tokens=PROSE_MAX_TOKENS)
-        if not data:
+        data = ask(PROSE_SYSTEM, _prose_payload(chunk, ctx), PROSE_MAX_TOKENS)
+        # A batch failed only if nothing usable came back at all. An answer that is a dict but whose
+        # prose is all rejected is not a transport failure; it is the validation working, and those
+        # predictions keep their templated text without being reported as a failed batch.
+        if not isinstance(data, dict) or not data:
             failures += 1
             continue
         replaced += _apply_prose(data, known)
@@ -825,7 +841,7 @@ def _llm_pass(
                      f"the rest kept their templated text")
 
     patterns: list[SystemicPattern] = []
-    data = llm.chat_json(PATTERN_SYSTEM, _pattern_payload(weaknesses, ctx), max_tokens=PATTERN_MAX_TOKENS)
+    data = ask(PATTERN_SYSTEM, _pattern_payload(weaknesses, ctx), PATTERN_MAX_TOKENS)
     if data:
         patterns = _collect_patterns(data, known)
     else:

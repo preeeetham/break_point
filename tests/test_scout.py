@@ -467,8 +467,8 @@ def test_retry_backoff_notes_resilience_settings_that_are_not_on_this_edge():
     ctx = _retry_ctx(["DB_HOSTNAME=db", "PEKKO_RETRY_LIMIT=5"])
     raw = only(S.check_retry_backoff(ctx), "no_retry_or_backoff")
     assert "`a`: DB_HOSTNAME=db (sets PEKKO_RETRY_LIMIT elsewhere, but nothing on this edge)" in raw.evidence
-    # ... and `b`, which sets nothing at all, gets no aside
-    assert "`b`: DB_HOSTNAME=db --" in raw.evidence or "`b`: DB_HOSTNAME=db" in raw.evidence
+    # ... and `b`, which sets nothing of the kind, gets no aside
+    assert "`b`: DB_HOSTNAME=db" in raw.evidence
     assert "PEKKO" not in raw.evidence.split("`b`:")[1]
 
 
@@ -578,7 +578,7 @@ def test_rate_limiting_fires_when_the_proxy_config_sheds_nothing():
     assert raw.title == "nginx is the public entrypoint and applies no rate limiting or backpressure"
     assert "neither `limit_req`, `limit_conn` nor any rate-limit/throttle setting appears in " \
            "its mounted config" in raw.evidence
-    assert "sheds at the edge" in raw.evidence or "shed at the edge with a 429" in raw.evidence
+    assert "instead of being shed at the edge with a 429" in raw.evidence
     assert raw.experiment_prefs[0] == ("traffic_spike", "nginx")
     assert ctx.notes == []
 
@@ -1110,7 +1110,6 @@ def test_one_rate_limited_chunk_costs_only_its_own_chunk(real_ctx):
     for w in report.weaknesses:
         if w.weakness_id in failed_ids:
             assert w.generated_by == "rules"
-            assert w.why_it_matters == report.by_id(w.weakness_id).why_it_matters
             assert w.why_it_matters == baseline.by_id(w.weakness_id).why_it_matters
         else:
             assert w.generated_by == "llm+rules"
@@ -1163,11 +1162,11 @@ def test_llm_pass_returns_cleanly_with_no_weaknesses_to_explain():
     assert llm.calls == []
 
 
-# The two inputs below are the only ways `_llm_pass` can break its own "Never raises" contract.
-# Both are reported as a bug rather than fixed here (this suite may not edit scout.py); xfail keeps
-# the requirement written down and will XPASS the day the guard is added.
-@pytest.mark.xfail(reason="BUG: a truthy non-dict chat_json answer reaches _apply_prose unguarded; "
-                          "`data.get` raises AttributeError and takes the whole report with it")
+# The two inputs below are the only ways `_llm_pass` could break its own "Never raises" contract.
+# Both were real: a truthy non-dict answer reached `_apply_prose` and `data.get` raised
+# AttributeError, and `chat_json` was called outside any try/except, so a client that raised took
+# all 21 deterministic predictions with it over a cosmetic prose call. Both are now guarded; these
+# tests are what keeps them guarded.
 @pytest.mark.parametrize("answer", [["explanations"], "some prose", 7.5])
 def test_fallback_when_chat_json_returns_a_non_dict(llm_ctx, answer):
     baseline = S.scout(llm_ctx, None)
@@ -1177,9 +1176,6 @@ def test_fallback_when_chat_json_returns_a_non_dict(llm_ctx, answer):
     assert all(w.generated_by == "rules" for w in report.weaknesses)
 
 
-@pytest.mark.xfail(reason="BUG: _llm_pass calls chat_json outside a try/except, so a client that "
-                          "raises propagates out of scout()/run() and loses every deterministic "
-                          "prediction -- contradicting the 'Never raises' docstring")
 def test_fallback_when_chat_json_raises(llm_ctx):
     baseline = S.scout(llm_ctx, None)
     report = S.scout(llm_ctx, FakeLLM(raises=RuntimeError("read timed out")))
@@ -1408,7 +1404,7 @@ def test_build_context_reads_compose_knowledge_policy_and_proxy_text(policy_raw)
     assert ctx.compose_path == str(REAL_COMPOSE)
     assert ctx.knowledge_path == str(REAL_KNOWLEDGE)
     assert ctx.knowledge["health_port"] == 7626
-    assert "worker_processes" in ctx.nginx_text or "server" in ctx.nginx_text
+    assert ctx.nginx_text == REAL_NGINX.read_text()
     assert ctx.policy.protected.keys() == policy_raw["policy"]["protected"].keys()
     assert ctx.raw("mongodb")["image"].endswith("mongo:7.0")
     assert "prometheus" not in ctx.candidates()      # tagged `other` in the knowledge file
