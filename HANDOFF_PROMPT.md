@@ -217,6 +217,17 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
   `approval_gate`, so nothing sets the flag from the browser and that branch is unreachable today.
   `scout_predicted_severity()` is a duck-typed hook for a Weakness Scout that has not landed; nothing
   calls it. See PROJECT_GUIDE section 17, item 22.
+- **Before merging:** this agent was built on `feature/approval-agent` in a separate worktree,
+  off `main`, while the Weakness Scout was being built on `feature/weakness-scout`. Both branches
+  add a section to the end of `faultline/schemas.py` and `faultline/reporting/store.py`, add a
+  subcommand to `faultline/cli.py`, and change `Planner.__init__`, so a merge conflicts in exactly
+  those four files. Every conflict is of the "both sides appended" kind and resolves by keeping both
+  sides; `git merge-tree --write-tree --name-only feature/approval-agent feature/weakness-scout`
+  lists them. Nothing else overlaps.
+- **The Scout trigger is now a small change, not a guess.** The Scout branch already feeds predicted
+  weaknesses into the planner's ranking, so the second scenario-A trigger this agent documents
+  (`approval.scout_predicted_severity`, duck-typed and inert until `reports/weaknesses.json` exists)
+  can be called from `Planner.candidates` next to the policy check once the two branches are merged.
 - **`ADMIN_EMAIL` is a placeholder.** No default, deliberately not hardcoded anywhere; the project
   owner has not supplied the real address. Leave it empty until they do — the gate then reports
   itself unconfigured and applies the safe default rather than approving anything. Use
