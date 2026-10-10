@@ -67,7 +67,8 @@ class Policy:
 
 class Planner:
     def __init__(self, topology: Topology, policy: Policy, history: list[ExperimentReport], llm: LLMClient | None,
-                 settings, available_images: set[str] | None = None, allow_protected: bool = False):
+                 settings, available_images: set[str] | None = None, allow_protected: bool = False,
+                 approval_gate: bool = False):
         self.topo = topology
         self.policy = policy
         self.history = history
@@ -75,6 +76,12 @@ class Planner:
         self.settings = settings
         self.images = available_images if available_images is not None else {"pumba", "tc"}
         self.allow_protected = allow_protected
+        # True when an approval gate is configured and can actually reach a human. It changes one
+        # thing only: an operator asking for a protected experiment is held for a decision instead of
+        # being told to pass --allow-protected. The autonomous candidate ranking is untouched -- the
+        # Day-1 protected policy decides what may be proposed at all, and a gate on who authorises a
+        # specific experiment is not a licence to reopen that policy for the planner.
+        self.approval_gate = approval_gate
 
     # ------------------------------------------------------------------ ranking
     def candidates(self) -> list[Candidate]:
@@ -164,16 +171,24 @@ class Planner:
             raise ValueError(f"unknown failure type {failure_type}; known: {sorted(CATALOG)}")
         if not applicable(ft, self.topo.services[service]):
             raise ValueError(f"{failure_type} does not apply to {service} (role {self.topo.services[service].role})")
+        notes: list[str] = []
         ok, why = self.policy.allows(service, failure_type, self.allow_protected)
+        needs_approval = False
         if not ok:
-            raise ValueError(why + " -- pass --allow-protected to override")
-        params, notes = clamp(ft, params)
-        if why:
-            notes.append(why)
+            if not self.approval_gate:
+                raise ValueError(why + " -- pass --allow-protected to override")
+            needs_approval = True
+            notes.append(f"held for an admin decision instead of refused: {why}")
+        params, clamp_notes = clamp(ft, params)
+        notes += clamp_notes
+        if ok and why:
+            notes.append(why)      # the --allow-protected override; when gated, `why` is already in the note above
         return self._spec(service, ft, params, f"operator-selected {ft.title.lower()} on {service}",
-                          self.default_hypothesis(service, ft, params), "operator", notes)
+                          self.default_hypothesis(service, ft, params), "operator", notes,
+                          requires_approval=needs_approval, approval_reason=why if needs_approval else "")
 
-    def _spec(self, service, ft: FailureType, params, rationale, hyp, by, notes) -> ExperimentSpec:
+    def _spec(self, service, ft: FailureType, params, rationale, hyp, by, notes, requires_approval: bool = False,
+              approval_reason: str = "") -> ExperimentSpec:
         node = self.topo.services[service]
         container = node.container or f"{self.settings.compose_project}-{service}-1"
         return ExperimentSpec(
@@ -182,6 +197,7 @@ class Planner:
             planned_by=by, planner_notes=notes,
             reproduce=reproduce_commands(ft.key, container, params, self.settings.compose_network,
                                          self.settings.pumba_image, self.settings.tc_image),
+            requires_approval=requires_approval, approval_reason=approval_reason,
         )
 
     # ------------------------------------------------------------------ llm
