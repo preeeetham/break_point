@@ -1,0 +1,276 @@
+"""Shared contracts between the agents. Every JSON file in reports/ validates against one of these."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------- topology
+class Edge(BaseModel):
+    src: str
+    dst: str
+    kind: Literal["depends_on", "env", "proxy", "documented", "observed"]
+    evidence: str = ""
+
+
+class ServiceNode(BaseModel):
+    name: str
+    image: str = ""
+    role: Literal["datastore", "app", "proxy", "ui", "other"] = "app"
+    stateful: bool = False
+    entrypoint: bool = False
+    health_port: Optional[int] = None
+    mem_limit_mb: Optional[int] = None
+    aliases: list[str] = []
+    chaos_relevant: bool = True
+    container: Optional[str] = None
+    state: Optional[str] = None
+    health: Optional[str] = None
+    restart_policy: Optional[str] = None
+
+
+class Criticality(BaseModel):
+    service: str
+    fan_in: int
+    transitive_dependents: list[str]
+    score: float
+    reasons: list[str]
+
+
+class Topology(BaseModel):
+    project: str
+    generated_at: datetime = Field(default_factory=utcnow)
+    services: dict[str, ServiceNode]
+    edges: list[Edge]
+    criticality: list[Criticality]
+    findings: list[str] = []
+
+    def direct_dependents(self, name: str) -> list[str]:
+        return sorted({e.src for e in self.edges if e.dst == name})
+
+    def dependencies(self, name: str) -> list[str]:
+        return sorted({e.dst for e in self.edges if e.src == name})
+
+    def transitive_dependents(self, name: str) -> list[str]:
+        seen: set[str] = set()
+        stack = [name]
+        while stack:
+            cur = stack.pop()
+            for d in self.direct_dependents(cur):
+                if d not in seen and d != name:
+                    seen.add(d)
+                    stack.append(d)
+        return sorted(seen)
+
+    def criticality_of(self, name: str) -> float:
+        for c in self.criticality:
+            if c.service == name:
+                return c.score
+        return 0.0
+
+    def relevant_services(self) -> list[str]:
+        return [n for n, s in self.services.items() if s.chaos_relevant]
+
+
+# ---------------------------------------------------------------- observation
+class WindowStats(BaseModel):
+    sample_count: int = 0
+    success_rate: Optional[float] = None
+    p50_ms: Optional[float] = None
+    p95_ms: Optional[float] = None
+    p99_ms: Optional[float] = None
+    by_operation: dict[str, dict[str, Any]] = {}
+    status_counts: dict[str, int] = {}
+
+
+class Thresholds(BaseModel):
+    abort_error_rate_above: float
+    abort_p95_ms_above: float
+    trailing_samples: int
+    non_target_health_failures_in_a_row: int
+    max_experiment_seconds: int
+    watchdog_grace_seconds: int
+    recovery_success_rate_at_least: float
+    recovery_p95_ms_below: float
+    recovery_consecutive_checks: int
+    recovery_timeout_seconds: int
+    baseline_p95_ms: Optional[float] = None
+
+
+class Baseline(BaseModel):
+    captured_at: datetime
+    duration_s: float
+    ditto_url: str
+    api: WindowStats
+    health_availability: dict[str, Optional[float]]
+    thresholds: Thresholds
+    notes: list[str] = []
+
+
+class HealthSummary(BaseModel):
+    service: str
+    ticks: int
+    alive_ok_fraction: Optional[float] = None
+    ready_ok_fraction: Optional[float] = None
+    docker_unhealthy_seen: bool = False
+    container_down_seen: bool = False
+
+
+# ---------------------------------------------------------------- planning
+class Hypothesis(BaseModel):
+    statement: str
+    expected_affected: list[str] = []
+    expected_max_error_rate: float = 1.0
+    expected_recovery_s: float = 30.0
+
+
+class ExperimentSpec(BaseModel):
+    experiment_id: str
+    target_service: str
+    container: str
+    failure_type: str
+    parameters: dict[str, Any] = {}
+    rationale: str
+    hypothesis: Hypothesis
+    criticality_score: float
+    planned_by: Literal["llm", "deterministic", "operator"]
+    planner_notes: list[str] = []
+    reproduce: list[str] = []
+
+
+# ---------------------------------------------------------------- experiment report
+class TimelineEvent(BaseModel):
+    at: datetime
+    t_plus_s: float
+    event: str
+    detail: str = ""
+
+
+class Finding(BaseModel):
+    code: str
+    severity: Literal["info", "low", "medium", "high", "critical"]
+    title: str
+    evidence: str
+
+
+class SafetyOutcome(BaseModel):
+    aborted_early: bool = False
+    abort_reason: Optional[str] = None
+    abort_detail: dict[str, Any] = {}
+    watchdog_fired: bool = False
+    operator_stop: bool = False
+    thresholds: Thresholds
+
+
+class RecoveryOutcome(BaseModel):
+    recovered: bool
+    recovered_at: Optional[datetime] = None
+    time_to_recover_s: Optional[float] = None
+    outage_duration_s: Optional[float] = None
+    auto_restarted_by_docker: Optional[bool] = None
+    remediation_actions: list[str] = []
+    data_integrity_ok: Optional[bool] = None
+    data_integrity_detail: str = ""
+
+
+class HypothesisResult(BaseModel):
+    held: Optional[bool] = None
+    observed_max_error_rate: Optional[float] = None
+    observed_recovery_s: Optional[float] = None
+    unexpected_affected: list[str] = []
+    notes: str = ""
+
+
+class ExperimentReport(BaseModel):
+    schema_version: str = "1.0"
+    experiment_id: str
+    started_at: datetime
+    ended_at: datetime
+    target: dict[str, str]
+    failure_type: str
+    parameters: dict[str, Any]
+    rationale: str
+    hypothesis: Hypothesis
+    hypothesis_result: HypothesisResult
+    criticality_score: float
+    planned_by: str
+    baseline: WindowStats
+    during: WindowStats
+    after: WindowStats
+    health: list[HealthSummary]
+    recovery: RecoveryOutcome
+    safety: SafetyOutcome
+    affected_services_observed: list[str]
+    findings: list[Finding]
+    timeline: list[TimelineEvent]
+    resources: dict[str, Any] = {}
+    reproduce: list[str] = []
+    raw_logs_ref: str = ""
+    status: Literal["completed", "aborted", "failed", "skipped"]
+    error: Optional[str] = None
+
+
+# ---------------------------------------------------------------- downstream agents
+class RiskAssessment(BaseModel):
+    experiment_id: str
+    assessed_at: datetime = Field(default_factory=utcnow)
+    target_service: str
+    failure_type: str
+    severity: float
+    level: Literal["low", "medium", "high", "critical"]
+    blast_radius: int
+    user_impact: float
+    recovery_s: Optional[float]
+    factors: dict[str, float]
+    findings: list[Finding]
+    summary: str
+    production_implication: str
+    generated_by: Literal["llm+rules", "rules"]
+
+
+class Recommendation(BaseModel):
+    title: str
+    category: Literal["configuration", "architecture", "observability", "operations", "code"]
+    effort: Literal["S", "M", "L"]
+    confidence: float
+    rationale: str
+    steps: list[str]
+    verify: list[str]
+    references: list[str] = []
+
+
+class FixRecommendation(BaseModel):
+    experiment_id: str
+    generated_at: datetime = Field(default_factory=utcnow)
+    target_service: str
+    failure_type: str
+    risk_level: str
+    recommendations: list[Recommendation]
+    advisory_only: bool = True
+    generated_by: Literal["llm+rules", "rules"]
+
+
+class ServiceScore(BaseModel):
+    service: str
+    score: Optional[float]
+    grade: str
+    experiments: int
+    worst_success_rate: Optional[float] = None
+    slowest_recovery_s: Optional[float] = None
+    findings: int = 0
+    notes: list[str] = []
+
+
+class Scorecard(BaseModel):
+    generated_at: datetime = Field(default_factory=utcnow)
+    project: str
+    overall_score: Optional[float]
+    ranking: list[ServiceScore]
+    experiments_total: int
+    summary: str

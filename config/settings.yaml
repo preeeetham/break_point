@@ -1,0 +1,14 @@
+# Defaults. Anything here can be overridden in .env (see .env.example) or the environment.
+compose_project: faultline
+compose_file: deploy/docker-compose.yml
+nginx_conf: deploy/nginx/nginx.conf
+ditto_url: http://127.0.0.1:8080
+prometheus_url: http://127.0.0.1:9090
+llm_provider: ollama
+llm_model: phi4-mini
+llm_timeout_s: 120
+probe_rps: 4
+health_interval_s: 3
+pumba_image: gaiaadm/pumba:latest
+tc_image: ghcr.io/alexei-led/pumba-alpine-nettools:latest
+dashboard_port: 8765

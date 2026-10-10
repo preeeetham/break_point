@@ -1,0 +1,10 @@
+# Runtime dependencies (mirrors [project.dependencies] in pyproject.toml).
+# Prefer `pip install -e .` so the `faultline` console script is installed too.
+docker>=7
+requests>=2.31
+pydantic>=2.6
+pyyaml>=6
+rich>=13
+
+# Development
+pytest>=8

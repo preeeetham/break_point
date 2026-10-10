@@ -1,0 +1,143 @@
+"""The blackboard: a reports/ directory every agent reads and writes. No message bus needed."""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any, Optional
+
+from pydantic import BaseModel
+
+from ..schemas import Baseline, ExperimentReport, FixRecommendation, RiskAssessment, Scorecard, Topology
+
+
+class ReportStore:
+    def __init__(self, root: Path | str):
+        self.root = Path(root)
+        for sub in ("experiments", "risk", "fixes", "logs"):
+            (self.root / sub).mkdir(parents=True, exist_ok=True)
+
+    # ---------------------------------------------------------- generic
+    def _write(self, path: Path, model: BaseModel | dict) -> Path:
+        data = model.model_dump(mode="json") if isinstance(model, BaseModel) else model
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        tmp.replace(path)
+        return path
+
+    def _read(self, path: Path) -> Optional[dict]:
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return None
+
+    # ---------------------------------------------------------- topology / baseline
+    def write_topology(self, topo: Topology) -> Path:
+        return self._write(self.root / "topology.json", topo)
+
+    def topology(self) -> Optional[Topology]:
+        d = self._read(self.root / "topology.json")
+        return Topology.model_validate(d) if d else None
+
+    def write_baseline(self, b: Baseline) -> Path:
+        return self._write(self.root / "baseline.json", b)
+
+    def baseline(self) -> Optional[Baseline]:
+        d = self._read(self.root / "baseline.json")
+        return Baseline.model_validate(d) if d else None
+
+    # ---------------------------------------------------------- experiments
+    def write_experiment(self, r: ExperimentReport) -> Path:
+        return self._write(self.root / "experiments" / f"{r.experiment_id}.json", r)
+
+    def experiment_ids(self) -> list[str]:
+        files = sorted((self.root / "experiments").glob("*.json"), key=lambda p: p.stat().st_mtime)
+        return [p.stem for p in files]
+
+    def experiment(self, eid: str) -> Optional[ExperimentReport]:
+        d = self._read(self.root / "experiments" / f"{eid}.json")
+        return ExperimentReport.model_validate(d) if d else None
+
+    def experiments(self) -> list[ExperimentReport]:
+        out = []
+        for eid in self.experiment_ids():
+            r = self.experiment(eid)
+            if r:
+                out.append(r)
+        return out
+
+    def experiment_dir(self, eid: str) -> Path:
+        p = self.root / "experiments" / eid
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # ---------------------------------------------------------- risk / fix / scorecard
+    def write_risk(self, r: RiskAssessment) -> Path:
+        return self._write(self.root / "risk" / f"{r.experiment_id}.json", r)
+
+    def risk(self, eid: str) -> Optional[RiskAssessment]:
+        d = self._read(self.root / "risk" / f"{eid}.json")
+        return RiskAssessment.model_validate(d) if d else None
+
+    def write_fix(self, f: FixRecommendation) -> Path:
+        return self._write(self.root / "fixes" / f"{f.experiment_id}.json", f)
+
+    def fix(self, eid: str) -> Optional[FixRecommendation]:
+        d = self._read(self.root / "fixes" / f"{eid}.json")
+        return FixRecommendation.model_validate(d) if d else None
+
+    def write_scorecard(self, s: Scorecard) -> Path:
+        return self._write(self.root / "scorecard.json", s)
+
+    def scorecard(self) -> Optional[Scorecard]:
+        d = self._read(self.root / "scorecard.json")
+        return Scorecard.model_validate(d) if d else None
+
+    # ---------------------------------------------------------- coordination files
+    @property
+    def stop_file(self) -> Path:
+        return self.root / "STOP"
+
+    def stop_requested(self) -> bool:
+        return self.stop_file.exists()
+
+    def request_stop(self, reason: str = "operator") -> None:
+        self.stop_file.write_text(f"{reason} {time.time()}\n")
+
+    def clear_stop(self) -> None:
+        if self.stop_file.exists():
+            self.stop_file.unlink()
+
+    @property
+    def lock_file(self) -> Path:
+        return self.root / "ACTIVE_EXPERIMENT.json"
+
+    def set_active(self, data: dict[str, Any]) -> None:
+        self._write(self.lock_file, data)
+
+    def active(self) -> Optional[dict]:
+        return self._read(self.lock_file)
+
+    def clear_active(self) -> None:
+        if self.lock_file.exists():
+            self.lock_file.unlink()
+
+    def write_live(self, data: dict[str, Any]) -> None:
+        data["updated_at"] = time.time()
+        self._write(self.root / "live.json", data)
+
+    def live(self) -> Optional[dict]:
+        return self._read(self.root / "live.json")
+
+    def write_heartbeat(self, name: str, data: dict[str, Any]) -> None:
+        data["at"] = time.time()
+        self._write(self.root / f"{name}.heartbeat.json", data)
+
+    def heartbeat(self, name: str) -> Optional[dict]:
+        return self._read(self.root / f"{name}.heartbeat.json")
+
+    def append_log(self, name: str, line: str) -> None:
+        with (self.root / "logs" / f"{name}.log").open("a") as f:
+            f.write(line.rstrip("\n") + "\n")

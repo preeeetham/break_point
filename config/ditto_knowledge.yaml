@@ -1,0 +1,27 @@
+# Documented knowledge about Eclipse Ditto that cannot be derived from docker-compose alone.
+# The topology mapper layers these facts on top of what it parses from compose, env vars and nginx.
+health_port: 7626
+cluster_alias: ditto-cluster
+roles:            # overrides for role guessing
+  mongodb: datastore
+  nginx: proxy
+  ditto-ui: ui
+  swagger-ui: ui
+  # observability stack shipped in deploy/docker-compose.yml: not part of the system under test
+  prometheus: other
+  grafana: other
+  cadvisor: other
+  blackbox: other
+documented_edges:   # src depends on dst; evidence strings cite Ditto docs
+  - {src: gateway, dst: policies, evidence: "gateway asks policies to authorise every request (architecture-overview)"}
+  - {src: gateway, dst: things, evidence: "gateway forwards thing commands to things over the Pekko cluster"}
+  - {src: gateway, dst: things-search, evidence: "gateway forwards /search to things-search"}
+  - {src: gateway, dst: connectivity, evidence: "gateway forwards connection management to connectivity"}
+  - {src: things, dst: policies, evidence: "things enforces policies on every command"}
+  - {src: things-search, dst: policies, evidence: "search results are filtered by policy enforcement"}
+  - {src: things-search, dst: things, evidence: "search index is built from thing events (eventually consistent)"}
+  - {src: connectivity, dst: things, evidence: "connections publish to and subscribe from things"}
+  - {src: connectivity, dst: policies, evidence: "connectivity enforces policies for inbound/outbound messages"}
+references:
+  - https://eclipse.dev/ditto/architecture-overview.html
+  - https://github.com/eclipse-ditto/ditto/issues/1865

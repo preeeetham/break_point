@@ -1,0 +1,100 @@
+# Prometheus scrape config for the Faultline sandbox.
+# 5s resolution so short chaos experiments (seconds to a few minutes) are visible.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Container CPU / memory / network per compose service
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Ditto's own Prometheus endpoints (Kamon) on each service
+  - job_name: ditto_metrics
+    static_configs:
+      - targets: ["policies:9095"]
+        labels: { service: policies }
+      - targets: ["things:9095"]
+        labels: { service: things }
+      - targets: ["things-search:9095"]
+        labels: { service: things-search }
+      - targets: ["connectivity:9095"]
+        labels: { service: connectivity }
+      - targets: ["gateway:9095"]
+        labels: { service: gateway }
+
+  # Liveness as seen from outside the JVM
+  - job_name: probe_ditto_alive
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://policies:7626/alive"]
+        labels: { service: policies }
+      - targets: ["http://things:7626/alive"]
+        labels: { service: things }
+      - targets: ["http://things-search:7626/alive"]
+        labels: { service: things-search }
+      - targets: ["http://connectivity:7626/alive"]
+        labels: { service: connectivity }
+      - targets: ["http://gateway:7626/alive"]
+        labels: { service: gateway }
+    # Standard blackbox-exporter relabeling, defined once here and reused by the
+    # other probe_* jobs below: the configured target becomes the probe parameter
+    # + instance label, and the scrape itself goes to the exporter.
+    # (Prometheus rejects unknown top-level keys, so the anchor lives inside a job.)
+    relabel_configs: &probe_relabel
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # Readiness: the interesting one. We want to know whether /ready keeps reporting
+  # OK while a dependency (MongoDB, a peer service) is actually down.
+  - job_name: probe_ditto_ready
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://policies:7626/ready"]
+        labels: { service: policies }
+      - targets: ["http://things:7626/ready"]
+        labels: { service: things }
+      - targets: ["http://things-search:7626/ready"]
+        labels: { service: things-search }
+      - targets: ["http://connectivity:7626/ready"]
+        labels: { service: connectivity }
+      - targets: ["http://gateway:7626/ready"]
+        labels: { service: gateway }
+    relabel_configs: *probe_relabel
+
+  # What a user would see at the edge
+  - job_name: probe_http_edge
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://nginx/health"]
+        labels: { service: entrypoint-health }
+      - targets: ["http://ditto-ui:8080/"]
+        labels: { service: ditto-ui }
+    relabel_configs: *probe_relabel
+
+  # MongoDB reachability
+  - job_name: probe_tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ["mongodb:27017"]
+        labels: { service: mongodb }
+    relabel_configs: *probe_relabel
+
+  # Faultline's own probe/metrics endpoint on the host (optional; may be down)
+  - job_name: faultline_probe
+    static_configs:
+      - targets: ["host.docker.internal:9200"]

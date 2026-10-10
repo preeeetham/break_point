@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faultline"
+version = "0.1.0"
+description = "AI-driven chaos engineering for Eclipse Ditto: map dependencies, plan experiments, inject failures within safety limits, observe, and report."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "docker>=7",
+    "requests>=2.31",
+    "pydantic>=2.6",
+    "pyyaml>=6",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+faultline = "faultline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["faultline*"]
+
+[tool.setuptools.package-data]
+"faultline.dashboard" = ["static/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

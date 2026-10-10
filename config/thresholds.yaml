@@ -1,0 +1,31 @@
+# Safety limits. Enforced by code, never by the model. The LLM may make an experiment *more* conservative
+# (shorter, lighter) but can not raise any of these.
+abort:
+  probe_error_rate_above: 0.30        # over the trailing N synthetic requests
+  trailing_samples: 10
+  p95_latency_ms_floor: 3000          # abort when p95 > max(floor, factor x baseline p95)
+  p95_latency_factor_of_baseline: 5
+  non_target_health_failures_in_a_row: 3   # a service outside the hypothesis' blast radius going down
+  max_experiment_seconds: 90          # hard wall clock per experiment
+  watchdog_grace_seconds: 15          # independent timer fires at max + grace even if the main loop hangs
+
+recovery:
+  success_rate_at_least: 0.95
+  p95_latency_factor_of_baseline: 2.0
+  p95_latency_ms_floor: 300
+  consecutive_checks: 3               # checks are 2 s apart
+  soak_seconds: 20                    # keep watching after a recovery candidate; a relapse resets the wait
+  timeout_seconds: 300                # Java services need 60-120 s to cold start and rejoin the cluster
+  escalate_restart_target_at: 0.5     # fraction of timeout after which the target is restarted
+  escalate_restart_dependents_at: 0.8 # ... and then its direct dependents (Ditto discussion #1861)
+
+policy:
+  protected:
+    mongodb:
+      reason: "sole datastore for every service; Day-1 policy is degrade-only, never a full outage"
+      allowed_failure_types: [network_delay, network_loss, cpu_stress, disk_pressure, db_flood]
+  skip_roles: [ui]
+  max_experiments_per_run: 10
+  pause_between_experiments_s: 30
+  pre_experiment_window_s: 20         # steady-state window measured right before each injection
+  min_pre_success_rate: 0.95          # refuse to inject into an already-sick system

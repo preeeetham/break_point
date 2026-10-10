@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local configuration (secrets, API keys)
+.env
+deploy/.env
+
+# Blackboard output: every run writes here. Keep the directory, drop the contents.
+reports/*
+!reports/.gitkeep
+
+# Logs
+*.log
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
