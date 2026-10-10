@@ -587,7 +587,7 @@ def resolve_experiment(raw: _Raw, ctx: ScoutContext) -> SuggestedExperiment:
     """Pick the first preference that is a real catalog type, applies to the target's role, and is
     allowed by the safety policy. A prediction that nominates an experiment the policy forbids is
     useless to the planner, so the blocked-everything case says so instead of lying."""
-    blocked: list[str] = []
+    blocked: list[tuple[str, str, str]] = []   # (failure_type, target, why)
     for ft_key, target in raw.experiment_prefs:
         ft = CATALOG.get(ft_key)
         if ft is None or target not in ctx.topology.services:
@@ -596,11 +596,20 @@ def resolve_experiment(raw: _Raw, ctx: ScoutContext) -> SuggestedExperiment:
             continue
         ok, why = ctx.policy.allows(target, ft_key)
         if not ok:
-            if why:
-                blocked.append(why)
+            blocked.append((ft_key, target, why))
             continue
+        # If the direct test was refused by policy we are suggesting a substitute, and the record has
+        # to say so: otherwise the reason reads "take the single instance away" next to a latency
+        # injection that deliberately leaves it running.
+        note = ""
+        if blocked:
+            first_ft, first_target, _ = blocked[0]
+            reason = (ctx.policy.protected.get(first_target) or {}).get("reason", "protected by policy")
+            note = (f"`{first_ft}` on `{first_target}` is the direct test but the safety policy "
+                    f"forbids it ({reason}); `{ft_key}` only degrades the target, so it tests this "
+                    f"prediction less completely. `--allow-protected` runs the direct one.")
         return SuggestedExperiment(failure_type=ft_key, target_service=target,
-                                   reason=raw.experiment_reason, policy_note="")
+                                   reason=raw.experiment_reason, policy_note=note)
     first = raw.experiment_prefs[0] if raw.experiment_prefs else ("container_stop", raw.services[0])
     targets = [t for _, t in raw.experiment_prefs if t in ctx.topology.services]
     if targets and not any(ctx.node(t).chaos_relevant for t in targets):
@@ -608,8 +617,8 @@ def resolve_experiment(raw: _Raw, ctx: ScoutContext) -> SuggestedExperiment:
                 f"{ctx.node(targets[0]).role}), so Faultline will not inject into it; this prediction "
                 f"is reported for completeness and cannot be confirmed by an experiment")
     elif blocked:
-        note = (blocked[0] + " -- run it with --allow-protected to confirm this prediction, or treat "
-                "it as untestable under the current safety policy")
+        note = (blocked[0][2] + " -- run it with --allow-protected to confirm this prediction, or "
+                "treat it as untestable under the current safety policy")
     else:
         note = ("no catalog failure type applies to this target's role, so this prediction cannot be "
                 "confirmed by an experiment as configured")
@@ -628,9 +637,9 @@ TEMPLATES: dict[str, str] = {
     "no_redundancy": ("One container is the whole service. Losing {svc} is a full outage of "
                       "everything behind it for as long as it takes to come back, with no second "
                       "instance to absorb the traffic in the meantime."),
-    "no_resource_limits": ("{svc} can take the host down with it. Without a cgroup limit, a runaway "
-                           "loop or a memory leak inside {svc} starves every other container on the "
-                           "same machine instead of being throttled or OOM-killed in isolation."),
+    "no_resource_limits": ("{svc} can take the host down with it. With that limit unset nothing "
+                           "bounds {svc}'s share of the machine, so a spike inside it starves every "
+                           "other container instead of being throttled inside its own cgroup."),
     "weak_restart_policy": ("A single crash is a permanent outage. Nothing restarts {svc}, so the "
                             "first unhandled exception or OOM kill ends the service until a human "
                             "notices and intervenes."),

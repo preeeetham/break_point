@@ -741,7 +741,11 @@ def test_mongodb_no_redundancy_resolves_to_a_degrade_only_experiment(policy_raw)
     assert se.failure_type == "network_delay"
     assert CATALOG[se.failure_type].degrade_only is True
     assert se.failure_type in policy_raw["policy"]["protected"]["mongodb"]["allowed_failure_types"]
-    assert se.policy_note == ""      # it resolved cleanly; no excuse needed
+    # It resolved to a runnable experiment, but a substitution is not a clean resolution: the note
+    # must say that the direct test was refused, or the record would read "take the single instance
+    # away" next to a latency injection that deliberately leaves it running.
+    assert "container_stop" in se.policy_note and "direct test" in se.policy_note
+    assert "--allow-protected" in se.policy_note
 
 
 def test_resolve_experiment_explains_a_policy_that_blocks_everything(policy_raw):
@@ -1340,7 +1344,9 @@ def test_real_ditto_mongodb_experiment_is_degrade_only(real_report):
     assert CATALOG[se.failure_type].degrade_only is True
     assert se.failure_type not in ("container_stop", "container_crash", "container_pause",
                                    "network_partition")
-    assert se.policy_note == ""
+    # The substitution is disclosed: a degrade-only stand-in tests "there is only one instance" less
+    # completely than taking the instance away, and the record says so rather than implying parity.
+    assert "container_stop" in se.policy_note and "--allow-protected" in se.policy_note
 
 
 def test_real_ditto_every_prediction_is_labelled_and_sane(real_report):
