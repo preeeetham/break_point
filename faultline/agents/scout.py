@@ -692,37 +692,103 @@ def analyse(ctx: ScoutContext) -> tuple[list[PredictedWeakness], list[str]]:
 # deterministic finding, and optionally point out that several of them are the same story. If it is
 # unreachable, slow, or answers something that does not validate, every deterministic finding still
 # ships with its templated prose.
-LLM_SYSTEM = (
+# Two separate, small calls instead of one large one. A 20-weakness report sent whole is ~14k
+# characters and, with the reply, exceeds the per-minute token budget of the free tiers these models
+# are usually served from -- and an all-or-nothing call means one 429 costs every explanation. Prose
+# is therefore requested in small chunks and the systemic-pattern narrative in one tiny call of its
+# own, so each failure costs only its own piece and the rest still get model prose.
+LLM_CHUNK_SIZE = 7
+EVIDENCE_EXCERPT_CHARS = 180
+# Generous enough that a reasoning model can think before it emits the object. Too small and the
+# reply is truncated mid-JSON, which some providers reject outright rather than returning the
+# fragment -- that looks like a hard failure but is really a budget that was set too low.
+PROSE_MAX_TOKENS = 900
+PATTERN_MAX_TOKENS = 700
+
+PROSE_SYSTEM = (
     "You are an SRE reviewing the STATIC configuration of a docker-compose deployment. A "
     "deterministic analyser has already decided which weaknesses exist; that list is final and you "
-    "cannot add, remove, re-rank or re-score anything in it. Your only jobs: (1) for each weakness "
-    "id, write ONE plain-English sentence saying why it matters to a user of the system -- concrete, "
-    "no hedging, no restating the evidence verbatim; (2) optionally note up to two SYSTEMIC patterns "
-    "where several of the listed weaknesses are really one story (for example several critical "
-    "services sharing the same unlimited-resource gap and the same traffic-spike exposure). Each "
-    "pattern may only cite weakness ids from the list. Nothing has been measured: these are "
-    "predictions from configuration, so do not claim anything was observed. "
-    'Reply with JSON only: {"explanations": {"<weakness_id>": "<one sentence>"}, '
-    '"systemic_patterns": [{"title": str, "weakness_ids": [str], "narrative": str}]}.'
+    "cannot add to it, remove from it, re-rank it or re-score it. For each weakness id, write ONE "
+    "plain-English sentence saying why it matters to a user of the system: concrete, no hedging, and "
+    "do not just restate the evidence. Nothing has been measured -- these are predictions from "
+    "configuration, so never claim anything was observed. "
+    'Reply with JSON only: {"explanations": {"<weakness_id>": "<one sentence>"}}.'
+)
+
+PATTERN_SYSTEM = (
+    "You are an SRE reviewing predicted weaknesses in a docker-compose deployment, all of them "
+    "derived deterministically from static configuration -- nothing has been measured. Identify at "
+    "most two SYSTEMIC patterns where several of the listed weaknesses are really one story (for "
+    "example several critical services sharing the same unlimited-resource gap and the same "
+    "traffic-spike exposure). Each pattern must cite at least two weakness ids from the list and may "
+    "cite no id that is not in it. Do not invent a weakness that is not listed. "
+    'Reply with JSON only: {"systemic_patterns": [{"title": str, "weakness_ids": [str], '
+    '"narrative": str}]}.'
 )
 
 
-def _llm_payload(weaknesses: list[PredictedWeakness], ctx: ScoutContext) -> str:
+def _prose_payload(weaknesses: list[PredictedWeakness], ctx: ScoutContext) -> str:
+    def excerpt(text: str) -> str:
+        return text if len(text) <= EVIDENCE_EXCERPT_CHARS else text[: EVIDENCE_EXCERPT_CHARS - 1] + "\u2026"
+
     return json.dumps({
         "project": ctx.topology.project,
         "note": "predicted from static configuration; nothing has been injected or measured",
-        "services": {n: {"role": ctx.node(n).role,
-                         "criticality": ctx.topology.criticality_of(n),
-                         "transitive_dependents": ctx.topology.transitive_dependents(n)}
-                     for n in ctx.candidates()},
         "weaknesses": [{"weakness_id": w.weakness_id, "category": w.category, "services": w.services,
-                        "title": w.title, "evidence": w.evidence,
+                        "dependents": sorted({d for s in w.services
+                                              for d in ctx.topology.transitive_dependents(s)}),
+                        "evidence": excerpt(w.evidence),
                         "predicted_severity": w.predicted_severity,
-                        "predicted_level": w.predicted_level,
                         "would_be_tested_by": f"{w.suggested_experiment.failure_type} on "
                                               f"{w.suggested_experiment.target_service}"}
                        for w in weaknesses],
     }, default=str)
+
+
+def _pattern_payload(weaknesses: list[PredictedWeakness], ctx: ScoutContext) -> str:
+    return json.dumps({
+        "project": ctx.topology.project,
+        "weaknesses": [{"weakness_id": w.weakness_id, "category": w.category, "services": w.services,
+                        "predicted_severity": w.predicted_severity,
+                        "would_be_tested_by": w.suggested_experiment.failure_type}
+                       for w in weaknesses],
+    }, default=str)
+
+
+def _apply_prose(data: dict, known: dict[str, PredictedWeakness]) -> int:
+    """Accept only well-formed prose for ids the deterministic checks actually produced."""
+    replaced = 0
+    explanations = data.get("explanations")
+    if not isinstance(explanations, dict):
+        return 0
+    for wid, text in explanations.items():
+        w = known.get(str(wid))
+        if w is None or not isinstance(text, str):
+            continue
+        text = text.strip()
+        if 0 < len(text) <= MAX_PROSE_CHARS:
+            w.why_it_matters = text
+            w.generated_by = "llm+rules"
+            replaced += 1
+    return replaced
+
+
+def _collect_patterns(data: dict, known: dict[str, PredictedWeakness]) -> list[SystemicPattern]:
+    patterns: list[SystemicPattern] = []
+    for item in (data.get("systemic_patterns") or []):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        narrative = str(item.get("narrative") or "").strip()
+        ids = [str(i) for i in (item.get("weakness_ids") or []) if str(i) in known]
+        # A pattern citing fewer than two of the deterministic findings is the model inventing one.
+        if not title or not narrative or len(ids) < 2 or len(narrative) > MAX_PROSE_CHARS:
+            continue
+        patterns.append(SystemicPattern(title=title[:160], weakness_ids=ids,
+                                        narrative=f"{LLM_EXTRA_LABEL} {narrative}"))
+        if len(patterns) >= MAX_SYSTEMIC_PATTERNS:
+            break
+    return patterns
 
 
 def _llm_pass(
@@ -738,46 +804,30 @@ def _llm_pass(
     if not weaknesses:
         return False, [], notes
 
-    data = llm.chat_json(LLM_SYSTEM, _llm_payload(weaknesses, ctx), max_tokens=1400)
-    if not data:
-        notes.append(f"LLM ({llm.describe()}) gave no usable answer "
-                     f"({llm.last_error or 'invalid JSON'}); templated prose used throughout")
-        return False, [], notes
-
     known = {w.weakness_id: w for w in weaknesses}
     replaced = 0
-    explanations = data.get("explanations")
-    if isinstance(explanations, dict):
-        for wid, text in explanations.items():
-            w = known.get(str(wid))
-            if w is None or not isinstance(text, str):
-                continue
-            text = text.strip()
-            if 0 < len(text) <= MAX_PROSE_CHARS:
-                w.why_it_matters = text
-                w.generated_by = "llm+rules"
-                replaced += 1
-    if replaced < len(weaknesses):
+    failures = 0
+    chunks = [weaknesses[i : i + LLM_CHUNK_SIZE] for i in range(0, len(weaknesses), LLM_CHUNK_SIZE)]
+    for chunk in chunks:
+        data = llm.chat_json(PROSE_SYSTEM, _prose_payload(chunk, ctx), max_tokens=PROSE_MAX_TOKENS)
+        if not data:
+            failures += 1
+            continue
+        replaced += _apply_prose(data, known)
+    if failures:
+        notes.append(f"LLM ({llm.describe()}) failed on {failures} of {len(chunks)} prose batch(es) "
+                     f"({llm.last_error or 'invalid JSON'}); those predictions kept their templated text")
+    if replaced < len(weaknesses) and not failures:
         notes.append(f"LLM wrote prose for {replaced}/{len(weaknesses)} prediction(s); "
                      f"the rest kept their templated text")
 
     patterns: list[SystemicPattern] = []
-    for item in (data.get("systemic_patterns") or []):
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or "").strip()
-        narrative = str(item.get("narrative") or "").strip()
-        ids = [str(i) for i in (item.get("weakness_ids") or []) if str(i) in known]
-        # A pattern that cites nothing from the deterministic list is the model inventing a finding.
-        if not title or not narrative or len(ids) < 2 or len(narrative) > MAX_PROSE_CHARS:
-            continue
-        patterns.append(SystemicPattern(
-            title=title[:160],
-            weakness_ids=ids,
-            narrative=f"{LLM_EXTRA_LABEL} {narrative}",
-        ))
-        if len(patterns) >= MAX_SYSTEMIC_PATTERNS:
-            break
+    data = llm.chat_json(PATTERN_SYSTEM, _pattern_payload(weaknesses, ctx), max_tokens=PATTERN_MAX_TOKENS)
+    if data:
+        patterns = _collect_patterns(data, known)
+    else:
+        notes.append(f"LLM ({llm.describe()}) gave no usable systemic-pattern answer "
+                     f"({llm.last_error or 'invalid JSON'}); the deterministic predictions stand alone")
     return replaced > 0, patterns, notes
 
 
