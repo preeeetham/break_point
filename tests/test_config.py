@@ -48,9 +48,6 @@ def test_settings_yaml_applies_known_keys_only(tmp_path, monkeypatch):
     assert s.reports_dir == "/abs/reports"  # absolute paths are kept as-is
 
 
-@pytest.mark.xfail(reason="faultline/config.py ENV_MAP applies the legacy OLLAMA_MODEL/OLLAMA_URL aliases after "
-                          "LLM_MODEL/LLM_BASE_URL, so a .env OLLAMA_MODEL overrides an explicit LLM_MODEL env var",
-                   strict=False)
 def test_explicit_llm_model_beats_dotenv_ollama_alias(tmp_path, monkeypatch):
     import faultline.config as cfg
 

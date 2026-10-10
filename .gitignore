@@ -22,3 +22,6 @@ reports/*
 .DS_Store
 .idea/
 .vscode/
+
+# Onboarding: shallow clones of target repos
+.cache/

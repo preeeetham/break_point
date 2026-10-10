@@ -1,0 +1,492 @@
+{
+  "project": "bosch-ditto",
+  "generated_at": "2026-10-10T09:26:04.332183Z",
+  "services": {
+    "mongodb": {
+      "name": "mongodb",
+      "image": "docker.io/mongo:7.0",
+      "role": "datastore",
+      "stateful": true,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": 256,
+      "aliases": [
+        "mongodb"
+      ],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-mongodb-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "policies": {
+      "name": "policies",
+      "image": "docker.io/eclipse/ditto-policies:${DITTO_VERSION:-3.9.8}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "ditto-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-policies-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "things": {
+      "name": "things",
+      "image": "docker.io/eclipse/ditto-things:${DITTO_VERSION:-3.9.8}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "ditto-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-things-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "things-search": {
+      "name": "things-search",
+      "image": "docker.io/eclipse/ditto-things-search:${DITTO_VERSION:-3.9.8}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "ditto-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-things-search-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "connectivity": {
+      "name": "connectivity",
+      "image": "docker.io/eclipse/ditto-connectivity:${DITTO_VERSION:-3.9.8}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 768,
+      "aliases": [
+        "ditto-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-connectivity-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "gateway": {
+      "name": "gateway",
+      "image": "docker.io/eclipse/ditto-gateway:${DITTO_VERSION:-3.9.8}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "ditto-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-gateway-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "ditto-ui": {
+      "name": "ditto-ui",
+      "image": "docker.io/eclipse/ditto-ui:${DITTO_VERSION:-3.9.8}",
+      "role": "ui",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": 32,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "bosch-ditto-ditto-ui-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "nginx": {
+      "name": "nginx",
+      "image": "docker.io/nginx:1.27-alpine",
+      "role": "proxy",
+      "stateful": false,
+      "entrypoint": true,
+      "health_port": null,
+      "mem_limit_mb": 32,
+      "aliases": [],
+      "chaos_relevant": true,
+      "container": "bosch-ditto-nginx-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "prometheus": {
+      "name": "prometheus",
+      "image": "docker.io/prom/prometheus:v2.55.1",
+      "role": "other",
+      "stateful": false,
+      "entrypoint": true,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "bosch-ditto-prometheus-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "cadvisor": {
+      "name": "cadvisor",
+      "image": "gcr.io/cadvisor/cadvisor:v0.49.1",
+      "role": "other",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "bosch-ditto-cadvisor-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "blackbox": {
+      "name": "blackbox",
+      "image": "docker.io/prom/blackbox-exporter:v0.25.0",
+      "role": "other",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "bosch-ditto-blackbox-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "grafana": {
+      "name": "grafana",
+      "image": "docker.io/grafana/grafana:11.3.0",
+      "role": "other",
+      "stateful": true,
+      "entrypoint": true,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "bosch-ditto-grafana-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    }
+  },
+  "edges": [
+    {
+      "src": "things",
+      "dst": "policies",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "things-search",
+      "dst": "policies",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "connectivity",
+      "dst": "policies",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "gateway",
+      "dst": "policies",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "nginx",
+      "dst": "gateway",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "grafana",
+      "dst": "prometheus",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "policies",
+      "dst": "mongodb",
+      "kind": "env",
+      "evidence": "env MONGO_DB_HOSTNAME=mongodb"
+    },
+    {
+      "src": "things",
+      "dst": "mongodb",
+      "kind": "env",
+      "evidence": "env MONGO_DB_HOSTNAME=mongodb"
+    },
+    {
+      "src": "things-search",
+      "dst": "mongodb",
+      "kind": "env",
+      "evidence": "env MONGO_DB_HOSTNAME=mongodb"
+    },
+    {
+      "src": "connectivity",
+      "dst": "mongodb",
+      "kind": "env",
+      "evidence": "env MONGO_DB_HOSTNAME=mongodb"
+    },
+    {
+      "src": "nginx",
+      "dst": "gateway",
+      "kind": "proxy",
+      "evidence": "proxy_pass \u2192 gateway"
+    },
+    {
+      "src": "nginx",
+      "dst": "ditto-ui",
+      "kind": "proxy",
+      "evidence": "proxy_pass \u2192 ditto-ui"
+    },
+    {
+      "src": "gateway",
+      "dst": "policies",
+      "kind": "documented",
+      "evidence": "gateway asks policies to authorise every request (architecture-overview)"
+    },
+    {
+      "src": "gateway",
+      "dst": "things",
+      "kind": "documented",
+      "evidence": "gateway forwards thing commands to things over the Pekko cluster"
+    },
+    {
+      "src": "gateway",
+      "dst": "things-search",
+      "kind": "documented",
+      "evidence": "gateway forwards /search to things-search"
+    },
+    {
+      "src": "gateway",
+      "dst": "connectivity",
+      "kind": "documented",
+      "evidence": "gateway forwards connection management to connectivity"
+    },
+    {
+      "src": "things",
+      "dst": "policies",
+      "kind": "documented",
+      "evidence": "things enforces policies on every command"
+    },
+    {
+      "src": "things-search",
+      "dst": "policies",
+      "kind": "documented",
+      "evidence": "search results are filtered by policy enforcement"
+    },
+    {
+      "src": "things-search",
+      "dst": "things",
+      "kind": "documented",
+      "evidence": "search index is built from thing events (eventually consistent)"
+    },
+    {
+      "src": "connectivity",
+      "dst": "things",
+      "kind": "documented",
+      "evidence": "connections publish to and subscribe from things"
+    },
+    {
+      "src": "connectivity",
+      "dst": "policies",
+      "kind": "documented",
+      "evidence": "connectivity enforces policies for inbound/outbound messages"
+    }
+  ],
+  "criticality": [
+    {
+      "service": "mongodb",
+      "fan_in": 4,
+      "transitive_dependents": [
+        "connectivity",
+        "gateway",
+        "nginx",
+        "policies",
+        "things",
+        "things-search"
+      ],
+      "score": 9.5,
+      "reasons": [
+        "6 services depend on it transitively",
+        "holds state",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "policies",
+      "fan_in": 4,
+      "transitive_dependents": [
+        "connectivity",
+        "gateway",
+        "nginx",
+        "things",
+        "things-search"
+      ],
+      "score": 5.0,
+      "reasons": [
+        "5 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "things",
+      "fan_in": 3,
+      "transitive_dependents": [
+        "connectivity",
+        "gateway",
+        "nginx",
+        "things-search"
+      ],
+      "score": 4.0,
+      "reasons": [
+        "4 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "grafana",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 3.5,
+      "reasons": [
+        "nothing depends on it",
+        "holds state",
+        "reachable from outside the sandbox",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "prometheus",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "grafana"
+      ],
+      "score": 2.5,
+      "reasons": [
+        "1 service depends on it transitively",
+        "reachable from outside the sandbox",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "connectivity",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "gateway",
+        "nginx"
+      ],
+      "score": 2.0,
+      "reasons": [
+        "2 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "things-search",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "gateway",
+        "nginx"
+      ],
+      "score": 2.0,
+      "reasons": [
+        "2 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "nginx",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 1.5,
+      "reasons": [
+        "nothing depends on it",
+        "reachable from outside the sandbox",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "ditto-ui",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "nginx"
+      ],
+      "score": 1.0,
+      "reasons": [
+        "1 service depends on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "gateway",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "nginx"
+      ],
+      "score": 1.0,
+      "reasons": [
+        "1 service depends on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "blackbox",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 0.5,
+      "reasons": [
+        "nothing depends on it",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "cadvisor",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 0.5,
+      "reasons": [
+        "nothing depends on it",
+        "no application health endpoint",
+        "single instance"
+      ]
+    }
+  ],
+  "findings": [
+    "mongodb: not referenced by any depends_on; 4 services reach it only via environment variables"
+  ]
+}

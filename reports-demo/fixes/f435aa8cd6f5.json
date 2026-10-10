@@ -1,0 +1,50 @@
+{
+  "experiment_id": "f435aa8cd6f5",
+  "generated_at": "2026-10-10T11:01:04.363542Z",
+  "target_service": "gateway",
+  "failure_type": "network_delay",
+  "risk_level": "low",
+  "recommendations": [
+    {
+      "title": "Set explicit timeouts end to end and add a circuit breaker at the API edge",
+      "category": "configuration",
+      "effort": "S",
+      "confidence": 0.8,
+      "rationale": "In experiment f435aa8cd6f5 (risk LOW 0.4/10), API success fell to 100% during injection, TTR 6 s. Latency injected into one hop propagated to the user as long hangs instead of fast failures. Without aligned timeouts each layer waits for the slowest one beneath it, request threads pile up, and the whole API degrades rather than the one slow path.",
+      "steps": [
+        "nginx: `proxy_connect_timeout 2s; proxy_send_timeout 10s; proxy_read_timeout 30s;` and `proxy_next_upstream timeout`.",
+        "Ditto gateway: lower the request timeout (`ditto.gateway.http.request-timeout` / `GATEWAY_HTTP_REQUEST_TIMEOUT`, default 60 s) to ~15 s; have clients send the `timeout` query parameter on commands (e.g. `?timeout=10s`) so Ditto fails fast instead of hanging.",
+        "Add a circuit breaker in front of the gateway (nginx `max_fails`/`fail_timeout`, or Envoy outlier detection) so a degraded backend sheds load for a few seconds instead of queuing.",
+        "Align Mongo driver `socketTimeoutMS` below the gateway timeout so the failure surfaces as a clean error with a cause."
+      ],
+      "verify": [
+        "Replay `network_delay` with the same latency: p95 is capped near the smallest configured timeout and the error budget burn is measurable rather than a hang.",
+        "No request in the probe log exceeds the nginx `proxy_read_timeout`."
+      ],
+      "references": [
+        "https://eclipse.dev/ditto/httpapi-concepts.html",
+        "https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_next_upstream"
+      ]
+    },
+    {
+      "title": "Baseline observability: SLO alert rules and chaos annotations in Grafana",
+      "category": "observability",
+      "effort": "S",
+      "confidence": 0.65,
+      "rationale": "In experiment f435aa8cd6f5 (risk LOW 0.4/10), API success fell to 100% during injection, TTR 6 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.",
+      "steps": [
+        "Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~\"5..\"}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.",
+        "Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.",
+        "Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs."
+      ],
+      "verify": [
+        "During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window."
+      ],
+      "references": [
+        "https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/"
+      ]
+    }
+  ],
+  "advisory_only": true,
+  "generated_by": "rules"
+}

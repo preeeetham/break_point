@@ -1,0 +1,94 @@
+{
+  "experiment_id": "f63b02a3c8ac",
+  "generated_at": "2026-10-10T11:01:04.364345Z",
+  "target_service": "things",
+  "failure_type": "container_pause",
+  "risk_level": "high",
+  "recommendations": [
+    {
+      "title": "Make readiness reflect subsystem health, and alert on /status/health",
+      "category": "configuration",
+      "effort": "M",
+      "confidence": 0.9,
+      "rationale": "In experiment f63b02a3c8ac (risk HIGH 6.2/10), API success fell to 0% during injection, TTR 26 s, findings: API success dropped to 0% during the fault; things-search kept reporting /ready=200 while the API was failing. The service kept answering `/ready` with 200 while the API was failing, so no orchestrator or alert could react. Ditto issue #1865 describes exactly this: the Pekko cluster was healthy but the persistence subsystem was not, and PR #1867 added a `subsystem-health` check under `management.health-checks.liveness-checks`.",
+      "steps": [
+        "Upgrade to a Ditto release containing PR #1867 (3.6+) and confirm `management.health-checks.liveness-checks.subsystem-health` is enabled.",
+        "Verify whether the equivalent subsystem check is wired into the readiness checks for your version; if not, add it (or treat `/status/health` as the readiness probe in compose/k8s instead of `/ready`).",
+        "Point the compose `healthcheck` of each Ditto service at `http://localhost:8558/status/health` (requires devops credentials or `DEVOPS_SECURED=false` in the lab) and fail on any `DOWN` component.",
+        "Add a Prometheus alert on `probe_success{job=\"ditto-health\"} == 0` and on the API error-rate SLO, not only on `/alive`."
+      ],
+      "verify": [
+        "Stop mongodb: within one healthcheck interval the Ditto services report `unhealthy` in `docker ps` and `/status/health` shows the persistence component `DOWN`.",
+        "The `health_check_masked_failure` finding no longer appears when the experiment is replayed."
+      ],
+      "references": [
+        "https://github.com/eclipse-ditto/ditto/issues/1865",
+        "https://github.com/eclipse-ditto/ditto/pull/1867",
+        "https://eclipse.dev/ditto/installation-operating.html"
+      ]
+    },
+    {
+      "title": "Automate recovery after dependency outages: reconnect/backoff, health-keyed restarts, alert rule",
+      "category": "operations",
+      "effort": "M",
+      "confidence": 0.85,
+      "rationale": "In experiment f63b02a3c8ac (risk HIGH 6.2/10), API success fell to 0% during injection, TTR 26 s, findings: API success dropped to 0% during the fault; things-search kept reporting /ready=200 while the API was failing. The service did not come back on its own once its dependency returned; the injector had to restart it. Ditto discussion #1861 reports the same symptom (Things did not reconnect to MongoDB after an outage). In production this is a page at 03:00 for something a restart policy could do.",
+      "steps": [
+        "Review the Pekko persistence / Mongo driver reconnect settings for the affected service (restart-on-failure backoff in `ditto-*.conf`); make sure the persistence actors are restarted with exponential backoff rather than stopped after N failures.",
+        "Add a Docker healthcheck that hits `/status/health` and an `autoheal` sidecar (or Kubernetes liveness probe) so an `unhealthy` service is restarted automatically \u2014 `restart: always` ignores health state.",
+        "Add a Prometheus alert: `probe_success{instance=~\"things|policies|gateway\"} == 0 for 1m` and `rate(http_requests_total{status=~\"5..\"}[2m]) / rate(http_requests_total[2m]) > 0.05 for 2m`.",
+        "Document a runbook entry: 'if X is unhealthy after Mongo returns, `docker compose restart X`' until the automated path is proven."
+      ],
+      "verify": [
+        "Replay the experiment; `recovery.remediation_actions` in the report must be empty and `recovered=true`.",
+        "The alert fires in Prometheus/Alertmanager during the outage window."
+      ],
+      "references": [
+        "https://github.com/eclipse-ditto/ditto/discussions/1861",
+        "https://github.com/willfarrell/docker-autoheal",
+        "https://eclipse.dev/ditto/installation-operating.html"
+      ]
+    },
+    {
+      "title": "Scale things horizontally and make clients retry with idempotent, ETag-guarded writes",
+      "category": "architecture",
+      "effort": "M",
+      "confidence": 0.8,
+      "rationale": "In experiment f63b02a3c8ac (risk HIGH 6.2/10), API success fell to 0% during injection, TTR 26 s, findings: API success dropped to 0% during the fault; things-search kept reporting /ready=200 while the API was failing. Things actors are cluster-sharded, so a second instance lets Pekko re-home shards instead of waiting for the crashed JVM to restart. On the client side, every Thing write in Ditto is a PUT with `If-Match`/ETag support, so retries are safe and cheap.",
+      "steps": [
+        "Run `things` with `deploy.replicas: 2` (compose) or `replicas: 2` (k8s); keep the Pekko seed-node list stable.",
+        "Set a sensible `pekko.cluster.sharding.rebalance-interval` / `passivation` so shards move within a few seconds of a node loss.",
+        "In client SDKs, wrap PUT/PATCH with 3 retries + exponential backoff on 5xx/connection errors and send `If-Match: <etag>` to make the retry idempotent; treat 412 as 'already applied'.",
+        "Keep POST-created things (server-generated ids) behind a client-side idempotency key or prefer PUT with a client-chosen thingId."
+      ],
+      "verify": [
+        "Kill one things instance: API success stays > 90% and the cluster view shows the shard regions rebalanced.",
+        "A retried PUT with a stale `If-Match` returns 412 rather than overwriting newer state."
+      ],
+      "references": [
+        "https://eclipse.dev/ditto/httpapi-concepts.html",
+        "https://eclipse.dev/ditto/installation-operating.html"
+      ]
+    },
+    {
+      "title": "Baseline observability: SLO alert rules and chaos annotations in Grafana",
+      "category": "observability",
+      "effort": "S",
+      "confidence": 0.65,
+      "rationale": "In experiment f63b02a3c8ac (risk HIGH 6.2/10), API success fell to 0% during injection, TTR 26 s, findings: API success dropped to 0% during the fault; things-search kept reporting /ready=200 while the API was failing. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.",
+      "steps": [
+        "Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~\"5..\"}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.",
+        "Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.",
+        "Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs."
+      ],
+      "verify": [
+        "During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window."
+      ],
+      "references": [
+        "https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/"
+      ]
+    }
+  ],
+  "advisory_only": true,
+  "generated_by": "rules"
+}

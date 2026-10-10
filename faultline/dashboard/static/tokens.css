@@ -1,0 +1,219 @@
+/* ==========================================================================
+   FAULTLINE CONTROL ROOM — DESIGN TOKENS
+   --------------------------------------------------------------------------
+   Authoritative values: docs/UI_CONTRACT.md §1.
+   This is the ONLY stylesheet allowed to contain a literal colour.
+   Everything else (app.css, inline SVG styling, JS) consumes these vars.
+
+   Contains exactly two selectors: `:root` and the reduced-motion query.
+   ========================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------- surfaces
+     bg        = the room behind the panels (darkest)
+     surface   = panel face
+     surface-2 = inset / zebra / head
+     surface-3 = control track, sunken wells                               */
+  --bg: #060910;
+  --surface: #0E1424;
+  --surface-2: #141C30;
+  --surface-3: #1B2540;
+
+  /* ------------------------------------------------------------------- lines */
+  --border: #1E2A44;
+  --border-strong: #2C3C5E;
+  --grid: #121A2E;
+
+  /* -------------------------------------------------------------------- text
+     text      15.6:1 on --surface — primary
+     text-dim   9.0:1 on --surface — secondary, micro-labels, all 11px type
+     text-mute  4.6:1 on --surface — tertiary, >=14px only, never on
+                                     --surface-2 / --surface-3 (fails AA)   */
+  --text: #E8EDF7;
+  --text-dim: #A8B6D1;
+  --text-mute: #6F7F9F;
+
+  /* ------------------------------------------------------------------- brand */
+  --blue: #4D8DFF;
+  --blue-dim: #1E3A6B;
+  --cyan: #22D3EE;
+  --violet: #A78BFA;
+
+  /* ---------------------------------------------------------------- semantic
+     healthy/UP/recovered/held -> ok        degraded/warn/soaking -> warn
+     failing/down/aborted      -> danger    critical/data loss    -> critical
+     injecting/chaos           -> chaos     AI/LLM-authored       -> violet
+     live telemetry            -> cyan                                      */
+  --ok: #2DD36F;
+  --warn: #F5A524;
+  --danger: #FF4D4D;
+  --critical: #F43F5E;
+
+  /* ------------------------------------------------------------------- chaos */
+  --chaos: #FF7A1A;
+
+  /* ---------------------------------------------------------------- severity */
+  --sev-info: var(--text-dim);
+  --sev-low: var(--cyan);
+  --sev-medium: var(--warn);
+  --sev-high: var(--danger);
+  --sev-critical: var(--critical);
+
+  /* ------------------------------------------------------------------- fonts
+     No webfonts at runtime (UI_CONTRACT §0): system stacks only.           */
+  --font-sans: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", Consolas, monospace;
+
+  /* ------------------------------------------------------- space (dense) */
+  --s0: 2px;  /* EXTRA: hairline gaps, chip insets */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px; /* EXTRA: empty-state / modal breathing room */
+
+  /* ------------------------------------------------------------------ radius */
+  --r1: 6px;
+  --r2: 10px;
+  --r3: 14px;
+  --r-pill: 999px; /* EXTRA */
+
+  /* ----------------------------------------------------------------- shadows */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.35), 0 0 0 1px rgb(0 0 0 / 0.18);
+  --shadow-2: 0 10px 28px -8px rgb(0 0 0 / 0.65), 0 2px 8px rgb(0 0 0 / 0.4);
+  /* EXTRA: inset top highlight used on raised controls */
+  --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.08);
+  /* EXTRA: diagonal hatch for armed / blocked surfaces */
+  --hatch: repeating-linear-gradient(
+    135deg,
+    rgb(255 255 255 / 0.08) 0 5px,
+    rgb(255 255 255 / 0) 5px 10px
+  );
+
+  /* ------------------------------------------------------------------ motion */
+  --t-fast: 140ms;
+  --t: 220ms;
+  --t-slow: 420ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* EXTRA */
+
+  /* EXTRA: named keyframe durations, so prefers-reduced-motion can zero
+     every looping animation from one place.                                */
+  --d-pulse: 2000ms;
+  --d-breathe: 2600ms;
+  --d-travel: 1400ms;
+  --d-flash: 600ms;
+  --d-spin: 1100ms;
+  --d-sweep: 3200ms;
+  --d-shimmer: 1500ms;
+
+  /* ------------------------------------------------------------- z-index
+     EXTRA: one scale, no magic numbers anywhere else.                      */
+  --z-base: 0;
+  --z-raised: 1;
+  --z-sticky: 20;
+  --z-header: 30;
+  --z-drawer: 40;
+  --z-overlay: 50;
+  --z-tooltip: 60;
+  --z-toast: 70;
+
+  /* -------------------------------------------------------------- geometry
+     EXTRA: shared layout constants (UI_CONTRACT §4 + §5 hit areas).        */
+  --h-header: 58px;
+  /* .panel__head: 40px is the design intent, raised to 44px because §5
+     requires a 44x44 explain hit area inside it and .panel clips overflow. */
+  --h-head: 44px;
+  /* The experiments row is viewport-relative: the stage above it owns the
+     application map, which needs a real minimum height (app.css §02), so the
+     bottom row gives space back on short screens instead of starving it. */
+  --h-exp: clamp(176px, 17.5vh, 256px);
+  --w-score: 384px;        /* resilience-scorecard column inside .app__exp */
+  --hit: 44px;             /* minimum interactive hit area */
+  --w-col-left: 320px;     /* launcher column */
+  --w-col-right: 360px;    /* feed column */
+  --ring: 2px;             /* focus ring width */
+
+  /* ------------------------------------------------------------------- tones
+     EXTRA: the single tone mechanism. statusTone() / severityTone() in
+     util.js emit one of these names into [data-tone]; app.css maps the name
+     to --tone / --tone-bg / --tone-border / --tone-ink locally.
+
+       *          full-strength colour: rails, dots, borders, large numerals
+       *-bg       ~14% wash for chip / row backgrounds
+       *-border   ~32% hairline
+       *-ink      small-text variant, >=4.5:1 on its own wash over any
+                  surface (raw tones fail at 11-13px on --surface-3)        */
+  --tone-ok: var(--ok);
+  --tone-ok-bg: color-mix(in srgb, var(--ok) 14%, transparent);
+  --tone-ok-border: color-mix(in srgb, var(--ok) 32%, transparent);
+  --tone-ok-ink: color-mix(in srgb, var(--ok) 74%, var(--text));
+
+  --tone-warn: var(--warn);
+  --tone-warn-bg: color-mix(in srgb, var(--warn) 14%, transparent);
+  --tone-warn-border: color-mix(in srgb, var(--warn) 32%, transparent);
+  --tone-warn-ink: color-mix(in srgb, var(--warn) 74%, var(--text));
+
+  --tone-danger: var(--danger);
+  --tone-danger-bg: color-mix(in srgb, var(--danger) 14%, transparent);
+  --tone-danger-border: color-mix(in srgb, var(--danger) 32%, transparent);
+  --tone-danger-ink: color-mix(in srgb, var(--danger) 74%, var(--text));
+
+  --tone-critical: var(--critical);
+  --tone-critical-bg: color-mix(in srgb, var(--critical) 14%, transparent);
+  --tone-critical-border: color-mix(in srgb, var(--critical) 32%, transparent);
+  --tone-critical-ink: color-mix(in srgb, var(--critical) 74%, var(--text));
+
+  --tone-chaos: var(--chaos);
+  --tone-chaos-bg: color-mix(in srgb, var(--chaos) 14%, transparent);
+  --tone-chaos-border: color-mix(in srgb, var(--chaos) 32%, transparent);
+  --tone-chaos-ink: color-mix(in srgb, var(--chaos) 74%, var(--text));
+
+  --tone-neutral: var(--text-dim);
+  --tone-neutral-bg: color-mix(in srgb, var(--text-dim) 10%, transparent);
+  --tone-neutral-border: color-mix(in srgb, var(--text-dim) 26%, transparent);
+  --tone-neutral-ink: var(--text-dim);
+
+  /* severityTone() also returns "cyan"; planner/AI provenance uses "violet" */
+  --tone-cyan: var(--cyan);
+  --tone-cyan-bg: color-mix(in srgb, var(--cyan) 14%, transparent);
+  --tone-cyan-border: color-mix(in srgb, var(--cyan) 32%, transparent);
+  --tone-cyan-ink: color-mix(in srgb, var(--cyan) 74%, var(--text));
+
+  --tone-violet: var(--violet);
+  --tone-violet-bg: color-mix(in srgb, var(--violet) 14%, transparent);
+  --tone-violet-border: color-mix(in srgb, var(--violet) 32%, transparent);
+  --tone-violet-ink: color-mix(in srgb, var(--violet) 74%, var(--text));
+
+  --tone-blue: var(--blue);
+  --tone-blue-bg: color-mix(in srgb, var(--blue) 14%, transparent);
+  --tone-blue-border: color-mix(in srgb, var(--blue) 32%, transparent);
+  --tone-blue-ink: color-mix(in srgb, var(--blue) 74%, var(--text));
+
+  /* Default tone, overridden by [data-tone] in app.css. */
+  --tone: var(--tone-neutral);
+  --tone-bg: var(--tone-neutral-bg);
+  --tone-border: var(--tone-neutral-border);
+  --tone-ink: var(--tone-neutral-ink);
+}
+
+/* ==========================================================================
+   REDUCED MOTION — zero every duration at the source (UI_CONTRACT §6).
+   app.css additionally sets `animation: none` and renders final states.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t: 0ms;
+    --t-slow: 0ms;
+    --d-pulse: 0ms;
+    --d-breathe: 0ms;
+    --d-travel: 0ms;
+    --d-flash: 0ms;
+    --d-spin: 0ms;
+    --d-sweep: 0ms;
+    --d-shimmer: 0ms;
+  }
+}

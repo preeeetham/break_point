@@ -1,348 +1,113 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <title>Faultline Control Room</title>
-<style>
-  :root {
-    --bg: #0b0e14; --panel: #121722; --panel-2: #181f2e; --border: #232c3d;
-    --text: #e6ebf5; --muted: #8a95ab; --accent: #4cc9f0;
-    --green: #3ddc84; --amber: #ffb547; --red: #ff5d5d; --grey: #5a6578; --purple: #b388ff;
-    --mono: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
-    --sans: -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 16px; }
-  body { padding: 0 20px 40px; }
-  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  /* top bar */
-  #topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
-    padding: 14px 0; margin: 0 -20px 18px; padding-left: 20px; padding-right: 20px;
-    background: rgba(11,14,20,.95); border-bottom: 1px solid var(--border); backdrop-filter: blur(6px); }
-  #topbar h1 { margin: 0; font-size: 20px; letter-spacing: .04em; font-weight: 700; }
-  #topbar h1 span { color: var(--muted); font-weight: 400; font-size: 15px; letter-spacing: 0; }
-  .spacer { flex: 1; }
-  .pill { display: inline-block; padding: 4px 12px; border-radius: 999px; font-family: var(--mono); font-size: 13px;
-    font-weight: 600; letter-spacing: .06em; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); }
-  .pill.idle { color: var(--muted); } .pill.injecting { color: #0b0e14; background: var(--red); border-color: var(--red); animation: pulse 1.2s infinite; }
-  .pill.recovering { color: #0b0e14; background: var(--amber); border-color: var(--amber); }
-  .pill.stopped { color: var(--red); border-color: var(--red); }
-  .pill.ok, .pill.low { color: var(--green); border-color: var(--green); } .pill.medium { color: var(--amber); border-color: var(--amber); }
-  .pill.high, .pill.critical { color: var(--red); border-color: var(--red); } .pill.critical { background: rgba(255,93,93,.15); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
-  #guardian { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
-  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--grey); box-shadow: 0 0 0 0 transparent; }
-  .dot.on { background: var(--green); box-shadow: 0 0 10px var(--green); }
-  button.stop { font: 700 16px var(--mono); letter-spacing: .1em; padding: 12px 26px; border-radius: 8px; border: 2px solid var(--red);
-    background: var(--red); color: #fff; cursor: pointer; box-shadow: 0 0 18px rgba(255,93,93,.4); }
-  button.stop:hover { filter: brightness(1.1); }
-  button.stop.resume { background: transparent; color: var(--green); border-color: var(--green); box-shadow: none; }
-  /* layout */
-  .grid { display: grid; gap: 18px; }
-  .cols-2 { grid-template-columns: 2fr 1fr; }
-  @media (max-width: 1000px) { .cols-2 { grid-template-columns: 1fr; } }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; min-width: 0; }
-  .panel h2 { margin: 0 0 12px; font-size: 13px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .14em; color: var(--muted); }
-  .empty { color: var(--muted); font-style: italic; padding: 10px 0; }
-  .empty code { font-family: var(--mono); color: var(--accent); font-style: normal; }
-  /* active experiment */
-  #active { border-color: var(--red); box-shadow: 0 0 0 1px rgba(255,93,93,.25), 0 0 30px rgba(255,93,93,.12); margin-bottom: 18px; }
-  .kpis { display: flex; flex-wrap: wrap; gap: 26px; align-items: flex-end; }
-  .kpi label { display: block; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
-  .kpi .v { font-size: 48px; font-weight: 700; line-height: 1.05; } .kpi .v.sm { font-size: 26px; }
-  .kpi .v.good { color: var(--green); } .kpi .v.warn { color: var(--amber); } .kpi .v.bad { color: var(--red); }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-  .chip { font-family: var(--mono); font-size: 13px; padding: 5px 10px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
-  .chip .dot { width: 9px; height: 9px; } .chip .dot.bad { background: var(--red); box-shadow: 0 0 8px var(--red); }
-  .chip.target { outline: 2px solid var(--red); outline-offset: 1px; }
-  .hyp { margin-top: 14px; font-size: 16px; line-height: 1.45; } .hyp b { color: var(--accent); font-family: var(--mono); font-size: 12px; letter-spacing: .1em; }
-  .muted { color: var(--muted); }
-  /* service grid */
-  .services { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-  .svc { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
-  .svc .name { font-family: var(--mono); font-weight: 700; font-size: 16px; word-break: break-all; }
-  .svc .row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); gap: 6px; }
-  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
-  .badge.llm { color: var(--purple); border-color: var(--purple); } .badge.rules { color: var(--accent); border-color: var(--accent); } .badge.operator { color: var(--amber); border-color: var(--amber); }
-  .score { font-family: var(--mono); font-size: 30px; font-weight: 700; } .score small { font-size: 14px; color: var(--muted); margin-left: 6px; }
-  .c-green { color: var(--green); } .c-amber { color: var(--amber); } .c-red { color: var(--red); } .c-grey { color: var(--grey); }
-  /* table */
-  .tablewrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
-  tr.row { cursor: pointer; } tr.row:hover td { background: var(--panel-2); }
-  tr.details td { white-space: normal; background: #0e121b; padding: 14px 18px; }
-  .sev { font-family: var(--mono); font-size: 11px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; border: 1px solid; margin-right: 8px; }
-  .sev.info, .sev.low { color: var(--accent); border-color: var(--accent); } .sev.medium { color: var(--amber); border-color: var(--amber); }
-  .sev.high, .sev.critical { color: var(--red); border-color: var(--red); }
-  .details h4 { margin: 12px 0 6px; font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
-  .details ul { margin: 0; padding-left: 18px; line-height: 1.5; } .details ol { margin: 4px 0 0; padding-left: 20px; line-height: 1.45; color: var(--muted); }
-  .tl { font-family: var(--mono); font-size: 13px; line-height: 1.6; } .tl .t { color: var(--accent); display: inline-block; min-width: 72px; }
-  .rec { margin-top: 8px; padding: 10px 12px; background: var(--panel-2); border-radius: 6px; border: 1px solid var(--border); }
-  /* scorecard */
-  .overall { display: flex; align-items: baseline; gap: 14px; } .overall .big { font-size: 64px; font-weight: 800; line-height: 1; }
-  .rank { list-style: none; margin: 12px 0 0; padding: 0; } .rank li { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
-  .rank li span:first-child { font-family: var(--mono); }
-  dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 14px; }
-  dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; font-family: var(--mono); }
-  #err { color: var(--red); font-family: var(--mono); font-size: 12px; }
-</style>
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FF7A1A' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2 4 14h7l-1 8 9-12h-7z'/%3E%3C/svg%3E">
 </head>
 <body>
-<header id="topbar">
-  <h1>FAULTLINE <span>— AI-driven chaos engineering · Eclipse Ditto</span></h1>
-  <span id="status" class="pill idle">IDLE</span>
-  <span id="guardian"><span class="dot"></span><span id="guardian-text">Guardian: offline</span></span>
-  <span class="spacer"></span>
-  <span id="err"></span>
-  <button id="stopbtn" class="stop">STOP</button>
-</header>
+<a class="skip-link sr-only" href="#main">Skip to the live stage</a>
 
-<section id="active" class="panel" hidden></section>
+<div class="app" id="app" data-drawer="closed">
 
-<div class="grid cols-2">
-  <div class="grid" style="align-content:start">
-    <section class="panel"><h2>Services</h2><div id="services"></div></section>
-    <section class="panel"><h2>Experiments</h2><div id="experiments"></div></section>
-  </div>
-  <div class="grid" style="align-content:start">
-    <section class="panel"><h2>Resilience scorecard</h2><div id="scorecard"></div></section>
-    <section class="panel"><h2>Baseline</h2><div id="baseline"></div></section>
-  </div>
+  <header class="app__header" id="header">
+    <button class="drawer-toggle btn btn--ghost btn--icon" id="drawer-toggle" type="button"
+            aria-controls="left" aria-expanded="false" aria-label="Show the injection console">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.75" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 6.5h16M4 12h16M4 17.5h16"/>
+      </svg>
+    </button>
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true"></span>
+      <span class="brand__text">
+        <span class="brand__name">FAULTLINE</span>
+        <span class="brand__sub">control room</span>
+      </span>
+    </div>
+    <div class="ribbon" id="ribbon" role="group" aria-label="Experiment phase"></div>
+    <div class="row" id="header-right"></div>
+  </header>
+
+  <aside class="app__left" id="left" aria-label="Injection console">
+    <div id="launcher-host"></div>
+  </aside>
+
+  <main class="app__main" id="main" tabindex="-1">
+    <section class="panel panel--pipeline" data-panel="pipeline">
+      <div class="panel__head" id="head-pipeline"></div>
+      <div class="panel__body panel__body--flush" id="pipeline-host"></div>
+    </section>
+
+    <section class="panel panel--graph" data-panel="graph">
+      <div class="panel__head" id="head-graph"></div>
+      <div class="panel__body panel__body--flush graph" id="graph-host"></div>
+    </section>
+
+    <section class="panel panel--chart" data-panel="chart">
+      <div class="panel__head" id="head-chart"></div>
+      <div class="panel__body panel__body--flush" id="chart-host"></div>
+    </section>
+
+    <section class="panel panel--kpis" data-panel="kpis">
+      <div class="panel__head" id="head-kpis"></div>
+      <div class="panel__body panel__body--tight" id="kpis-host"></div>
+    </section>
+  </main>
+
+  <aside class="app__right" id="right" aria-label="Agent activity">
+    <section class="panel panel--feed">
+      <div class="panel__head" id="head-feed"></div>
+      <div class="panel__body panel__body--flush" id="feed-host"></div>
+    </section>
+  </aside>
+
+  <!-- Predicted, never measured. Sits above the experiments because it is the one panel that has
+       something to say before anything has been broken. See docs/UI_CONTRACT.md §4. -->
+  <section class="panel panel--weaknesses" data-panel="weaknesses">
+    <div class="panel__head" id="head-weaknesses"></div>
+    <div class="panel__body panel__body--tight" id="weaknesses-host"></div>
+  </section>
+
+  <section class="app__exp" id="exp">
+    <section class="panel panel--experiments" data-panel="experiments">
+      <div class="panel__head" id="head-experiments"></div>
+      <div class="panel__body panel__body--tight" id="experiments-host"></div>
+    </section>
+    <section class="panel panel--scorecard" data-panel="scorecard">
+      <div class="panel__head" id="head-scorecard"></div>
+      <div class="panel__body" id="scorecard-host"></div>
+    </section>
+  </section>
+
+  <section class="panel panel--fixes" data-panel="fixes">
+    <div class="panel__head" id="head-fixes"></div>
+    <div class="panel__body panel__body--tight" id="fixes-host"></div>
+  </section>
+
+  <!-- Repo onboarding: what lets Faultline be pointed at any compose app, not only Ditto.
+       onboard.js owns this element's whole subtree (panel chrome included), the same way
+       launcher.js owns #launcher-host. It closes the page in its own full-width row, so it
+       never competes for a named grid area at any breakpoint. -->
+  <div id="onboard-host" data-panel="onboard" style="grid-column: 1 / -1"></div>
+
 </div>
 
-<script>
-(function () {
-  'use strict';
-  const $ = (id) => document.getElementById(id);
-  const expanded = new Set();
-  let stopRequested = false;
+<div class="toast-stack" id="toasts" aria-live="polite" aria-atomic="false"></div>
+<div class="drawer-scrim" id="drawer-scrim"></div>
 
-  // ---------- safe DOM helpers (never inject raw strings as HTML)
-  function el(tag, attrs, children) {
-    const n = document.createElement(tag);
-    if (attrs) for (const k in attrs) {
-      if (k === 'class') n.className = attrs[k];
-      else if (k === 'text') n.textContent = attrs[k];
-      else if (k === 'html') { /* intentionally unsupported */ }
-      else if (k.startsWith('on')) n.addEventListener(k.slice(2), attrs[k]);
-      else n.setAttribute(k, attrs[k]);
-    }
-    (children || []).forEach((c) => { if (c == null) return; n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
-    return n;
-  }
-  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
-  function empty(msg, cmd) { return el('div', { class: 'empty' }, [msg, cmd ? ' — run ' : '', cmd ? el('code', { text: cmd }) : null]); }
+<noscript>
+  <p style="padding:24px;color:#E8EDF7;font:14px system-ui">
+    Faultline Control Room needs JavaScript. The same data is on disk as JSON and Markdown under
+    <code>reports/</code>, and the CLI (<code>faultline status</code>, <code>faultline narrate</code>)
+    works without a browser.
+  </p>
+</noscript>
 
-  // ---------- formatting
-  const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
-  const ms = (v) => (v == null ? '—' : Math.round(v) + ' ms');
-  const secs = (v) => (v == null ? '—' : (Math.round(v * 10) / 10) + ' s');
-  const n1 = (v) => (v == null ? '—' : Number(v).toFixed(1));
-  const tstr = (iso) => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d) ? String(iso) : d.toLocaleTimeString(); };
-  const short = (id) => (id ? String(id).slice(0, 8) : '—');
-  const scoreClass = (s) => (s == null ? 'c-grey' : s >= 80 ? 'c-green' : s >= 60 ? 'c-amber' : 'c-red');
-  const rateClass = (r) => (r == null ? '' : r >= 0.95 ? 'good' : r >= 0.8 ? 'warn' : 'bad');
-  const plannerLabel = (p) => (p === 'llm' ? 'LLM' : p === 'operator' ? 'operator' : 'rules');
-  const plannerClass = (p) => (p === 'llm' ? 'llm' : p === 'operator' ? 'operator' : 'rules');
-
-  // ---------- top bar
-  function renderTop(s) {
-    stopRequested = !!s.stop_requested;
-    const live = s.live, phase = live && live.phase ? String(live.phase).toLowerCase() : '';
-    let label = 'IDLE', cls = 'idle';
-    if (stopRequested) { label = 'STOPPED'; cls = 'stopped'; }
-    else if (phase.includes('recover') || phase.includes('after')) { label = 'RECOVERING'; cls = 'recovering'; }
-    else if (phase.includes('inject') || phase.includes('during') || phase.includes('steady') || s.active) { label = 'INJECTING'; cls = 'injecting'; }
-    const st = $('status'); st.textContent = label; st.className = 'pill ' + cls;
-
-    const g = s.guardian, fresh = g && g.at && (s.now - g.at) < 15;
-    $('guardian').querySelector('.dot').className = 'dot' + (fresh ? ' on' : '');
-    $('guardian-text').textContent = 'Guardian: ' + (fresh ? 'armed' : 'offline');
-
-    const b = $('stopbtn');
-    b.textContent = stopRequested ? 'RESUME' : 'STOP';
-    b.className = 'stop' + (stopRequested ? ' resume' : '');
-  }
-
-  async function post(path) {
-    try { const r = await fetch(path, { method: 'POST' }); if (!r.ok) throw new Error(r.status); }
-    catch (e) { $('err').textContent = 'request failed: ' + e; }
-    tick();
-  }
-  $('stopbtn').addEventListener('click', () => {
-    if (stopRequested) return post('/api/resume');
-    if (confirm('Request an emergency STOP? The injector will abort and roll back the active experiment.')) post('/api/stop');
-  });
-
-  // ---------- active experiment
-  function healthChip(name, h, target) {
-    let cls = '', txt = 'n/a';
-    if (h == null) { txt = 'down'; }
-    else {
-      const alive = h.alive, ready = h.ready;
-      const ok = (alive === 200 || alive === true) && (ready == null || ready === 200 || ready === true);
-      cls = ok ? 'on' : 'bad';
-      txt = (alive == null && ready == null) ? (h.status || 'n/a') : ('alive ' + (alive == null ? '—' : alive) + ' · ready ' + (ready == null ? '—' : ready));
-    }
-    return el('span', { class: 'chip' + (name === target ? ' target' : '') }, [el('span', { class: 'dot ' + cls }), el('b', { text: name }), el('span', { class: 'muted', text: txt })]);
-  }
-  function renderActive(s) {
-    const live = s.live || {}, act = s.active || {};
-    const panel = $('active');
-    if (!s.live && !s.active) { panel.hidden = true; clear(panel); return; }
-    panel.hidden = false; clear(panel);
-    const target = live.target_service || act.target_service || '—';
-    const eid = live.experiment_id || act.experiment_id;
-    const exp = (s.experiments || []).find((e) => e.experiment_id === eid) || {};
-    const hyp = live.hypothesis || (exp.hypothesis && exp.hypothesis.statement) || act.hypothesis || '';
-    const rationale = live.rationale || exp.rationale || act.rationale || '';
-    const elapsed = live.elapsed_s != null ? live.elapsed_s : (act.started_at ? s.now - act.started_at : null);
-    panel.appendChild(el('h2', { text: 'Active experiment  ·  ' + short(eid) }));
-    panel.appendChild(el('div', { class: 'kpis' }, [
-      el('div', { class: 'kpi' }, [el('label', { text: 'Target' }), el('div', { class: 'v sm num', text: target })]),
-      el('div', { class: 'kpi' }, [el('label', { text: 'Failure' }), el('div', { class: 'v sm num', text: live.failure_type || act.failure_type || '—' })]),
-      el('div', { class: 'kpi' }, [el('label', { text: 'Phase' }), el('div', { class: 'v sm num', text: live.phase || 'starting' })]),
-      el('div', { class: 'kpi' }, [el('label', { text: 'Elapsed' }), el('div', { class: 'v sm num', text: elapsed == null ? '—' : Math.round(elapsed) + ' s' })]),
-      el('div', { class: 'kpi' }, [el('label', { text: 'Live success rate' }), el('div', { class: 'v num ' + rateClass(live.success_rate), text: pct(live.success_rate) })]),
-      el('div', { class: 'kpi' }, [el('label', { text: 'Live p95' }), el('div', { class: 'v num', text: ms(live.p95_ms) })]),
-    ]));
-    const health = live.health || {};
-    const names = Object.keys(health);
-    if (names.length) panel.appendChild(el('div', { class: 'chips' }, names.map((n) => healthChip(n, health[n], target))));
-    if (hyp) panel.appendChild(el('div', { class: 'hyp' }, [el('b', { text: 'HYPOTHESIS ' }), String(hyp)]));
-    if (rationale) panel.appendChild(el('div', { class: 'hyp muted' }, [el('b', { text: 'RATIONALE ' }), String(rationale)]));
-  }
-
-  // ---------- service grid
-  function renderServices(s) {
-    const box = $('services'); clear(box);
-    const topo = s.topology;
-    if (!topo || !topo.services || !Object.keys(topo.services).length) { box.appendChild(empty('No topology yet', 'faultline topology')); return; }
-    const crit = {}; (topo.criticality || []).forEach((c) => { crit[c.service] = c.score; });
-    const scores = {}; ((s.scorecard || {}).ranking || []).forEach((r) => { scores[r.service] = r; });
-    const names = Object.keys(topo.services).filter((n) => topo.services[n].role !== 'ui').sort((a, b) => (crit[b] || 0) - (crit[a] || 0));
-    const grid = el('div', { class: 'services' });
-    names.forEach((name) => {
-      const svc = topo.services[name], sc = scores[name];
-      const health = svc.health || svc.state || 'unknown';
-      const healthCls = /healthy|running/.test(health) && !/unhealthy/.test(health) ? 'c-green' : /unhealthy|exited|dead/.test(health) ? 'c-red' : 'c-grey';
-      grid.appendChild(el('div', { class: 'svc' }, [
-        el('div', { class: 'name', text: name }),
-        el('div', { class: 'row' }, [el('span', { text: svc.role || 'app' }), el('span', {}, [
-          svc.stateful ? el('span', { class: 'badge', text: 'stateful' }) : null, ' ',
-          svc.entrypoint ? el('span', { class: 'badge', text: 'entrypoint' }) : null])]),
-        el('div', { class: 'row' }, [el('span', { text: 'criticality' }), el('span', { class: 'num', text: n1(crit[name]) })]),
-        el('div', { class: 'row' }, [el('span', { text: 'health' }), el('span', { class: 'num ' + healthCls, text: health })]),
-        sc && sc.score != null
-          ? el('div', { class: 'score ' + scoreClass(sc.score) }, [String(Math.round(sc.score)), el('small', { text: sc.grade || '' })])
-          : el('div', { class: 'score c-grey' }, [el('small', { text: 'not tested' })]),
-      ]));
-    });
-    box.appendChild(grid);
-  }
-
-  // ---------- experiments
-  function detailsFor(e) {
-    const d = el('div', { class: 'details' });
-    if (e.rationale) { d.appendChild(el('h4', { text: 'Rationale' })); d.appendChild(el('div', { text: e.rationale })); }
-    if (e.hypothesis && e.hypothesis.statement) { d.appendChild(el('h4', { text: 'Hypothesis' })); d.appendChild(el('div', { text: e.hypothesis.statement })); }
-    if (e.abort_reason) { d.appendChild(el('h4', { text: 'Abort reason' })); d.appendChild(el('div', { class: 'c-red', text: e.abort_reason })); }
-    if (e.risk) {
-      d.appendChild(el('h4', { text: 'Risk' }));
-      d.appendChild(el('div', {}, [el('span', { class: 'pill ' + (e.risk.level || ''), text: (e.risk.level || '—') + ' · ' + n1(e.risk.severity) }), ' ', e.risk.summary || '']));
-      if (e.risk.production_implication) d.appendChild(el('div', { class: 'muted', style: 'margin-top:6px', text: e.risk.production_implication }));
-    }
-    if (e.findings && e.findings.length) {
-      d.appendChild(el('h4', { text: 'Findings' }));
-      d.appendChild(el('ul', {}, e.findings.map((f) => el('li', {}, [el('span', { class: 'sev ' + f.severity, text: f.severity }), el('b', { text: f.title || f.code }), f.evidence ? el('div', { class: 'muted', text: f.evidence }) : null]))));
-    }
-    if (e.timeline && e.timeline.length) {
-      d.appendChild(el('h4', { text: 'Timeline' }));
-      d.appendChild(el('div', { class: 'tl' }, e.timeline.map((t) => el('div', {}, [el('span', { class: 't', text: 't+' + (t.t_plus_s == null ? '?' : Math.round(t.t_plus_s)) + 's' }), el('b', { text: t.event || '' }), t.detail ? ' — ' + t.detail : '']))));
-    }
-    if (e.fix && e.fix.recommendations && e.fix.recommendations.length) {
-      d.appendChild(el('h4', { text: 'Fix recommendations (advisory)' }));
-      e.fix.recommendations.forEach((r) => d.appendChild(el('div', { class: 'rec' }, [
-        el('div', {}, [el('b', { text: r.title || '' }), ' ', el('span', { class: 'badge', text: 'effort ' + (r.effort || '?') }), ' ', el('span', { class: 'badge', text: 'confidence ' + pct(r.confidence) }), ' ', el('span', { class: 'badge', text: r.category || '' })]),
-        r.rationale ? el('div', { class: 'muted', style: 'margin-top:4px', text: r.rationale }) : null,
-        el('ol', {}, (r.steps || []).slice(0, 3).map((st) => el('li', { text: st }))),
-      ])));
-    }
-    return d;
-  }
-  function renderExperiments(s) {
-    const box = $('experiments'); clear(box);
-    const exps = s.experiments || [];
-    if (!exps.length) { box.appendChild(empty('No experiments yet', 'faultline run')); return; }
-    const head = el('tr', {}, ['id', 'time', 'target', 'failure', 'by', 'status', 'during', 'recover', 'hyp', 'risk', 'findings'].map((h) => el('th', { text: h })));
-    const tbody = el('tbody');
-    exps.forEach((e) => {
-      const held = e.hypothesis_held === true ? '✓' : e.hypothesis_held === false ? '✗' : '—';
-      const heldCls = e.hypothesis_held === true ? 'c-green' : e.hypothesis_held === false ? 'c-red' : 'c-grey';
-      const statusCls = e.status === 'completed' ? 'c-green' : e.status === 'aborted' ? 'c-amber' : 'c-red';
-      const row = el('tr', { class: 'row', onclick: () => { expanded.has(e.experiment_id) ? expanded.delete(e.experiment_id) : expanded.add(e.experiment_id); renderExperiments(s); } }, [
-        el('td', { class: 'num', text: short(e.experiment_id) }),
-        el('td', { class: 'num', text: tstr(e.started_at) }),
-        el('td', { class: 'num', text: e.target_service || '—' }),
-        el('td', { class: 'num', text: e.failure_type || '—' }),
-        el('td', {}, [el('span', { class: 'badge ' + plannerClass(e.planned_by), text: plannerLabel(e.planned_by) })]),
-        el('td', { class: 'num ' + statusCls, text: e.status || '—' }),
-        el('td', { class: 'num', text: pct(e.during_success_rate) }),
-        el('td', { class: 'num', text: secs(e.time_to_recover_s) }),
-        el('td', { class: 'num ' + heldCls, text: held }),
-        el('td', {}, [e.risk ? el('span', { class: 'pill ' + (e.risk.level || ''), text: e.risk.level || '—' }) : el('span', { class: 'c-grey', text: '—' })]),
-        el('td', { class: 'num', text: String((e.findings || []).length) }),
-      ]);
-      tbody.appendChild(row);
-      if (expanded.has(e.experiment_id)) tbody.appendChild(el('tr', { class: 'details' }, [el('td', { colspan: '11' }, [detailsFor(e)])]));
-    });
-    box.appendChild(el('div', { class: 'tablewrap' }, [el('table', {}, [el('thead', {}, [head]), tbody])]));
-  }
-
-  // ---------- scorecard & baseline
-  function renderScorecard(s) {
-    const box = $('scorecard'); clear(box);
-    const sc = s.scorecard;
-    if (!sc) { box.appendChild(empty('No scorecard yet', 'faultline score')); return; }
-    box.appendChild(el('div', { class: 'overall' }, [el('span', { class: 'big num ' + scoreClass(sc.overall_score), text: sc.overall_score == null ? '—' : String(Math.round(sc.overall_score)) }), el('span', { class: 'muted', text: '/ 100' })]));
-    if (sc.summary) box.appendChild(el('div', { class: 'muted', style: 'margin-top:8px;line-height:1.45', text: sc.summary }));
-    box.appendChild(el('ul', { class: 'rank' }, (sc.ranking || []).map((r) => el('li', {}, [
-      el('span', { text: r.service }),
-      el('span', { class: 'num ' + scoreClass(r.score) }, [r.score == null ? 'not tested' : (Math.round(r.score) + ' ' + (r.grade || '')), el('span', { class: 'muted', text: '  · ' + (r.experiments || 0) + ' exp · ' + (r.findings || 0) + ' findings' })]),
-    ]))));
-  }
-  function renderBaseline(s) {
-    const box = $('baseline'); clear(box);
-    const b = s.baseline;
-    if (!b) { box.appendChild(empty('No baseline yet', 'faultline baseline')); return; }
-    const api = b.api || {}, th = b.thresholds || {};
-    box.appendChild(el('dl', { class: 'kv' }, [
-      el('dt', { text: 'success rate' }), el('dd', { text: pct(api.success_rate) }),
-      el('dt', { text: 'p50 / p95 / p99' }), el('dd', { text: ms(api.p50_ms) + ' / ' + ms(api.p95_ms) + ' / ' + ms(api.p99_ms) }),
-      el('dt', { text: 'samples' }), el('dd', { text: api.sample_count == null ? '—' : String(api.sample_count) }),
-      el('dt', { text: 'captured' }), el('dd', { text: tstr(b.captured_at) }),
-      el('dt', { text: 'abort if' }), el('dd', { text: 'error rate > ' + pct(th.abort_error_rate_above) + ' or p95 > ' + ms(th.abort_p95_ms_above) }),
-      el('dt', { text: 'recovered when' }), el('dd', { text: 'success ≥ ' + pct(th.recovery_success_rate_at_least) + ' and p95 < ' + ms(th.recovery_p95_ms_below) + ' for ' + (th.recovery_consecutive_checks == null ? '?' : th.recovery_consecutive_checks) + ' checks' }),
-      el('dt', { text: 'max duration' }), el('dd', { text: secs(th.max_experiment_seconds) + ' (recovery timeout ' + secs(th.recovery_timeout_seconds) + ')' }),
-    ]));
-  }
-
-  // ---------- poll loop
-  function render(s) { renderTop(s); renderActive(s); renderServices(s); renderExperiments(s); renderScorecard(s); renderBaseline(s); }
-  async function tick() {
-    try {
-      const r = await fetch('/api/state', { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      render(await r.json());
-      $('err').textContent = '';
-    } catch (e) { $('err').textContent = 'dashboard offline: ' + e.message; }
-  }
-  tick();
-  setInterval(tick, 2000);
-})();
-</script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

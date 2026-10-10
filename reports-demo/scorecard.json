@@ -1,0 +1,96 @@
+{
+  "generated_at": "2026-10-10T11:01:04.368427Z",
+  "project": "bosch-ditto",
+  "overall_score": 76.0,
+  "ranking": [
+    {
+      "service": "things",
+      "score": 25.7,
+      "grade": "F",
+      "experiments": 1,
+      "worst_success_rate": 0.0,
+      "slowest_recovery_s": 26.0,
+      "findings": 8,
+      "notes": [
+        "health checks stayed green during failure",
+        "sat unhealthy with no automated remediation",
+        "slow recovery",
+        "tested: container_pause"
+      ]
+    },
+    {
+      "service": "policies",
+      "score": 83.1,
+      "grade": "B",
+      "experiments": 1,
+      "worst_success_rate": 0.75,
+      "slowest_recovery_s": 41.5,
+      "findings": 3,
+      "notes": [
+        "tested: container_stop"
+      ]
+    },
+    {
+      "service": "mongodb",
+      "score": 96.4,
+      "grade": "A",
+      "experiments": 1,
+      "worst_success_rate": 0.9861,
+      "slowest_recovery_s": 18.4,
+      "findings": 2,
+      "notes": [
+        "tested: network_loss"
+      ]
+    },
+    {
+      "service": "gateway",
+      "score": 99.0,
+      "grade": "A",
+      "experiments": 1,
+      "worst_success_rate": 1.0,
+      "slowest_recovery_s": 6.2,
+      "findings": 2,
+      "notes": [
+        "tested: network_delay"
+      ]
+    },
+    {
+      "service": "connectivity",
+      "score": null,
+      "grade": "\u2014",
+      "experiments": 0,
+      "worst_success_rate": null,
+      "slowest_recovery_s": null,
+      "findings": 0,
+      "notes": [
+        "not tested"
+      ]
+    },
+    {
+      "service": "nginx",
+      "score": null,
+      "grade": "\u2014",
+      "experiments": 0,
+      "worst_success_rate": null,
+      "slowest_recovery_s": null,
+      "findings": 0,
+      "notes": [
+        "not tested"
+      ]
+    },
+    {
+      "service": "things-search",
+      "score": null,
+      "grade": "\u2014",
+      "experiments": 0,
+      "worst_success_rate": null,
+      "slowest_recovery_s": null,
+      "findings": 0,
+      "notes": [
+        "not tested"
+      ]
+    }
+  ],
+  "experiments_total": 4,
+  "summary": "4 scored experiment(s) across 4 of 7 services; overall 76.0/100. Weakest: `things` (F, 25.7/100) \u2014 API success fell to 0%; health checks stayed green during failure; sat unhealthy with no automated remediation. 1 experiment(s) rated high or critical risk."
+}

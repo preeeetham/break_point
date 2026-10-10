@@ -443,8 +443,18 @@ def cmd_onboard(s, store, a):
                 f"Scoring the generated file against itself proves nothing and destroys the "
                 f"hand-authored one. Re-run with --dry-run, or --out to a scratch directory.")
             return 1
-    report = onboard(src, llm_client(s, not a.no_llm), _Path(s.knowledge_file),
-                     _Path(a.out), log=say, write=not a.dry_run, force=a.force)
+    # Onboarding reads files nobody in this project wrote, so parse and IO failures are expected
+    # rather than exceptional. Reporting one as a traceback with exit code 0 would tell a script
+    # the run succeeded; say what broke and fail.
+    try:
+        report = onboard(src, llm_client(s, not a.no_llm), _Path(s.knowledge_file),
+                         _Path(a.out), log=say, write=not a.dry_run, force=a.force)
+    except SourceError as exc:
+        say(f"error: {exc}")
+        return 1
+    except Exception as exc:
+        say(f"error: onboarding {src.slug} failed: {type(exc).__name__}: {exc}")
+        return 1
     k = report.knowledge
     say(f"\n{report.slug}: {len(report.services)} services, {report.structural_edges} structural edges, "
         f"{len(k.documented_edges)} documented edges ({report.generated_by})")
@@ -462,7 +472,13 @@ def cmd_onboard(s, store, a):
         say(f"\nUse it with:  faultline topology --knowledge {report.output_path}")
     if a.compare_to:
         say("\ncomparison against " + a.compare_to)
-        say(_json.dumps(compare(k, _Path(a.compare_to), extract(src.compose_path, src.nginx_conf_path)), indent=2))
+        try:
+            say(_json.dumps(compare(k, _Path(a.compare_to),
+                                    extract(src.compose_path, src.nginx_conf_path)), indent=2))
+        except Exception as exc:
+            # The knowledge file is already written and reported; a bad --compare-to argument
+            # must not make the run look like it failed to produce one.
+            say(f"  could not compare against {a.compare_to}: {type(exc).__name__}: {exc}")
     if a.json:
         say(report.model_dump_json(indent=2))
     return 0
