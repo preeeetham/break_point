@@ -496,6 +496,9 @@ def check_published_ports(ctx: ScoutContext) -> list[_Raw]:
             experiment_prefs=[("traffic_spike", name), ("network_partition", name),
                               ("network_delay", name)],
             experiment_reason=f"drive load straight at {name}, bypassing {ingress or 'the proxy'}",
+            # A port the host exposes to the network is a materially wider blast radius than one
+            # bound to 127.0.0.1, which is still inside the sandbox boundary.
+            weight_scale=1.5 if not loopback else 1.0,
         ))
     return out
 
@@ -796,12 +799,12 @@ def _llm_pass(
 ) -> tuple[bool, list[SystemicPattern], list[str]]:
     """Returns (any_prose_replaced, patterns, notes). Never raises; never alters the finding list."""
     notes: list[str] = []
+    if not weaknesses:
+        return False, [], notes          # nothing to explain; an LLM note here would be noise
     if llm is None or not llm.available():
         why = (llm.last_error or "disabled") if llm is not None else "no client"
         notes.append(f"LLM unavailable ({why}); templated prose used for all "
                      f"{len(weaknesses)} prediction(s)")
-        return False, [], notes
-    if not weaknesses:
         return False, [], notes
 
     known = {w.weakness_id: w for w in weaknesses}
