@@ -170,11 +170,25 @@ def cmd_catalog(s, store, a):
     return 0
 
 
-def _planner(sess: Session, use_llm: bool, allow_protected: bool):
+def _planner(sess: Session, use_llm: bool, allow_protected: bool, approval_gate: bool = False):
     from .planning.planner import Planner
 
     images = {k for k, img in (("pumba", sess.s.pumba_image), ("tc", sess.s.tc_image)) if sess.docker.has_image(img)}
-    return Planner(sess.topology, sess.policy, sess.store.experiments(), llm_client(sess.s, use_llm), sess.s, images, allow_protected)
+    return Planner(sess.topology, sess.policy, sess.store.experiments(), llm_client(sess.s, use_llm), sess.s, images,
+                   allow_protected, approval_gate)
+
+
+def approvals_enabled(s, store, want: bool, log=say) -> bool:
+    """Whether the gate can actually reach a human. Unconfigured means off, and says why once."""
+    from .agents.approval import preflight
+
+    if not want:
+        return False
+    issues = preflight(s)
+    if issues:
+        log(f"approval gate off: {issues[0]}")
+        return False
+    return True
 
 
 def cmd_plan(s, store, a):
@@ -201,7 +215,11 @@ def cmd_run(s, store, a):
     try:
         if store.baseline() is None:
             say("no baseline yet; run `faultline baseline` first for calibrated thresholds (using floors for now)")
-        planner = _planner(sess, not a.no_llm, a.allow_protected)
+        gate_on = approvals_enabled(s, store, not a.no_approvals)
+        if gate_on:
+            from .agents.approval import ApprovalAgent
+            say(f"approval gate on: {ApprovalAgent(s, store, log=say).describe()}")
+        planner = _planner(sess, not a.no_llm, a.allow_protected, gate_on)
         if planner.llm and planner.llm.available():
             # loading a local model costs RAM; do it before we measure steady state, not during it
             say(f"pre-warming LLM {planner.llm.describe()} ...")
@@ -228,11 +246,32 @@ def cmd_run(s, store, a):
             say(f"\n=== experiment {i + 1}/{n}: {spec.failure_type} on {spec.target_service} {spec.parameters} [{spec.planned_by}]")
             say(f"    why: {spec.rationale}")
             say(f"    hypothesis: {spec.hypothesis.statement}")
+            if spec.requires_approval and gate_on:
+                from .agents.approval import gate
+                decision = gate(s, store, spec, log=say)
+                if decision.answer == "skip":
+                    say(f"    SKIPPED by the admin ({decision.reason}); nothing was injected")
+                    continue
+                if decision.answer == "stop_run":
+                    say(f"    STOP RUN by the admin ({decision.reason}); aborting the whole run")
+                    break
+                say(f"    cleared by the admin: {decision.answer.replace('_', ' ').upper()} — {decision.reason}")
+                if decision.parameters_after:
+                    say(f"    reduced to {spec.parameters}")
+            elif spec.requires_approval:
+                # Reachable only if the gate went away between planning and here; never inject
+                # something that was held for a human on the grounds that we cannot ask.
+                say("    needs an admin decision but the approval gate is not usable; skipping "
+                    "(pass --allow-protected to run it unattended on purpose)")
+                continue
             r = inj.run(spec)
             say(f"--- {r.status}: success during {r.during.success_rate}, recovered in {r.recovery.time_to_recover_s}s, "
                 f"hypothesis {'held' if r.hypothesis_result.held else 'violated' if r.hypothesis_result.held is False else '-'}, "
                 f"findings {[f.code for f in r.findings]}")
             planner.history.append(r)
+            if gate_on and r.status != "skipped":
+                from .agents.approval import run_post_experiment
+                run_post_experiment(s, store, r.experiment_id, llm_client(s, not a.no_llm), not a.no_llm, log=say)
             if i < n - 1:
                 say(f"pause {sess.policy.pause_between_s:.0f}s so the system settles before the next experiment")
                 time.sleep(sess.policy.pause_between_s)
@@ -379,6 +418,46 @@ def cmd_onboard(s, store, a):
     return 0
 
 
+def cmd_approvals(s, store, a):
+    """Show the decision the system is waiting on, or re-send its email.
+
+    There is deliberately no "approve from the CLI" command: the answer comes back by email on
+    purpose, and a local bypass would defeat the gate. An operator who is at the laptop already has
+    `faultline stop` and `faultline resume`.
+    """
+    from .agents.approval import ApprovalAgent, describe_pending, preflight
+
+    pending = store.pending_approval()
+    if a.resend:
+        if pending is None:
+            say(f"nothing pending to resend (no {store.pending_approval_file.name})")
+            return 1
+        return 0 if ApprovalAgent(s, store, log=say).resend(a.resend) else 1
+
+    for line in describe_pending(pending):
+        say(line)
+    decided = store.approvals()[-a.limit:] if a.limit else []
+    if decided:
+        say(f"\nlast {len(decided)} decision(s):")
+        for r in decided:
+            d = r.decision
+            how = "no decision recorded" if d is None else (
+                f"{d.answer.replace('_', ' ').upper()} ({'answered' if d.answered else 'timed out'})")
+            say(f"  {r.approval_id}  {r.scenario:<16} {r.experiment_id}  {how}")
+            if d is not None:
+                say(f"    why: {d.reason}")
+                if d.fix_index:
+                    say(f"    chose fix #{d.fix_index}: {d.fix_title} (a decision log entry; nothing was applied)")
+                for n in d.parameter_notes:
+                    say(f"    {n}")
+    issues = preflight(s)
+    if issues:
+        say("\nthe approval gate is NOT usable until these are set in .env:")
+        for i in issues:
+            say(f"  - {i}")
+    return 0
+
+
 def cmd_stop(s, store, a):
     store.request_stop("cli")
     say("STOP requested: the running experiment rolls back within ~1s; the guardian restores anything still down. `faultline resume` clears it.")
@@ -443,10 +522,12 @@ def main(argv=None) -> int:
     r.add_argument("--duration", type=int); r.add_argument("--no-llm", action="store_true"); r.add_argument("--allow-protected", action="store_true")
     r.add_argument("--analyze", action="store_true", help="run risk, fix and scorecard agents afterwards")
     r.add_argument("--resume-stop", action="store_true", help="clear a leftover STOP file first")
+    r.add_argument("--no-approvals", action="store_true",
+                   help="do not ask the admin by email even if the gate is configured (unattended runs)")
     r.set_defaults(fn=cmd_run)
 
     rr = sub.add_parser("rerun", help="repeat a previous experiment by id"); rr.add_argument("experiment_id")
-    for flag in ("--no-llm", "--allow-protected", "--analyze", "--resume-stop"):
+    for flag in ("--no-llm", "--allow-protected", "--analyze", "--resume-stop", "--no-approvals"):
         rr.add_argument(flag, action="store_true")
     rr.set_defaults(fn=cmd_rerun, experiments=1)
 
@@ -469,11 +550,16 @@ def main(argv=None) -> int:
     sub.add_parser("stop", help="KILL SWITCH: abort and roll back now").set_defaults(fn=cmd_stop)
     h = sub.add_parser("heal", help="reset the sandbox: remove chaos leftovers, (optionally) restart the cluster, wait for UP")
     h.add_argument("--restart", action="store_true", help="also restart the Ditto services in dependency order"); h.set_defaults(fn=cmd_heal)
+    ap = sub.add_parser("approvals", help="show the decision the system is waiting on (answers arrive by email)")
+    ap.add_argument("--resend", metavar="ID", help="re-send a pending decision's email, same token")
+    ap.add_argument("--limit", type=int, default=5, help="how many past decisions to list (0 = none)")
+    ap.set_defaults(fn=cmd_approvals)
     sub.add_parser("resume", help="clear the STOP flag").set_defaults(fn=cmd_resume)
     sub.add_parser("status", help="containers, locks, agents").set_defaults(fn=cmd_status)
     d = sub.add_parser("dashboard", help="live web dashboard"); d.add_argument("--port", type=int); d.set_defaults(fn=cmd_dashboard)
     dm = sub.add_parser("demo", help="topology -> baseline -> experiments -> analysis -> narrative")
     dm.add_argument("--experiments", type=int, default=3); dm.add_argument("--baseline", type=int, default=45); dm.add_argument("--no-llm", action="store_true"); dm.add_argument("--allow-protected", action="store_true")
+    dm.add_argument("--no-approvals", action="store_true", help="do not ask the admin by email during the demo")
     dm.set_defaults(fn=cmd_demo)
 
     a = p.parse_args(argv)

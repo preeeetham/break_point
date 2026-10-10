@@ -761,15 +761,13 @@ def run_post_experiment(settings, store: ReportStore, experiment_id: str, llm=No
     if report is None:
         log(f"[approval] no report for {experiment_id}")
         return None
-    risk = store.risk(experiment_id)
+    # Assess on the fly when the Risk agent has not written a file for this experiment yet, exactly
+    # as the Fix agent does, so the trigger does not silently depend on `--analyze` having been used.
+    risk = store.risk(experiment_id) or risk_agent.assess(report, store.topology(), None)
     fire, reason = problem_occurred(report, risk)
     if not fire:
         return None
-    fix = store.fix(experiment_id)
-    if risk is None:
-        risk = risk_agent.assess(report, store.topology(), None)
-    if fix is None:
-        fix = fix_agent.recommend(report, risk, None)
+    fix = store.fix(experiment_id) or fix_agent.recommend(report, risk, None)
     narrative = narrator.narrate(report, risk, fix, llm, use_llm)
     agent = agent or ApprovalAgent(settings, store, log=log)
     log(f"[approval] {experiment_id}: {reason}; asking {agent.s.admin_email or 'nobody (ADMIN_EMAIL unset)'}")
