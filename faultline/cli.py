@@ -433,6 +433,16 @@ def cmd_onboard(s, store, a):
     except SourceError as exc:
         say(f"error: {exc}")
         return 1
+    # Scoring a file against the place this run is about to write it is both meaningless and
+    # destructive: `onboard` writes before `compare` reads, so the hand-authored file would be
+    # overwritten and then compared with itself. Fail before the clone and the model call.
+    if a.compare_to and not a.dry_run:
+        out_path = (_Path(a.out) / f"{src.slug}_knowledge.yaml").resolve()
+        if out_path == _Path(a.compare_to).resolve():
+            say(f"error: --compare-to {a.compare_to} is also where this run would write. "
+                f"Scoring the generated file against itself proves nothing and destroys the "
+                f"hand-authored one. Re-run with --dry-run, or --out to a scratch directory.")
+            return 1
     report = onboard(src, llm_client(s, not a.no_llm), _Path(s.knowledge_file),
                      _Path(a.out), log=say, write=not a.dry_run, force=a.force)
     k = report.knowledge
@@ -490,15 +500,19 @@ def cmd_dashboard(s, store, a):
 
 
 def cmd_demo(s, store, a):
-    say("== 1/6 topology"); cmd_topology(s, store, argparse.Namespace(no_live=False))
-    say("== 2/6 scout"); cmd_scout(s, store, argparse.Namespace(reconcile=False, no_llm=a.no_llm, json=False))
-    say("== 3/6 baseline"); cmd_baseline(s, store, argparse.Namespace(duration=a.baseline))
-    say("== 4/6 experiments")
+    say("== 1/7 topology"); cmd_topology(s, store, argparse.Namespace(no_live=False))
+    say("== 2/7 scout"); cmd_scout(s, store, argparse.Namespace(reconcile=False, no_llm=a.no_llm, json=False))
+    say("== 3/7 baseline"); cmd_baseline(s, store, argparse.Namespace(duration=a.baseline))
+    say("== 4/7 experiments")
     a.analyze, a.target, a.failure, a.param, a.duration, a.resume_stop = True, None, None, [], None, True
     cmd_run(s, store, a)
-    say("== 5/6 narrative")
+    # Closes the loop the scout opened in step 2: of the weaknesses predicted before anything was
+    # injected, which ones did the experiments just confirm?
+    say("== 5/7 predicted vs confirmed")
+    cmd_scout(s, store, argparse.Namespace(reconcile=True, no_llm=a.no_llm, json=False))
+    say("== 6/7 narrative")
     cmd_narrate(s, store, argparse.Namespace(llm=not a.no_llm, watch=False))
-    say("== 6/6 done — open the dashboard: faultline dashboard")
+    say("== 7/7 done — open the dashboard: faultline dashboard")
     return 0
 
 
@@ -558,7 +572,7 @@ def main(argv=None) -> int:
     sub.add_parser("resume", help="clear the STOP flag").set_defaults(fn=cmd_resume)
     sub.add_parser("status", help="containers, locks, agents").set_defaults(fn=cmd_status)
     d = sub.add_parser("dashboard", help="live web dashboard"); d.add_argument("--port", type=int); d.set_defaults(fn=cmd_dashboard)
-    dm = sub.add_parser("demo", help="topology -> scout -> baseline -> experiments -> analysis -> narrative")
+    dm = sub.add_parser("demo", help="topology -> scout -> baseline -> experiments -> analysis -> predicted-vs-confirmed -> narrative")
     dm.add_argument("--experiments", type=int, default=3); dm.add_argument("--baseline", type=int, default=45); dm.add_argument("--no-llm", action="store_true"); dm.add_argument("--allow-protected", action="store_true")
     dm.set_defaults(fn=cmd_demo)
 
