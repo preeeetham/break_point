@@ -48,7 +48,10 @@ INTENSITY_PARAMS = ("duration_s", "delay_ms", "jitter_ms", "loss_percent", "work
 PROBLEM_RISK_LEVELS = ("high", "critical")
 
 SUBJECT_PREFIX = "[Faultline"
-TOKEN_RE = re.compile(r"FL-[0-9a-f]{8}")
+# `Subject: ` plus the value must stay inside one 78-column header line. A folded subject is legal
+# but it puts a CRLF inside the value, which breaks `Re: ` threading and can land between the words
+# an IMAP `HEADER SUBJECT` search is matching on. The token sits near the front for the same reason.
+SUBJECT_MAX = 69
 
 
 def _utc(ts: float) -> datetime:
@@ -61,6 +64,19 @@ def _pct(x: Optional[float]) -> str:
 
 def _ms(x: Optional[float]) -> str:
     return "n/a" if x is None else f"{x:.0f} ms"
+
+
+def _subject(token: str, tail: str) -> str:
+    """`[Faultline FL-xxxxxxxx] <tail>`, kept ASCII and short so the header never folds.
+
+    One non-ASCII character turns the whole subject into an RFC 2047 encoded-word, which folds and
+    puts a CRLF inside the value: `Re:` threading breaks and an IMAP `HEADER SUBJECT` match on the
+    correlation token becomes a matter of where the fold happened to land.
+    """
+    head = f"{SUBJECT_PREFIX} {token}] "
+    plain = tail.encode("ascii", "replace").decode("ascii").replace("?", "-")
+    room = SUBJECT_MAX - len(head)
+    return head + (plain if len(plain) <= room else plain[: room - 3].rstrip() + "...")
 
 
 def _params(params: dict[str, Any]) -> str:
@@ -270,7 +286,7 @@ def render_pre_injection(spec: ExperimentSpec, token: str, reason: str, timeout_
     ft = CATALOG.get(spec.failure_type)
     title = ft.title if ft else spec.failure_type
     h = spec.hypothesis
-    subject = f"{SUBJECT_PREFIX} {token}] approval needed: {spec.failure_type} on {spec.target_service}"
+    subject = _subject(token, f"approve {spec.failure_type} on {spec.target_service}?")
     body = [
         "Faultline is holding an experiment and will not inject anything until you answer.",
         "",
@@ -315,7 +331,7 @@ def render_problem(report: ExperimentReport, risk: Optional[RiskAssessment], fix
     """
     service = report.target.get("service", "?")
     level = risk.level.upper() if risk else "UNASSESSED"
-    subject = f"{SUBJECT_PREFIX} {token}] {level}: {report.failure_type} on {service} needs your decision"
+    subject = _subject(token, f"{level}: {report.failure_type} on {service} - decide")
     body = [
         f"An experiment finished and needs a decision. Nothing is running because of this mail, and "
         f"nothing has been changed on the stack.",
@@ -366,7 +382,7 @@ def render_problem(report: ExperimentReport, risk: Optional[RiskAssessment], fix
 
 def render_clarification(req: ApprovalRequest, got: str, fix_count: int) -> tuple[str, str]:
     """One short mail when a reply does not match. It re-states the options and decides nothing."""
-    subject = f"Re: {req.subject}"
+    subject = "Re: " + _subject(req.token, "that reply was not an option")
     body = [
         "That reply was not one of the options, so nothing has been decided and Faultline is still "
         "waiting.",
@@ -462,7 +478,9 @@ class Mailbox:
                     uids += [u for u in data[0].split() if u not in uids]
             out: list[Reply] = []
             for uid in uids:
-                typ, data = client.uid("FETCH", uid, "(RFC822)")
+                # PEEK, not RFC822: a plain body fetch sets \Seen on a real server, so polling would
+                # consume the very unseen state an operator may be relying on in their own mail client.
+                typ, data = client.uid("FETCH", uid, "(BODY.PEEK[])")
                 if typ != "OK" or not data:
                     continue
                 raw = next((part[1] for part in data if isinstance(part, tuple) and len(part) > 1), None)
@@ -586,7 +604,7 @@ class ApprovalAgent:
                 + "\n".join(_option_block(req.scenario, req.timeout_s, 0))
                 + f"\n\n-- Faultline approval {req.token}")
         try:
-            self.mailer.send(req.to, req.subject or f"{SUBJECT_PREFIX} {req.token}] decision still open", body,
+            self.mailer.send(req.to, _subject(req.token, "decision still open"), body,
                              in_reply_to=req.message_id)
         except Exception as exc:
             self.log(f"[approval] resend failed: {type(exc).__name__}: {exc}")
@@ -645,57 +663,76 @@ class ApprovalAgent:
         return decision
 
     def _wait(self, req: ApprovalRequest, fix_count: int) -> ApprovalDecision:
-        """Poll for a matching reply until an independent timer says the deadline passed.
+        """Wait for a matching reply until an independent timer says the deadline passed.
 
-        The timer is a `safety.monitor.Watchdog` — its own thread, so the deadline is honoured even if
-        a poll is stuck in a blocking socket call, the same reason the injector has one.
+        The mailbox is polled on its own daemon thread and the deadline is a `safety.monitor.Watchdog`
+        on a third. That is the point: a poll wedged in a blocking socket read cannot hold the
+        decision past its deadline, the same discipline as the injector's watchdog, which reverts the
+        fault from the timer thread rather than hoping the main loop comes back round.
         """
         expired = threading.Event()
+        answered = threading.Event()
+        box: list[ApprovalDecision] = []
+        counter = {"clarifications": 0}
         watchdog = Watchdog(req.timeout_s, expired.set)
         watchdog.arm()
-        handled: set[str] = set()
-        clarifications = 0
-        poll_error_logged = False
+        threading.Thread(target=self._poll, args=(req, fix_count, box, answered, expired, counter),
+                         daemon=True, name=f"approval-{req.approval_id}").start()
         try:
             while not expired.is_set():
+                if answered.wait(0.1):
+                    return box[0]
                 if self.store.stop_requested():
                     return self._timeout_decision(
                         req, "STOP was latched while waiting for the decision; treated as a timeout, safe "
-                             f"default {TIMEOUT_DEFAULTS[req.scenario].upper()} applied", clarifications)
-                try:
-                    replies = self.mailbox.find_replies(req.token, req.message_id)
-                except Exception as exc:
-                    if not poll_error_logged:
-                        self.log(f"[approval] mailbox unreachable ({type(exc).__name__}: {exc}); "
-                                 f"retrying until the deadline")
-                        poll_error_logged = True
-                    replies = []
-                for reply in replies:
-                    key = reply.message_id or reply.uid.decode(errors="replace")
-                    if key in handled:
-                        continue
-                    handled.add(key)
-                    parsed = parse_reply(reply.first_line, req.scenario, fix_count)
-                    self._safe_mark_seen(reply.uid)
-                    if parsed:
-                        self.log(f"[approval] {req.to} replied {parsed.raw_first_line!r} -> {parsed.answer}")
-                        return ApprovalDecision(
-                            answer=parsed.answer, answered=True,
-                            reason=f"the admin replied {parsed.raw_first_line.strip()!r}",
-                            fix_index=parsed.fix_index, raw_first_line=parsed.raw_first_line,
-                            clarifications_sent=clarifications)
-                    if clarifications < MAX_CLARIFICATIONS:
-                        clarifications += 1
-                        self._clarify(req, reply.first_line, fix_count)
-                    else:
-                        self.log(f"[approval] another unparseable reply ({reply.first_line!r}); "
-                                 f"{MAX_CLARIFICATIONS} clarifications already sent, staying quiet")
-                expired.wait(max(0.2, float(self.s.approval_poll_s)))
+                             f"default {TIMEOUT_DEFAULTS[req.scenario].upper()} applied",
+                        counter["clarifications"])
         finally:
             watchdog.disarm()
+        if answered.is_set():                       # a reply landed in the same instant the timer fired
+            return box[0]
         return self._timeout_decision(
             req, f"no valid reply within {req.timeout_s:.0f} s; safe default "
-                 f"{TIMEOUT_DEFAULTS[req.scenario].replace('_', ' ').upper()} applied", clarifications)
+                 f"{TIMEOUT_DEFAULTS[req.scenario].replace('_', ' ').upper()} applied",
+            counter["clarifications"])
+
+    def _poll(self, req: ApprovalRequest, fix_count: int, box: list[ApprovalDecision],
+              answered: threading.Event, expired: threading.Event, counter: dict[str, int]) -> None:
+        """Poll the mailbox until a valid reply lands or the deadline passes. Daemon thread."""
+        handled: set[str] = set()
+        logged_error = False
+        while not expired.is_set() and not answered.is_set():
+            try:
+                replies = self.mailbox.find_replies(req.token, req.message_id)
+            except Exception as exc:
+                if not logged_error:
+                    self.log(f"[approval] mailbox unreachable ({type(exc).__name__}: {exc}); "
+                             f"retrying until the deadline")
+                    logged_error = True
+                replies = []
+            for reply in replies:
+                key = reply.message_id or reply.uid.decode(errors="replace")
+                if key in handled:
+                    continue
+                handled.add(key)
+                parsed = parse_reply(reply.first_line, req.scenario, fix_count)
+                self._safe_mark_seen(reply.uid)
+                if parsed:
+                    self.log(f"[approval] {req.to} replied {parsed.raw_first_line!r} -> {parsed.answer}")
+                    box.append(ApprovalDecision(
+                        answer=parsed.answer, answered=True,
+                        reason=f"the admin replied {parsed.raw_first_line.strip()!r}",
+                        fix_index=parsed.fix_index, raw_first_line=parsed.raw_first_line,
+                        clarifications_sent=counter["clarifications"]))
+                    answered.set()
+                    return
+                if counter["clarifications"] < MAX_CLARIFICATIONS:
+                    counter["clarifications"] += 1
+                    self._clarify(req, reply.first_line, fix_count)
+                else:
+                    self.log(f"[approval] another unparseable reply ({reply.first_line!r}); "
+                             f"{MAX_CLARIFICATIONS} clarifications already sent, staying quiet")
+            expired.wait(max(0.05, float(self.s.approval_poll_s)))
 
     def _clarify(self, req: ApprovalRequest, got: str, fix_count: int) -> None:
         subject, body = render_clarification(req, got, fix_count)
