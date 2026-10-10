@@ -385,6 +385,11 @@ class PredictedWeakness(BaseModel):
     factors: dict[str, float]
     suggested_experiment: SuggestedExperiment
     confirming_finding_codes: list[str]
+    # Which catalog failure types could speak to this prediction at all. Empty = any. This exists
+    # because `api_impact` fires on every experiment that moves the error rate, so without it a
+    # container crash would "confirm" a missing CPU limit, and the headline predicted-vs-confirmed
+    # number would inflate itself on experiments that have nothing to do with the prediction.
+    confirming_failure_types: list[str] = []
     why_it_matters: str
     status: Literal["predicted", "confirmed", "cleared"] = "predicted"
     label: str = PREDICTED_LABEL

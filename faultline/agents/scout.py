@@ -74,6 +74,25 @@ CATEGORY_WEIGHT: dict[str, float] = {
     "port_beyond_ingress": 0.5,
 }
 
+# Which catalog failure types can bear on each category at all. A crash is a fast, clean error, so it
+# says nothing about missing retry/backoff; an unbounded cgroup is only exercised by something that
+# actually loads the container. Without this gate the generic `api_impact` code would let any
+# experiment that touched the service confirm any prediction about it.
+CONFIRMING_FAILURE_TYPES: dict[str, list[str]] = {
+    # The health-masking categories carry specific finding codes already, so any outage that makes
+    # the dependency unavailable is a fair test; left open deliberately.
+    "shallow_health_check": [],
+    "missing_health_check": [],
+    "port_beyond_ingress": [],
+    "no_redundancy": ["container_crash", "container_stop", "container_pause", "network_partition",
+                      "network_delay", "network_loss"],
+    "no_resource_limits": ["cpu_stress", "db_flood", "traffic_spike", "disk_pressure"],
+    "weak_restart_policy": ["container_crash", "container_stop"],
+    "no_retry_or_backoff": ["network_delay", "network_loss", "network_partition", "container_pause",
+                            "cpu_stress", "db_flood"],
+    "no_rate_limiting": ["traffic_spike"],
+}
+
 # Which live finding codes would confirm each prediction. The reconcile agent matches on these, and
 # ignores info-severity matches -- `api_impact` fires on every experiment, including the benign case.
 CONFIRMING_CODES: dict[str, list[str]] = {
@@ -658,6 +677,7 @@ def analyse(ctx: ScoutContext) -> tuple[list[PredictedWeakness], list[str]]:
             factors=factors,
             suggested_experiment=resolve_experiment(r, ctx),
             confirming_finding_codes=list(CONFIRMING_CODES.get(r.category, [])),
+            confirming_failure_types=list(CONFIRMING_FAILURE_TYPES.get(r.category, [])),
             why_it_matters=template_prose(r),
             generated_by="rules",
         ))
