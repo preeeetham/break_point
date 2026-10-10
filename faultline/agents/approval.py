@@ -74,7 +74,8 @@ def _subject(token: str, tail: str) -> str:
     correlation token becomes a matter of where the fold happened to land.
     """
     head = f"{SUBJECT_PREFIX} {token}] "
-    plain = tail.encode("ascii", "replace").decode("ascii").replace("?", "-")
+    # Per character, so a legitimate "?" survives and a stray CR or LF cannot reach the header.
+    plain = "".join(c if c.isascii() and c.isprintable() else "-" for c in tail)
     room = SUBJECT_MAX - len(head)
     return head + (plain if len(plain) <= room else plain[: room - 3].rstrip() + "...")
 
@@ -110,6 +111,11 @@ def preflight(settings) -> list[str]:
     if settings.approval_timeout_s <= 0:
         issues.append(f"APPROVAL_TIMEOUT_SECONDS must be positive, got {settings.approval_timeout_s}")
     return issues
+
+
+def gate_available(settings) -> bool:
+    """Whether the gate can actually reach a human. One place, so no caller re-derives it."""
+    return not preflight(settings)
 
 
 # ---------------------------------------------------------------- scenario triggers
@@ -555,12 +561,15 @@ class ApprovalAgent:
         req = self._open("pre_injection", spec.experiment_id, spec.target_service, spec.failure_type)
         subject, body = render_pre_injection(spec, req.token, reason, req.timeout_s)
         req.subject, req.options = subject, list(PRE_INJECTION_REPLIES)
-        decision = self._send_and_wait(req, body, fix_count=0)
-        if decision.answer == "approve_reduced":
+
+        def reduce_if_asked(decision: ApprovalDecision) -> None:
+            if decision.answer != "approve_reduced":
+                return
             before = dict(spec.parameters)
             after, notes = halve(spec.failure_type, before)
             decision.parameters_before, decision.parameters_after, decision.parameter_notes = before, after, notes
-            self._finish(req, decision)
+
+        decision = self._send_and_wait(req, body, 0, enrich=reduce_if_asked)
         if decision.answer == "stop_run":
             self.store.request_stop(f"approval:{req.approval_id}")
             self.log(f"[approval] STOP RUN: wrote {self.store.stop_file} — `faultline resume` clears it")
@@ -576,10 +585,13 @@ class ApprovalAgent:
         subject, body = render_problem(report, risk, fix, narrative, req.token, reason, req.timeout_s)
         req.subject, req.options = subject, list(PROBLEM_REPLIES)
         fixes = list(fix.recommendations) if fix else []
-        decision = self._send_and_wait(req, body, fix_count=len(fixes))
-        if decision.answer == "fix" and decision.fix_index and decision.fix_index <= len(fixes):
-            decision.fix_title = fixes[decision.fix_index - 1].title
-            self._finish(req, decision)
+
+        def name_the_fix(decision: ApprovalDecision) -> None:
+            if decision.answer == "fix" and decision.fix_index and decision.fix_index <= len(fixes):
+                decision.fix_title = fixes[decision.fix_index - 1].title
+
+        decision = self._send_and_wait(req, body, len(fixes), enrich=name_the_fix)
+        if decision.answer == "fix":
             self.log(f"[approval] recorded chosen remediation #{decision.fix_index} "
                      f"({decision.fix_title}) — a decision log entry; nothing was applied")
         if decision.answer == "wait":
@@ -630,7 +642,10 @@ class ApprovalAgent:
         return ApprovalDecision(answer=TIMEOUT_DEFAULTS[req.scenario], answered=False, reason=reason,
                                 clarifications_sent=clarifications)
 
-    def _send_and_wait(self, req: ApprovalRequest, body: str, fix_count: int) -> ApprovalDecision:
+    def _send_and_wait(self, req: ApprovalRequest, body: str, fix_count: int,
+                       enrich: Optional[Callable[[ApprovalDecision], None]] = None) -> ApprovalDecision:
+        """`enrich` fills in whatever the answer implies before the record is written, so the decided
+        file is never published in a half-filled state."""
         default = TIMEOUT_DEFAULTS[req.scenario].replace("_", " ").upper()
         if self.issues:
             # Not configured is not consent. Scenario A falls to SKIP, exactly as a timeout would.
@@ -639,7 +654,26 @@ class ApprovalAgent:
                                                    f"asked; safe default {default} applied — {req.send_error}")
             for i in self.issues:
                 self.log(f"[approval] NOT CONFIGURED: {i}")
-            self._finish(req, decision)
+            self._finish(req, decision, enrich)
+            return decision
+
+        open_already = self.store.pending_approval()
+        if open_already is not None and open_already.approval_id != req.approval_id:
+            # PENDING_APPROVAL.json is a lock, like ACTIVE_EXPERIMENT.json: evicting a decision
+            # somebody is already answering would leave them replying into a void and would make
+            # `faultline approvals` describe the wrong one.
+            req.status, req.send_error = "failed", (
+                f"decision {open_already.approval_id} ({open_already.scenario}) is already open on "
+                f"{open_already.experiment_id} until {open_already.deadline.isoformat()}")
+            decision = self._timeout_decision(req, f"another decision is already open, so this one was "
+                                                   f"not asked; safe default {default} applied — "
+                                                   f"{req.send_error}")
+            self.log(f"[approval] NOT ASKED: {req.send_error}; failing safe to {default}")
+            self.store.write_approval(req)      # recorded, but the open decision's lock is left alone
+            if enrich is not None:
+                enrich(decision)
+                req.decision = decision
+                self.store.write_approval(req)
             return decision
 
         self.store.set_pending_approval(req)
@@ -654,12 +688,12 @@ class ApprovalAgent:
             decision = self._timeout_decision(req, f"could not send the request ({req.send_error}); "
                                                    f"treated as a timeout, safe default {default} applied")
             self.log(f"[approval] send FAILED ({req.send_error}); failing safe to {default}")
-            self._finish(req, decision)
+            self._finish(req, decision, enrich)
             return decision
 
         self.store.set_pending_approval(req)
         decision = self._wait(req, fix_count)
-        self._finish(req, decision)
+        self._finish(req, decision, enrich)
         return decision
 
     def _wait(self, req: ApprovalRequest, fix_count: int) -> ApprovalDecision:
@@ -749,7 +783,10 @@ class ApprovalAgent:
         except Exception:
             pass
 
-    def _finish(self, req: ApprovalRequest, decision: ApprovalDecision) -> None:
+    def _finish(self, req: ApprovalRequest, decision: ApprovalDecision,
+                enrich: Optional[Callable[[ApprovalDecision], None]] = None) -> None:
+        if enrich is not None:
+            enrich(decision)
         req.decision = decision
         if req.status != "failed":
             req.status = "answered" if decision.answered else "timed_out"
@@ -832,6 +869,6 @@ def describe_pending(req: Optional[ApprovalRequest]) -> list[str]:
 
 
 __all__ = ["ApprovalAgent", "Mailbox", "Mailer", "ParsedAnswer", "Reply", "describe_pending", "first_meaningful_line",
-           "gate", "halve", "needs_pre_injection_approval", "parse_reply", "preflight", "problem_occurred",
+           "gate", "gate_available", "halve", "needs_pre_injection_approval", "parse_reply", "preflight", "problem_occurred",
            "render_clarification", "render_pre_injection", "render_problem", "run_post_experiment",
            "scout_predicted_severity"]
