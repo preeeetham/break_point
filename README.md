@@ -319,6 +319,12 @@ An abbreviated experiment report:
 - Bandit-style experiment selection that trades exploration of untested pairs against re-testing weak services, instead of the fixed priority formula.
 - Multi-LLM consensus for the planner: two models propose, the code accepts only when they agree on target and failure type.
 
+## Parallel LangGraph implementation (opt-in)
+
+`faultline_langgraph/` reimplements Faultline's agents on LangGraph and LangChain, one agent at a time. Today it covers the Planner, as an agent that investigates with read-only tools before it commits, and corrects itself when code rejects its plan. It reads and writes the same `reports/` blackboard, validates against `faultline.schemas` and calls the original planner code for validation, clamping and the deterministic fallback, so "LLM proposes, code disposes" still holds.
+
+It is opt-in only: install with `pip install -e '.[langgraph]'` and run with `python -m faultline_langgraph.cli plan`. The `faultline` commands, the dashboard and the base install are completely unaffected; nothing in `faultline/` imports it. Details, the graph and the plan for converting other agents are in [faultline_langgraph/README.md](faultline_langgraph/README.md).
+
 ## Development
 
 ```bash

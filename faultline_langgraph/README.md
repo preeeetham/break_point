@@ -141,12 +141,37 @@ The acceptance bar for this conversion:
 
 ## Equivalence results
 
-> TODO: fill in with measured numbers.
+Measured on 2026-10-11 against the demo fixture (`reports-demo`: 4 past experiments) and the same fixture with no history.
 
-- TODO: schema validity, N specs checked, N valid.
-- TODO: `--no-llm` match against `faultline plan --no-llm`, fields compared, result.
-- TODO: live side by side, model, number of runs, picks agreed / differed, fallbacks per engine, tool calls per plan, rejections recovered, latency.
-- TODO: test suite results (`faultline_langgraph/tests` and the base `pytest`).
+**1. Schema.** Every spec either engine produced in the runs below validates against `faultline.schemas.ExperimentSpec` (round-trip `model_validate(model_dump())`), and so does every spec in the offline suite.
+
+**2. Deterministic match (`--no-llm`).** Four input sets: full history, no history, no helper images (pumba/tc missing), and `--allow-protected`. For each, the LangGraph planner and the original agreed **exactly** on:
+
+- the full ranked candidate list (55 / 55 / 41 / 59 candidates; service, failure type, priority, reasons, and order);
+- the chosen spec, field by field (except `experiment_id`, a fresh uuid in both), and the hypothesis;
+- the CLI text, byte for byte, apart from the one extra `engine:` line the new command prints first.
+
+This is by construction rather than by luck: the ranking is `Planner.candidates()` and the no-LLM path is `Planner.plan_next()`, both called, not copied.
+
+**3. Live side by side.** Groq, `openai/gpt-oss-20b`, same key and the same `.env` variables for both engines, 3 runs per fixture per engine. The configured `openai/gpt-oss-120b` had used up its daily token quota on that account. A first attempt was what exposed the 429, budget and garbled-tool-call failure modes, which are fixed above.
+
+| | original (one call) | LangGraph agent |
+|---|---|---|
+| plans chosen by the model | 6 / 6 | 5 / 6 (1 spent its turn budget investigating, deterministic fallback) |
+| target in top 5, parameters in bounds, hypothesis in range | 6 / 6 | 6 / 6 |
+| tool calls per plan | none | 2-6 (inspect_service, baseline_summary, failure_type_info, preview_candidate) |
+| recoveries | none needed | 5 garbled tool calls retried, 2 text answers rejected and resubmitted |
+| picks | network_delay on mongodb 4x, db_flood and network_loss on mongodb once each | network_delay on mongodb 6x |
+| wall time per plan | about 1 s | 52-122 s |
+
+Both engines made the same kind of decision, inside the same top 5 and the same bounds, with coherent hypotheses. For example, the agent wrote: "Increasing network latency to MongoDB will degrade API latency for all dependent services but keep success rates above 95% and recover within 10 seconds." The cost is time and tokens. An agent sends the whole conversation again on every turn, and on Groq's free tier most of the wall time is rate-limit backoff. For a live demo, use a paid tier or local Ollama, or run the original planner when speed matters.
+
+Two things showed up that the offline tests could not show:
+
+- **Forced `tool_choice` is not reliable on Groq.** Groq's gpt-oss sometimes ignored it and kept investigating. The turn budget and the deterministic fallback cover this.
+- **Small models garble tool calls,** mostly for tools that take no arguments. The retry covers this.
+
+**Tests.** `faultline_langgraph/tests`: 110 passed, offline. Base suite: 83 passed and 1 xpassed, unchanged, with nothing collected from `faultline_langgraph`. A no-extras install resolves to the same packages as before this branch.
 
 ## What is converted, and what is not
 
