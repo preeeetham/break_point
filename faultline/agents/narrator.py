@@ -145,7 +145,7 @@ def _safety(report: ExperimentReport) -> Optional[str]:
     s = report.safety
     if not s.aborted_early:
         return None
-    who = "watchdog" if s.watchdog_fired else ("operator" if s.operator_stop else "guardian")
+    who = "watchdog" if s.watchdog_fired else ("operator" if s.operator_stop else "safety monitor")
     return f"  Safety: aborted early by {who} — {s.abort_reason or 'threshold breached'}"
 
 
