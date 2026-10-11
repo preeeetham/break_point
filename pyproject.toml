@@ -18,6 +18,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Opt-in: used only by the faultline_langgraph/ package (the LangGraph
+# reimplementation). faultline/ never imports these, and the base install
+# never needs them. Install with: pip install -e '.[langgraph]'
+langgraph = [
+    "langgraph>=1.2,<2",
+    "langchain-core>=1.6,<2",
+    "langchain-openai>=1.7,<2",
+    "langchain-anthropic>=1.7,<2",
+    "langchain-ollama>=1.1,<2",
+]
 
 [project.scripts]
 faultline = "faultline.cli:main"

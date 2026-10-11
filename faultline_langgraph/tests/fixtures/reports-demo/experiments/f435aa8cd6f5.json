@@ -1,0 +1,287 @@
+{
+  "schema_version": "1.0",
+  "experiment_id": "f435aa8cd6f5",
+  "started_at": "2026-10-10T10:00:04.332183Z",
+  "ended_at": "2026-10-10T10:01:07.132183Z",
+  "target": {
+    "service": "gateway",
+    "container": "bosch-ditto-gateway-1"
+  },
+  "failure_type": "network_delay",
+  "parameters": {
+    "duration_s": 30,
+    "delay_ms": 400,
+    "jitter_ms": 100
+  },
+  "rationale": "gateway is the only path from nginx into the cluster and has not been tested with a slow network; ranked first among untested degrade-only candidates.",
+  "hypothesis": {
+    "statement": "Adding 400 +/- 100 ms of latency on gateway for 30 s will raise p95 latency well above baseline without failing requests, and recover within 15 s of rollback.",
+    "expected_affected": [
+      "nginx"
+    ],
+    "expected_max_error_rate": 0.05,
+    "expected_recovery_s": 15.0
+  },
+  "hypothesis_result": {
+    "held": true,
+    "observed_max_error_rate": 0.0,
+    "observed_recovery_s": 6.2,
+    "unexpected_affected": [],
+    "notes": "error rate 0% vs <=5%; unexpected services none; recovery 6.2s vs <=22s"
+  },
+  "criticality_score": 1.0,
+  "planned_by": "deterministic",
+  "baseline": {
+    "sample_count": 80,
+    "success_rate": 1.0,
+    "p50_ms": 18.4,
+    "p95_ms": 41.2,
+    "p99_ms": 96.5,
+    "by_operation": {
+      "get_thing": {
+        "count": 30,
+        "success_rate": 1.0,
+        "p95_ms": 35.02
+      },
+      "put_property": {
+        "count": 20,
+        "success_rate": 1.0,
+        "p95_ms": 37.08
+      },
+      "search": {
+        "count": 20,
+        "success_rate": 1.0,
+        "p95_ms": 45.32
+      },
+      "get_property": {
+        "count": 10,
+        "success_rate": 1.0,
+        "p95_ms": 24.72
+      }
+    },
+    "status_counts": {
+      "200": 60,
+      "204": 20
+    }
+  },
+  "during": {
+    "sample_count": 112,
+    "success_rate": 1.0,
+    "p50_ms": 452.0,
+    "p95_ms": 788.5,
+    "p99_ms": 902.3,
+    "by_operation": {
+      "get_thing": {
+        "count": 42,
+        "success_rate": 1.0,
+        "p95_ms": 670.23
+      },
+      "put_property": {
+        "count": 28,
+        "success_rate": 1.0,
+        "p95_ms": 709.65
+      },
+      "search": {
+        "count": 28,
+        "success_rate": 1.0,
+        "p95_ms": 867.35
+      },
+      "get_property": {
+        "count": 14,
+        "success_rate": 1.0,
+        "p95_ms": 473.1
+      }
+    },
+    "status_counts": {
+      "200": 84,
+      "204": 28
+    }
+  },
+  "after": {
+    "sample_count": 32,
+    "success_rate": 1.0,
+    "p50_ms": 19.6,
+    "p95_ms": 42.8,
+    "p99_ms": 51.2,
+    "by_operation": {
+      "get_thing": {
+        "count": 12,
+        "success_rate": 1.0,
+        "p95_ms": 36.38
+      },
+      "put_property": {
+        "count": 8,
+        "success_rate": 1.0,
+        "p95_ms": 38.52
+      },
+      "search": {
+        "count": 8,
+        "success_rate": 1.0,
+        "p95_ms": 47.08
+      },
+      "get_property": {
+        "count": 4,
+        "success_rate": 1.0,
+        "p95_ms": 25.68
+      }
+    },
+    "status_counts": {
+      "200": 24,
+      "204": 8
+    }
+  },
+  "health": [
+    {
+      "service": "mongodb",
+      "ticks": 10,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "policies",
+      "ticks": 10,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "things",
+      "ticks": 10,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "things-search",
+      "ticks": 10,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "connectivity",
+      "ticks": 10,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "gateway",
+      "ticks": 10,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "nginx",
+      "ticks": 10,
+      "alive_ok_fraction": null,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    }
+  ],
+  "recovery": {
+    "recovered": true,
+    "recovered_at": "2026-10-10T10:00:42.732183Z",
+    "time_to_recover_s": 6.2,
+    "outage_duration_s": 0.0,
+    "auto_restarted_by_docker": null,
+    "remediation_actions": [],
+    "data_integrity_ok": true,
+    "data_integrity_detail": "stored seq=377, last acknowledged write seq=377"
+  },
+  "safety": {
+    "aborted_early": false,
+    "abort_reason": null,
+    "abort_detail": {},
+    "watchdog_fired": false,
+    "operator_stop": false,
+    "thresholds": {
+      "abort_error_rate_above": 0.3,
+      "abort_p95_ms_above": 3000.0,
+      "trailing_samples": 10,
+      "non_target_health_failures_in_a_row": 3,
+      "max_experiment_seconds": 90,
+      "watchdog_grace_seconds": 15,
+      "recovery_success_rate_at_least": 0.95,
+      "recovery_p95_ms_below": 300.0,
+      "recovery_consecutive_checks": 3,
+      "recovery_timeout_seconds": 300,
+      "baseline_p95_ms": 41.2
+    }
+  },
+  "affected_services_observed": [],
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "low",
+      "title": "API stayed available (100%) but p95 latency rose 41.2 -> 788.5 ms",
+      "evidence": "112 requests, status counts {'200': 84, '204': 28}, p95 788.5 ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 6s",
+      "evidence": "outage as seen by clients: 0.0s"
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-10-10T10:00:04.332183Z",
+      "t_plus_s": 0.0,
+      "event": "planned",
+      "detail": "network_delay on gateway (deterministic)"
+    },
+    {
+      "at": "2026-10-10T10:00:05.732183Z",
+      "t_plus_s": 1.4,
+      "event": "injected",
+      "detail": "pumba netem delay 400ms +/- 100ms on bosch-ditto-gateway-1 for 30s"
+    },
+    {
+      "at": "2026-10-10T10:00:35.832183Z",
+      "t_plus_s": 31.5,
+      "event": "injection_ended",
+      "detail": "fault expired on its own"
+    },
+    {
+      "at": "2026-10-10T10:00:35.932183Z",
+      "t_plus_s": 31.6,
+      "event": "rollback_started",
+      "detail": ""
+    },
+    {
+      "at": "2026-10-10T10:00:36.532183Z",
+      "t_plus_s": 32.2,
+      "event": "rollback_done",
+      "detail": "fault removed"
+    },
+    {
+      "at": "2026-10-10T10:00:42.732183Z",
+      "t_plus_s": 38.4,
+      "event": "recovered",
+      "detail": "success 100%, p95 42.8 ms, 0 remediation actions"
+    },
+    {
+      "at": "2026-10-10T10:00:42.832183Z",
+      "t_plus_s": 38.5,
+      "event": "integrity_check",
+      "detail": "stored seq=377, last acknowledged write seq=377"
+    }
+  ],
+  "resources": {},
+  "reproduce": [
+    "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock gaiaadm/pumba:latest netem --duration 30s --tc-image ghcr.io/alexei-led/pumba-alpine-nettools:latest delay --time 400 --jitter 100 bosch-ditto-gateway-1"
+  ],
+  "raw_logs_ref": "reports/experiments/f435aa8cd6f5/",
+  "status": "completed",
+  "error": null
+}
