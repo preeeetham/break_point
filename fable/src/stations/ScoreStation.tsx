@@ -10,6 +10,9 @@ import { ExperimentList } from "./parts/score-list";
 import { ExperimentDetail } from "./parts/score-detail";
 import { ScorecardPanel } from "./parts/score-scorecard";
 import { newestFirst, tidy } from "./parts/score-text";
+import { AutoStops } from "./parts/score-safety";
+import { AllFindings } from "./parts/score-findings";
+import { Coverage } from "./parts/score-coverage";
 
 export function ScoreStation() {
   const s = useFState();
@@ -43,6 +46,16 @@ export function ScoreStation() {
     }
   };
 
+  // the summary panels open an experiment in the log: select it, bring it into view, focus its row
+  const open = (id: string) => {
+    setPicked(id);
+    const target = window.matchMedia("(max-width: 1023px)").matches ? detailRef.current : logRef.current;
+    requestAnimationFrame(() => {
+      target?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+      document.getElementById(`exp-tab-${id}`)?.focus({ preventScroll: true });
+    });
+  };
+
   return (
     <Station
       id="score"
@@ -58,6 +71,8 @@ export function ScoreStation() {
       controls={<AnalyzeControls s={s} />}
       instrument={<ScorecardPanel sc={s?.scorecard ?? null} />}
       below={
+        <div className="flex flex-col gap-8">
+        <AutoStops experiments={experiments} onOpen={open} />
         <div ref={logRef} className="scroll-mt-32">
           <Instrument title="Experiment log" meta={experiments.length ? `${experiments.length} experiments, newest first` : undefined}>
             {!current ? (
@@ -73,6 +88,9 @@ export function ScoreStation() {
               </div>
             )}
           </Instrument>
+        </div>
+        <AllFindings experiments={experiments} state={s} onOpen={open} />
+        <Coverage experiments={experiments} scorecard={s?.scorecard ?? null} services={s?.topology?.services ?? null} onOpen={open} />
         </div>
       }
     />
