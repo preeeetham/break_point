@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 const api = process.env.FAULTLINE_API ?? "http://127.0.0.1:8777";
 
 export default defineConfig({
-  base: "/fable/",
+  base: process.env.FABLE_BASE ?? "/fable/",
   plugins: [react(), tailwindcss()],
   server: {
     host: "127.0.0.1",
