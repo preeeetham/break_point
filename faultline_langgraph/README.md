@@ -66,7 +66,9 @@ The LangGraph Planner gets the same briefing, the same top 5 and the same rules.
   None of them can change anything. They read from the same `Planner` instance the ranking used, so the agent sees the same topology, policy and history.
 - **It commits through one tool**, `submit_plan(choice, parameters, rationale, hypothesis)`, whose argument schema uses `faultline.schemas.Hypothesis`.
 - **It corrects itself.** If code rejects the plan, the reason goes back to the agent as the tool result ("REJECTED: choice 7 is not a listed candidate ...") and it can submit again: up to **3 submissions** in total.
-- **It has a budget**: at most **8 agent turns** (LLM calls) per plan, investigation included. When the budget or the submissions run out, or the model call fails (network, auth, a model without tool support), the deterministic plan runs.
+- **It has a budget**: at most **6 agent turns** (LLM calls) per plan. The first **3** are for investigation (several tool calls per turn are encouraged); from turn 4 the model is forced to call `submit_plan` (`tool_choice`, with the unforced binding as a fallback for providers that reject it), and each turn's system prompt tells it which turn it is on. When the budget or the submissions run out, or the model call fails (network, auth, a model without tool support), the deterministic plan runs.
+- **It recovers from garbled tool calls.** Small models sometimes emit tool-call JSON the provider can't parse (Groq answers `400 tool_use_failed`). That is fed back to the model as a message, and it retries within the turn budget, instead of the whole plan falling back.
+- **It is rate-limit aware**: an agent makes several calls per plan, so the provider SDKs retry 429s with backoff (`max_retries=3`, honouring `Retry-After`). The original single-call client does not retry.
 
 Models that answer in text instead of calling `submit_plan` still work: the JSON object is pulled out of the reply (stripping `<think>` blocks and code fences), with the same leniency as `LLMClient.chat_json`.
 
@@ -100,6 +102,7 @@ graph TD;
 	validate -.-> agent;
 	validate -.-> fallback;
 	fallback --> __end__;
+	agent -.-> agent;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -108,7 +111,7 @@ graph TD;
 | Node | Runs | What it does | Goes to |
 |---|---|---|---|
 | `rank` | code | Calls the original `Planner.candidates()`, unchanged, and keeps the top 5. Binds the tools to the model and writes the briefing. | `END` if there are no candidates; `fallback` if there is no model; otherwise `agent` |
-| `agent` | LLM | One chat-model call with the five investigation tools and `submit_plan` bound. | `tools` for investigation calls; `validate` when it calls `submit_plan` or answers in text; `fallback` on a failed model call or a spent turn budget |
+| `agent` | LLM | One chat-model call with the five investigation tools and `submit_plan` bound (forced to `submit_plan` after the investigation turns). | `tools` for investigation calls; `validate` when it calls `submit_plan` or answers in text; back to `agent` after a garbled tool call; `fallback` on a failed model call or a spent turn budget |
 | `tools` | code | Executes the investigation tool calls (LangGraph `ToolNode`). | back to `agent` |
 | `validate` | code | Checks the proposal against `PlanProposal`, then hands it to the original `Planner.plan_next()` (see Safety). Investigation calls made in the same turn are answered too; only the first `submit_plan` per turn counts. | `END` when accepted; `agent` with the rejection reason; `fallback` after 3 rejections or when the turn budget is spent |
 | `fallback` | code | The original deterministic `Planner.plan_next()` with no LLM. If the agent was actually tried, adds the same "gave no usable answer ...; deterministic choice" note the original writes. | `END` |

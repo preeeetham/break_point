@@ -10,7 +10,8 @@
 
 rank      code   the ORIGINAL ranking, Planner.candidates(), unchanged; the agent only ever sees the top 5
 agent     LLM    a LangChain chat model with tools bound: investigates (up to INVESTIGATE_TURNS turns, several
-                 tools per turn), then calls submit_plan -- forced via tool_choice once investigation time is up
+                 tools per turn), then calls submit_plan -- forced via tool_choice once investigation time is up.
+                 A tool call the provider can't parse is fed back to the model as a retry, within the turn budget
 tools     code   executes the read-only investigation tools (tools.py)
 validate  code   hands the proposal to the ORIGINAL Planner.plan_next() through a replay client, so the existing
                  index check, clamping and hypothesis sanitising decide -- verbatim, not reimplemented. A
@@ -111,6 +112,16 @@ def _json_from_text(content: Any) -> Optional[dict]:
         return None
 
 
+def _malformed_tool_call(exc: Exception) -> Optional[str]:
+    """The text of a tool call the provider refused to parse (e.g. Groq's 400 `tool_use_failed`), else None."""
+    text = str(exc)
+    if "tool_use_failed" not in text and "parse tool call" not in text.lower():
+        return None
+    body = getattr(exc, "body", None)
+    err = body.get("error", body) if isinstance(body, dict) else {}
+    return str(err.get("failed_generation") or text) if isinstance(err, dict) else text
+
+
 def _short(call: dict) -> str:
     args = ", ".join(f"{v}" if k in ("service", "failure_type", "choice") else f"{k}={v}" for k, v in (call.get("args") or {}).items())
     return f"{call['name']}({args})"
@@ -160,6 +171,13 @@ def build_graph(planner, handle: ModelHandle, baseline: Baseline | None = None,
                     raise
                 ai = bound.invoke(prompt)
         except Exception as exc:  # noqa: BLE001 -- network, auth, model without tool support: never raise
+            garbled = _malformed_tool_call(exc)
+            if garbled is not None and turns < max_turns:
+                # the model's fault, not the transport's: tell it and give the turn back to it
+                return {"turns": turns, "messages": [HumanMessage(
+                            f"Your last tool call could not be parsed as JSON ({garbled[:200]!r}). Call the tool again "
+                            "with a valid JSON object of arguments ({} for a tool without arguments).")],
+                        "trace": [f"agent turn {turns}: malformed tool call, asked the model to retry"]}
             return {"turns": turns, "fallback_reason": f"{type(exc).__name__}: {str(exc)[:240]}",
                     "trace": [f"agent turn {turns}: model call failed ({type(exc).__name__})"]}
         calls = getattr(ai, "tool_calls", None) or []
@@ -222,7 +240,10 @@ def build_graph(planner, handle: ModelHandle, baseline: Baseline | None = None,
     def after_agent(state: PlannerState) -> str:
         if state.get("fallback_reason"):
             return "fallback"
-        calls = getattr(state["messages"][-1], "tool_calls", None) or []
+        last = state["messages"][-1]
+        if isinstance(last, HumanMessage):  # feedback on a garbled tool call: the agent tries again
+            return "agent"
+        calls = getattr(last, "tool_calls", None) or []
         if any(c["name"] == SUBMIT for c in calls) or not calls:
             return "validate"
         return "tools"
@@ -240,7 +261,8 @@ def build_graph(planner, handle: ModelHandle, baseline: Baseline | None = None,
     g.add_node("fallback", fallback)
     g.add_edge(START, "rank")
     g.add_conditional_edges("rank", after_rank, {"agent": "agent", "fallback": "fallback", END: END})
-    g.add_conditional_edges("agent", after_agent, {"tools": "tools", "validate": "validate", "fallback": "fallback"})
+    g.add_conditional_edges("agent", after_agent, {"agent": "agent", "tools": "tools", "validate": "validate",
+                                                    "fallback": "fallback"})
     g.add_edge("tools", "agent")
     g.add_conditional_edges("validate", after_validate, {"agent": "agent", "fallback": "fallback", END: END})
     g.add_edge("fallback", END)

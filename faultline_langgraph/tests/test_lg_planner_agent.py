@@ -226,6 +226,36 @@ def test_model_exception_after_investigation_falls_back(demo, scripted):
     assert_deterministic_fallback(demo, result, "ConnectionError: dropped")
 
 
+class _ToolUseFailed(Exception):
+    """Shaped like openai.BadRequestError for Groq's 400 `tool_use_failed` (the model emitted unparsable JSON)."""
+
+    def __init__(self):
+        super().__init__("Error code: 400 - {'error': {'message': 'Failed to parse tool call arguments as JSON', "
+                         "'code': 'tool_use_failed'}}")
+        self.body = {"error": {"code": "tool_use_failed", "failed_generation": '{"name": "baseline_summary", "arguments": {""}"}'}}
+
+
+def test_malformed_tool_call_is_fed_back_and_the_agent_retries(demo, scripted):
+    model = scripted(_ToolUseFailed(), ai(call(SUBMIT, choice=0, parameters={}, rationale="r",
+                                                hypothesis={"statement": "s"})))
+    result = run(demo, model)
+    assert len(model.invocations) == 2
+    feedback = model.invocations[1][-1]
+    assert isinstance(feedback, HumanMessage) and "could not be parsed as JSON" in feedback.content
+    assert 'baseline_summary' in feedback.content
+    assert result.spec.planned_by == "llm"
+    assert any("malformed tool call" in t for t in result.trace)
+
+
+def test_malformed_tool_calls_forever_stop_at_turn_budget(demo, scripted):
+    model = scripted(_ToolUseFailed())  # repeats
+    result = run(demo, model)
+    # 6 turns; from turn 4 each turn tries the forced binding, then the plain one, before giving up on it
+    assert sum(t.startswith("agent turn") for t in result.trace) == MAX_AGENT_TURNS
+    assert model.attempts == [None] * INVESTIGATE_TURNS + [SUBMIT, None] * (MAX_AGENT_TURNS - INVESTIGATE_TURNS)
+    assert_deterministic_fallback(demo, result, "tool_use_failed")
+
+
 # ---------------------------------------------------------------- 6. never submits
 def test_model_that_never_submits_stops_at_turn_budget(board, scripted):
     model = scripted(ai(call("inspect_service", service="mongodb")))  # repeats forever
