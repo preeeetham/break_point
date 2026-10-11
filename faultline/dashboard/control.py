@@ -716,7 +716,8 @@ class ControlPlane:
         expected = list((meta.get("hypothesis") or {}).get("expected_affected") or [])
         observed = [svc for svc, h in (live.get("health") or {}).items()
                     if h and (h.get("status") != "running" or (h.get("alive") not in (None, 200)))]
-        out["blast"] = {"expected": expected, "observed": observed}
+        out["blast"] = {"expected": expected, "observed": observed,
+                        **{k: _records(live.get(k)) for k in ("cascade_edges", "cascade_hops")}}
         out["safety"] = {"abort_reason": live.get("abort_reason"), "detail": {}}
         return out
 
@@ -782,6 +783,8 @@ class ControlPlane:
                 "aborted_early": r.safety.aborted_early, "abort_reason": r.safety.abort_reason,
                 "watchdog_fired": r.safety.watchdog_fired, "operator_stop": r.safety.operator_stop,
                 "affected_services_observed": r.affected_services_observed,
+                "cascade_hops_beyond_hypothesis": r.cascade.hops_beyond_hypothesis if r.cascade else None,
+                "cascade_beyond": list(r.cascade.beyond_hypothesis) if r.cascade else [],
                 "findings": [f.model_dump(mode="json") for f in r.findings],
                 "risk": ({"severity": risk.severity, "level": risk.level, "summary": risk.summary,
                           "production_implication": risk.production_implication,
@@ -865,3 +868,9 @@ def _safe(fn, default=None):
         return fn()
     except Exception:
         return default
+
+
+def _records(value) -> list:
+    """A list of dicts from live.json (cascade_edges / cascade_hops), [] when absent or malformed:
+    older injectors never write them, and the map then falls back to its health-only blast radius."""
+    return [dict(x) for x in value if isinstance(x, dict)] if isinstance(value, list) else []

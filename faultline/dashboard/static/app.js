@@ -6,7 +6,9 @@ import {
   announce, clear, cls, el, fmtDur, fmtMs, fmtNum, fmtPct, getJSON, postJSON, relTime, clockTime,
   riskTone, scoreTone, severityTone, shortId, svgIcon, SEVERITY_ORDER, titleCase,
 } from "./util.js";
-import { EMPTY, EXPLAIN, FINDING_HELP, PHASES, PHASE_INDEX } from "./copy.js";
+import {
+  CASCADE_MECHANISM, EMPTY, EXPLAIN, FINDING_HELP, PHASES, PHASE_INDEX, cascadeConfidence,
+} from "./copy.js";
 
 const POLL_IDLE = 1000;
 const POLL_LIVE = 400;
@@ -18,6 +20,9 @@ const app = {
   expanded: new Set(), explainAll: false, paused: false,
   mods: {}, sparks: {}, timer: 0, inflight: false, lastPhase: "idle", lastJob: "",
   ribbon: null, ribbonRun: {},
+  // cascade attribution: full reports fetched on row expand (id -> detail, null while in flight),
+  // the experiment whose cascade the map is replaying, and per-row "?" disclosures left open
+  details: new Map(), mapCascade: null, cascadeExplain: new Set(),
 };
 
 // ---------------------------------------------------------------- small builders
@@ -103,6 +108,7 @@ function toggleExplain(button, body, force) {
 
 function setExplainAll(on) {
   app.explainAll = on;
+  app.cascadeExplain.clear();
   document.querySelectorAll(".explain__btn").forEach((b) => {
     const body = document.getElementById(b.getAttribute("aria-controls"));
     if (body) toggleExplain(b, body, on);
@@ -416,8 +422,138 @@ function expRow(e, open) {
 }
 
 function toggleRow(id) {
-  app.expanded.has(id) ? app.expanded.delete(id) : app.expanded.add(id);
+  const opening = !app.expanded.has(id);
+  opening ? app.expanded.add(id) : app.expanded.delete(id);
+  // expanding a row with a cascade replays it on the map (a live run still wins); collapsing it clears
+  const e = ((app.state && app.state.experiments) || []).find((x) => x.experiment_id === id);
+  if (opening && e && e.cascade_hops_beyond_hypothesis != null) app.mapCascade = id;
+  else if (!opening && app.mapCascade === id) app.mapCascade = null;
   renderExperiments(app.state);
+  syncMapCascade();
+}
+
+// ---------------------------------------------------------------- cascade attribution
+// The summary in /api/state only says whether a report has a cascade; the hops, edges and summary
+// come from GET /api/experiment/<id>, fetched once per experiment when its row is first expanded.
+async function loadDetail(id) {
+  if (app.details.has(id)) return;
+  app.details.set(id, null);
+  try {
+    app.details.set(id, await getJSON(`/api/experiment/${encodeURIComponent(id)}`));
+  } catch {
+    app.details.delete(id);   // retried on the next render of the open row
+    return;
+  }
+  if (app.state) renderExperiments(app.state);
+  syncMapCascade();
+}
+
+function cascadeOf(id) {
+  const d = app.details.get(id);
+  return (d && d.experiment && d.experiment.cascade) || null;
+}
+
+function syncMapCascade() {
+  const t = app.mods.topology;
+  if (!t || !t.showCascade) return;
+  const id = app.mapCascade;
+  const e = id && ((app.state && app.state.experiments) || []).find((x) => x.experiment_id === id);
+  const c = e && cascadeOf(id);
+  if (!c) { t.showCascade(null); return; }
+  const hops = c.hops || [];
+  t.showCascade({
+    id, label: shortId(id), note: `${e.failure_type} on ${e.target_service}`,
+    target: c.origin || e.target_service,
+    expected: (e.hypothesis && e.hypothesis.expected_affected) || [],
+    observed: [...new Set([...(e.affected_services_observed || []), ...hops.map((h) => h.service)])],
+    edges: c.edges || [], hops,
+  });
+}
+
+const fmt1 = (v) => Number(v).toFixed(1);   // onsets keep their decimal: +3.0 s, not +3 s
+function onset(h) {
+  if (h.path_confidence === "origin") return "+0.0 s";
+  const a = h.onset_earliest_s, b = h.onset_latest_s;
+  if (a == null && b == null) return "—";
+  if (a == null || b == null || a === b) return `+${fmt1(a ?? b)} s`;
+  return `+${fmt1(a)}–${fmt1(b)} s`;
+}
+
+// confidence chip: tone + glyph + text, never colour alone
+const CONF_CHIP = {
+  origin: ["origin", "chaos"], ordered: ["ordered", "cyan"], same_interval: ["same interval", "warn"],
+  ambiguous: ["ambiguous", "warn"], no_graph_path: ["no graph path", "warn"],
+};
+
+function cascadeHopRow(h) {
+  const [label, tone] = CONF_CHIP[h.path_confidence] || [h.path_confidence, "neutral"];
+  const alts = [...new Set((h.candidate_paths || []).map((p) => p[1]).filter((x) => x && x !== h.upstream))];
+  return el("tr", { class: cls("cascade__hop", h.path_confidence === "origin" && "is-origin") },
+    el("th", { scope: "row", class: "mono" }, h.service),
+    el("td", { class: "mono nowrap", text: onset(h) }),
+    el("td", null,
+      el("span", { class: "cascade__mech", text: CASCADE_MECHANISM[h.mechanism] || h.mechanism }),
+      h.mechanism_evidence
+        ? el("span", { class: "cascade__ev mono", title: h.mechanism_evidence, text: h.mechanism_evidence }) : null),
+    el("td", { class: "mono" }, h.upstream || "—",
+      alts.length ? el("span", { class: "cascade__ev", text: `or via ${alts.join(", ")}` }) : null),
+    el("td", { title: cascadeConfidence(h.path_confidence, h.upstream, h.lag_s) },
+      chip(label, tone, null, h.path_confidence === "ordered" && typeof h.lag_s === "number"
+        ? `+${fmt1(h.lag_s)} s` : null)),
+    el("td", null, el("span", { class: "cascade__tags" },
+      h.masked_by_health_check ? chip("masked: health check green", "warn") : null,
+      h.beyond_hypothesis ? chip("beyond hypothesis", "critical") : null,
+      h.phase === "after_rollback" ? chip("after rollback", "neutral") : null)));
+}
+
+function cascadeSection(e) {
+  if (e.cascade_hops_beyond_hypothesis == null) return null;   // report predates cascade attribution
+  const id = e.experiment_id;
+  if (!app.details.get(id)) {
+    loadDetail(id);
+    return section("Cascade", "graph", el("p", { class: "micro dim", text: "Loading the cascade ..." }));
+  }
+  const c = cascadeOf(id);
+  if (!c) return null;
+
+  const open = app.explainAll || app.cascadeExplain.has(id);
+  const body = el("div", { class: "explain__body", id: `explain-cascade-${id}`, "data-open": String(open) },
+    el("div", { class: "explain__inner" },
+      el("strong", { text: EXPLAIN.cascade.title }), el("p", { text: EXPLAIN.cascade.body })));
+  const help = el("button", {
+    class: cls("explain__btn", open && "is-open"), type: "button", "aria-expanded": String(open),
+    "aria-controls": `explain-cascade-${id}`, "aria-label": "What is the cascade?", title: "What is this?",
+    onclick: () => {
+      toggleExplain(help, body);
+      body.dataset.open === "true" ? app.cascadeExplain.add(id) : app.cascadeExplain.delete(id);
+    },
+  }, svgIcon("info", 15));
+  const onMap = app.mapCascade === id;
+  const mapBtn = btn(onMap ? "On the map" : "Show on map", "graph", {
+    variant: "ghost", class: cls("btn--sm", onMap && "is-active"),
+    title: onMap ? "The application map is replaying this cascade (a live run takes over)" : "Replay this cascade on the application map",
+    onclick: () => {
+      app.mapCascade = onMap ? null : id;
+      renderExperiments(app.state);
+      syncMapCascade();
+      if (!onMap) (document.getElementById("graph-host") || document.body).scrollIntoView({ behavior: "smooth", block: "center" });
+    },
+  });
+  mapBtn.setAttribute("aria-pressed", String(onMap));
+
+  const hops = c.hops || [];
+  return el("div", { class: "exp-sec exp-sec--full cascade" },
+    el("h4", { class: "exp-sec__title" }, svgIcon("graph", 13),
+      el("span", { text: `Cascade: ${Math.max(0, hops.length - 1)} service${hops.length === 2 ? "" : "s"} failed after ${c.origin}` }),
+      el("span", { class: "spacer" }), mapBtn, help),
+    body,
+    c.summary ? el("p", { class: "cascade__summary", text: c.summary }) : null,
+    hops.length ? el("div", { class: "cascade__scroll" },
+      el("table", { class: "cascade__table" },
+        el("thead", null, el("tr", null,
+          ...["Service", "Onset", "How it failed", "Via", "Confidence", ""].map((h) => el("th", { scope: "col", text: h })))),
+        el("tbody", null, ...hops.map(cascadeHopRow)))) : null,
+    (c.notes || []).length ? el("ul", { class: "cascade__notes" }, ...c.notes.map((n) => el("li", { text: n }))) : null);
 }
 
 // one "what to fix, how to fix" card. Shared by the per-experiment detail (§expDetail)
@@ -473,6 +609,9 @@ function expDetail(e) {
         e.data_integrity_ok === false ? "critical" : "ok", e.data_integrity_detail || ""),
       stat("Blast radius", String((e.affected_services_observed || []).length),
         "neutral", (e.affected_services_observed || []).join(", ") || "none"))));
+
+  const cascade = cascadeSection(e);
+  if (cascade) d.appendChild(cascade);
 
   if (e.remediation_actions && e.remediation_actions.length) {
     d.appendChild(section("Manual intervention required", "wrench",
@@ -860,6 +999,7 @@ async function boot() {
       onSelect: (name) => {
         if (app.mods.launcher && app.mods.launcher.selectTarget) app.mods.launcher.selectTarget(name);
       },
+      onReplayClear: () => { app.mapCascade = null; if (app.state) renderExperiments(app.state); },
     });
   }
   if (launcher && launcher.createLauncher) {

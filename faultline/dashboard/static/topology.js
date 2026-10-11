@@ -5,6 +5,7 @@ import {
   el, svg, clear, cls, svgIcon, statusTone, roleIcon,
   fmtPct, fmtMs, titleCase, reduceMotion, hash,
 } from "./util.js";
+import { CASCADE_MECHANISM, cascadeConfidence } from "./copy.js";
 
 const P = "fl-topo-";
 // Last-resort values if tokens.css failed to load. Mirrors docs/UI_CONTRACT.md §1 —
@@ -323,14 +324,38 @@ ${kindCss}${toneCss}
 .${P}e.is-blast .${P}edge{stroke:${t("danger")};stroke-width:2.6;stroke-dasharray:none}
 .${P}e.is-blast .${P}pulse{opacity:.95;stroke-dasharray:18 var(--len,400);animation:${P}travel 1.15s linear infinite}
 .${P}e--observed .${P}edge{animation:${P}flow 1.6s linear infinite}
+.${P}e.is-cascade .${P}edge{stroke:${t("danger")};stroke-width:3;stroke-dasharray:none}
+.${P}e.is-cascade .${P}pulse{opacity:.95;stroke-dasharray:18 var(--len,400);animation:${P}travel 1.15s linear infinite}
+.${P}e.is-cascade--soft .${P}edge{stroke-width:2.4;stroke-dasharray:7 6;opacity:.8}
+.${P}e.is-cascade--soft .${P}pulse{opacity:.5;stroke-width:3;stroke-dasharray:5 9;animation:${P}trickle 1.5s linear infinite}
+.${P}cbadge{cursor:help}
+.${P}cbadge:focus{outline:none}
+.${P}cbadge rect{fill:${t("surface-3")};stroke:${t("danger")};stroke-width:1.4}
+.${P}cbadge--soft rect{stroke-dasharray:3 2.5}
+.${P}cbadge:focus-visible rect{stroke:${t("cyan")};stroke-width:2.4}
+.${P}cbadge text{font-family:var(--font-mono,monospace);font-size:10.5px;font-weight:700;fill:${t("text")}}
+.${P}cmark{font-family:var(--font-sans,system-ui);font-size:9px;font-weight:800;letter-spacing:.08em;
+  fill:${t("warn")};opacity:0;paint-order:stroke;stroke:${t("surface")};stroke-width:3.5;stroke-linejoin:round}
+.${P}cmark.is-on{opacity:1}
+.${P}replay{position:absolute;left:8px;top:8px;z-index:4;display:flex;align-items:center;gap:8px;max-width:calc(100% - 140px);
+  min-height:28px;padding:3px 4px 3px 10px;border:1px dashed ${t("danger")};border-radius:var(--r1,6px);
+  background:${t("surface-2")};color:${t("text-dim")};font:11px var(--font-sans,system-ui)}
+.${P}replay[hidden]{display:none}
+.${P}replay span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.${P}replay b{color:${t("text")};font-family:var(--font-mono,monospace);font-weight:600}
+.${P}replay button{flex:none;min-height:22px;padding:2px 8px;cursor:pointer;border:1px solid ${t("border-strong")};
+  border-radius:var(--r1,6px);background:${t("surface-3")};color:${t("text-dim")};font:11px var(--font-sans,system-ui)}
+.${P}replay button:focus-visible{outline:2px solid ${t("cyan")};outline-offset:2px}
+.${P}legend .${P}lg-cascade[hidden]{display:none}
 .${P}dim{opacity:.25}
 .${P}node.is-selected .${P}shape{stroke-width:3.4}
 .${P}node.is-selected .${P}name{fill:${t("text")}}
 .${P}e.is-rel .${P}edge{stroke-width:3.2}
 @keyframes ${P}flow{to{stroke-dashoffset:-28}}
 @keyframes ${P}travel{from{stroke-dashoffset:18}to{stroke-dashoffset:calc(-1 * var(--len,400))}}
+@keyframes ${P}trickle{from{stroke-dashoffset:0}to{stroke-dashoffset:-28}}
 @keyframes ${P}pulse{0%,100%{stroke-width:9;opacity:.22}50%{stroke-width:20;opacity:.5}}
-.${P}root .tooltip{position:absolute;left:var(--x,0);top:var(--y,0);z-index:5;pointer-events:none;
+.${P}root .tooltip{position:absolute;left:var(--x,0);top:var(--y,0);transform:none;z-index:5;pointer-events:none;
   max-width:280px;padding:var(--s3,12px);border:1px solid ${t("border-strong")};border-radius:var(--r2,10px);
   background:${t("surface-3")};box-shadow:var(--shadow-2,0 8px 30px rgba(0,0,0,.5));
   font:12px/1.45 var(--font-sans,system-ui);color:${t("text-dim")};opacity:0;transition:opacity 120ms}
@@ -353,8 +378,8 @@ ${kindCss}${toneCss}
 .${P}alt{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .${P}empty{display:grid;place-items:center;height:100%;color:${t("text-mute")};font:13px var(--font-sans,system-ui)}
 @media (prefers-reduced-motion: reduce){
-  .${P}e--observed .${P}edge,.${P}e.is-blast .${P}pulse,.${P}n--chaos .${P}halo{animation:none!important}
-  .${P}e.is-blast .${P}pulse{opacity:0}
+  .${P}e--observed .${P}edge,.${P}e.is-blast .${P}pulse,.${P}e.is-cascade .${P}pulse,.${P}n--chaos .${P}halo{animation:none!important}
+  .${P}e.is-blast .${P}pulse,.${P}e.is-cascade .${P}pulse{opacity:0}
 }`;
   // inserted first in <head> so app.css (later in document order) can still override
   const node = el("style", { id: `${P}style` });
@@ -385,7 +410,7 @@ function marker(kind) {
 }
 
 // ---------------------------------------------------------------- factory
-export function createTopology(hostEl, { onSelect } = {}) {
+export function createTopology(hostEl, { onSelect, onReplayClear } = {}) {
   injectStyle();
   const root = el("div", { class: `${P}root topology` });
   const tip = el("div", { class: "tooltip", "aria-hidden": "true" });
@@ -395,13 +420,24 @@ export function createTopology(hostEl, { onSelect } = {}) {
     type: "button", class: `${P}toggle`, "aria-pressed": "true",
     title: "Show or hide observability services (not chaos-relevant)",
   }, "Observability");
+  // shown while the map replays a FINISHED experiment's cascade (app.js calls showCascade on row expand)
+  const replayLabel = el("span");
+  const replayBar = el("div", { class: `${P}replay`, hidden: true },
+    replayLabel,
+    el("button", {
+      type: "button", title: "Stop showing this finished experiment's cascade on the map",
+      onclick: () => { replay = null; if (typeof onReplayClear === "function") onReplayClear(); refresh(); },
+    }, "Clear"));
   clear(hostEl).append(root);
-  root.append(toggle, legend, tip, alt);
+  root.append(toggle, replayBar, legend, tip, alt);
 
-  let svgRoot = null, nodeLayer = null, edgeLayer = null, defs = null;
+  let svgRoot = null, nodeLayer = null, edgeLayer = null, badgeLayer = null, defs = null;
   let L = null, graph = null, topo = null, fp = "";
   let showObs = true, selected = null, hovered = null, order = [], lastAria = "", lastAlt = "";
   const nodeEls = new Map(), edgeEls = [];
+  // cascade attribution: `replay` is a finished experiment the operator picked, `view` what is painted now
+  let replay = null, view = null, cHops = new Map(), cUp = new Map(), legendCascade = [];
+  const pairRep = new Map();   // "src>dst" -> the one edge element that carries that pair's cascade
 
   toggle.addEventListener("click", () => {
     showObs = !showObs;
@@ -426,6 +462,7 @@ export function createTopology(hostEl, { onSelect } = {}) {
       orient: "auto-start-reverse", markerUnits: "userSpaceOnUse",
     }, svg("path", { d: "M0 1 L9 5 L0 9 z", fill: tok("danger") })));
     edgeLayer = svg("g", { class: `${P}edges` });
+    badgeLayer = svg("g", { class: `${P}cbadges` });
     nodeLayer = svg("g", { class: `${P}nodes` });
     const frame = svg("g", null);
     if (L.obsBox) {
@@ -434,7 +471,7 @@ export function createTopology(hostEl, { onSelect } = {}) {
         svg("text", { class: `${P}obs-label`, x: L.obsBox.x + 14, y: L.obsBox.y + 19, fill: tok("text-mute") }, "OBSERVABILITY"),
       );
     }
-    svgRoot.append(defs, frame, edgeLayer, nodeLayer);
+    svgRoot.append(defs, frame, edgeLayer, badgeLayer, nodeLayer);
     // click on empty canvas clears the selection
     svgRoot.addEventListener("click", (ev) => {
       if (!(ev.target.closest && ev.target.closest(`.${P}node`))) pick(null);
@@ -443,6 +480,13 @@ export function createTopology(hostEl, { onSelect } = {}) {
 
     for (const e of L.edges) buildEdge(e);
     for (const nd of Object.values(L.nodes)) buildNode(nd, topology);
+    // parallel edges (same pair, different evidence) share one cascade: the strongest evidence carries it
+    pairRep.clear();
+    const rank = (k) => KIND_ORDER.indexOf(k);
+    for (const ref of [...edgeEls].sort((a, b) => rank(a.e.kind) - rank(b.e.kind))) {
+      const k = `${ref.e.src}>${ref.e.dst}`;
+      if (!pairRep.has(k)) pairRep.set(k, ref);
+    }
 
     order = Object.values(L.nodes).sort((a, b) => a.row - b.row || a.x - b.x);
     buildLegend();
@@ -458,13 +502,29 @@ export function createTopology(hostEl, { onSelect } = {}) {
       "marker-end": `url(#${P}arrow-${e.kind})`,
     });
     const pulse = svg("path", { class: `${P}pulse`, d: e.dRev, stroke: tok("danger"), fill: "none" });
+    const title = svg("title");   // hover text for a cascade edge; empty (no tooltip) otherwise
+    g.append(title);
     if (halo) g.append(halo);
     g.append(path, pulse);
     edgeLayer.append(g);
     if (typeof pulse.getTotalLength === "function") {
       try { pulse.style.setProperty("--len", String(Math.round(pulse.getTotalLength()))); } catch { /* jsdom */ }
     }
-    edgeEls.push({ e, g, path, pulse });
+    // midpoint badge for a cascade edge: text (lag / ≈ / ?) so confidence is never colour or dash alone
+    const bRect = svg("rect", { x: -16, y: -9, width: 32, height: 18, rx: 8 });
+    const bText = svg("text", { x: 0, y: 3.8, "text-anchor": "middle" });
+    const badge = svg("g", {
+      class: `${P}cbadge`, transform: `translate(${e.mid[0].toFixed(1)} ${e.mid[1].toFixed(1)})`,
+      tabindex: "0", role: "img",
+    }, bRect, bText);
+    badge.style.display = "none";
+    badgeLayer.append(badge);
+    const ref = { e, g, path, pulse, title, badge, bRect, bText, c: null };
+    badge.addEventListener("mouseenter", () => showEdgeTip(ref));
+    badge.addEventListener("focus", () => showEdgeTip(ref));
+    badge.addEventListener("mouseleave", hideTip);
+    badge.addEventListener("blur", hideTip);
+    edgeEls.push(ref);
   }
 
   function buildNode(nd, topology) {
@@ -499,7 +559,11 @@ export function createTopology(hostEl, { onSelect } = {}) {
     const mark = nd.obs ? null : svg("text", {
       class: `${P}mark`, x: 0, y: -nd.h / 2 - 7, "text-anchor": "middle", fill: tok("critical"),
     }, "⚠ UNEXPECTED");
-    g.append(...[halo, shape, icon, name, sub, badge, glyph, mark].filter(Boolean));
+    // cascade markers under the card: "no graph path" / "health check green"
+    const cmark = nd.obs ? null : svg("text", {
+      class: `${P}cmark`, x: 0, y: nd.h / 2 + 14, "text-anchor": "middle", fill: tok("warn"),
+    });
+    g.append(...[halo, shape, icon, name, sub, badge, glyph, mark, cmark].filter(Boolean));
     nodeLayer.append(g);
 
     g.addEventListener("click", () => pick(nd.name));
@@ -508,7 +572,7 @@ export function createTopology(hostEl, { onSelect } = {}) {
     g.addEventListener("mouseleave", () => { hovered = null; hideTip(); paintFocus(); });
     g.addEventListener("focus", () => { hovered = nd.name; showTip(nd); paintFocus(); });
     g.addEventListener("blur", () => { if (hovered === nd.name) { hovered = null; hideTip(); paintFocus(); } });
-    nodeEls.set(nd.name, { nd, g, shape, glyph, badge, name });
+    nodeEls.set(nd.name, { nd, g, shape, glyph, badge, name, cmark });
   }
 
   function buildLegend() {
@@ -524,16 +588,42 @@ export function createTopology(hostEl, { onSelect } = {}) {
     for (const [t, label] of [["ok", "healthy"], ["warn", "degraded / unknown"], ["danger", "down"], ["chaos", "chaos target"], ["critical", "unexpected blast"]]) {
       legend.append(el("span", { style: { color: tok(t) } }, el("em"), el("span", { style: { color: tok("text-mute") } }, label)));
     }
+    // only shown while a cascade is on the map
+    legendCascade = [["solid", "cascade, order proven (+lag)"], ["dashed", "cascade, direction or path uncertain (≈ / ?)"]]
+      .map(([style, label]) => el("span", { class: `${P}lg-cascade`, hidden: true },
+        el("i", { style: { borderTopColor: tok("danger"), borderTopStyle: style, borderTopWidth: "3px" } }), label));
+    legend.append(...legendCascade);
   }
 
   // ------------------------------------------------------------ per-tick paint
+  /** What the map paints: the live run, else a finished experiment's cascade picked from the table. */
+  function currentView(state) {
+    const run = state.run || {};
+    if (run.phase && run.phase !== "idle") {
+      const b = run.blast || {};
+      return { run, target: run.target_service, expected: b.expected || [], observed: b.observed || [],
+               edges: b.cascade_edges || [], hops: b.cascade_hops || [], replay: null };
+    }
+    if (!replay) return null;
+    return { run: { phase: "replay", target_service: replay.target, health: {} }, target: replay.target,
+             expected: replay.expected || [], observed: replay.observed || [],
+             edges: replay.edges || [], hops: replay.hops || [], replay };
+  }
+
   function applyLive(state) {
     const services = topo.services || {};
-    const run = state.run || {};
-    const active = Boolean(run.phase && run.phase !== "idle");
-    const expected = new Set(active && run.blast ? run.blast.expected || [] : []);
-    const observed = new Set(active && run.blast ? run.blast.observed || [] : []);
-    const target = active ? run.target_service : null;
+    view = currentView(state);
+    const active = Boolean(view);
+    const run = active ? view.run : (state.run || {});
+    const expected = new Set(active ? view.expected : []);
+    const observed = new Set(active ? view.observed : []);
+    const target = active ? view.target : null;
+    const cEdges = active ? view.edges.filter((c) => c && c.src && c.dst) : [];
+    cHops = new Map((active ? view.hops : []).filter((h) => h && h.service).map((h) => [h.service, h]));
+    cUp = new Map(cEdges.map((c) => [c.src, c]));
+    const cascade = cEdges.length > 0 || cHops.size > 0;
+    // an attributed hop failed even when its health check stayed green (masked), so it is in the blast
+    for (const name of cHops.keys()) observed.add(name);
     let down = 0;
     const tones = new Map();
 
@@ -541,8 +631,9 @@ export function createTopology(hostEl, { onSelect } = {}) {
       const { tone, why, glyph } = toneFor(name, services, run);
       tones.set(name, { tone, why });
       if (tone === "danger") down++;
+      const hop = cHops.get(name);
       const isObs = observed.has(name), isExp = expected.has(name) && !observed.has(name);
-      const surprise = isObs && name !== target && !expected.has(name);
+      const surprise = isObs && name !== target && (hop ? Boolean(hop.beyond_hypothesis) : !expected.has(name));
       const g = ref.g;
       setClasses(g, {
         [`${P}n--ok`]: tone === "ok", [`${P}n--warn`]: tone === "warn",
@@ -560,26 +651,61 @@ export function createTopology(hostEl, { onSelect } = {}) {
       }
       // a surprise victim is the headline finding: paint it last so its marker is never covered
       if (ref.surpriseWas !== surprise) { if (surprise) nodeLayer.appendChild(g); ref.surpriseWas = surprise; }
+      if (ref.cmark) {
+        const marks = [hop && hop.path_confidence === "no_graph_path" ? "⊘ NO GRAPH PATH" : null,
+                       hop && hop.masked_by_health_check ? "◐ HEALTH CHECK GREEN" : null].filter(Boolean).join("  ·  ");
+        if (ref.cmarkWas !== marks) {
+          ref.cmark.textContent = marks; ref.cmark.classList.toggle("is-on", Boolean(marks)); ref.cmarkWas = marks;
+        }
+      }
       const label = `${name}: ${titleCase(ref.nd.role)}, ${why}, criticality ${ref.nd.score.toFixed(1)}`
         + (surprise ? ", affected but not predicted" : isObs && name !== target ? ", affected by the current failure"
-          : isExp ? ", predicted to be affected" : "");
+          : isExp ? ", predicted to be affected" : "")
+        + (hop && hop.path_confidence !== "origin" ? `, cascade: ${hopWords(hop)}` : "");
       if (g.getAttribute("aria-label") !== label) g.setAttribute("aria-label", label);
       if (ref.toneWas !== tone) { ref.shape.setAttribute("stroke", tok(tone === "neutral" ? "border-strong" : tone)); ref.toneWas = tone; }
     }
 
+    // With cascade data only the attributed path pulses (dependency -> dependent); without it, the
+    // original rule: every edge between two affected services.
     const still = reduceMotion();
-    for (const { e, g, path, pulse } of edgeEls) {
-      const blast = active && observed.has(e.src) && observed.has(e.dst);
+    const carried = new Map();
+    for (const c of cEdges) {
+      const ref = pairRep.get(`${c.src}>${c.dst}`);
+      if (ref && !carried.has(ref)) carried.set(ref, c);
+    }
+    for (const ref of edgeEls) {
+      const { e, g, path, pulse } = ref;
+      const c = carried.get(ref) || null;
+      const blast = !cascade && active && observed.has(e.src) && observed.has(e.dst);
       g.classList.toggle("is-blast", blast);
-      pulse.style.display = blast && !still ? "" : "none";
-      const want = blast ? `url(#${P}arrow-blast)` : `url(#${P}arrow-${e.kind})`;
-      if (path.getAttribute("marker-end") !== want) path.setAttribute("marker-end", want);
+      g.classList.toggle("is-cascade", Boolean(c));
+      g.classList.toggle("is-cascade--soft", Boolean(c) && c.confidence !== "ordered");
+      pulse.style.display = (blast || c) && !still ? "" : "none";
+      // a cascade edge's arrow points the way the failure went (at the dependent), so the direction
+      // survives reduced motion; every other edge keeps its "depends on" arrow
+      const end = c ? null : blast ? `url(#${P}arrow-blast)` : `url(#${P}arrow-${e.kind})`;
+      const start = c ? `url(#${P}arrow-blast)` : null;
+      if (path.getAttribute("marker-end") !== end) { if (end) path.setAttribute("marker-end", end); else path.removeAttribute("marker-end"); }
+      if (path.getAttribute("marker-start") !== start) { if (start) path.setAttribute("marker-start", start); else path.removeAttribute("marker-start"); }
+      paintCascadeEdge(ref, c);
+    }
+    for (const span of legendCascade) span.hidden = !cascade;
+
+    const rp = active ? view.replay : null;
+    replayBar.hidden = !rp;
+    if (rp && replayBar.dataset.id !== rp.id) {
+      clear(replayLabel).append("Cascade of finished experiment ", el("b", { text: rp.label || rp.id }),
+        rp.note ? ` · ${rp.note}` : "");
+      replayBar.dataset.id = rp.id;
     }
 
     // aria summary + off-screen text equivalent
     const n = nodeEls.size, m = L.edges.length;
     const aria = `Service dependency graph: ${n} services, ${m} dependencies, ${down} down.`
-      + (target ? ` Current chaos target: ${target}, phase ${run.phase}.` : " No experiment running.");
+      + (rp ? ` Showing the cascade of finished experiment ${rp.label || rp.id} on ${target}.`
+        : target ? ` Current chaos target: ${target}, phase ${run.phase}.` : " No experiment running.")
+      + (cascade ? ` Cascade path: ${cEdges.length} attributed hop${cEdges.length === 1 ? "" : "s"}.` : "");
     if (aria !== lastAria) { svgRoot.setAttribute("aria-label", aria); lastAria = aria; }
     const lines = order.map((nd) => {
       const t = tones.get(nd.name) || {};
@@ -589,8 +715,62 @@ export function createTopology(hostEl, { onSelect } = {}) {
         + `Depends on ${deps.length ? deps.join(", ") : "nothing"}. `
         + `Required by ${rev.length ? rev.join(", ") : "nothing"}.`;
     });
+    for (const h of cHops.values()) if (h.path_confidence !== "origin") lines.push(`Cascade: ${h.service}, ${hopWords(h)}.`);
     const sig = lines.join("|");
     if (sig !== lastAlt) { clear(alt).append(...lines.map((t) => el("li", { text: t }))); lastAlt = sig; }
+  }
+
+  const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+  const mechLabel = (m) => CASCADE_MECHANISM[m] || m || "failed";
+  const num = (v) => (typeof v === "number" ? v : null);
+
+  /** One hop in words: mechanism, the dependency it failed through, confidence, masked / beyond tags. */
+  function hopWords(hop) {
+    const up = cUp.get(hop.service);
+    const upstream = hop.upstream || (up && up.dst) || null;
+    const lag = num(hop.lag_s) ?? (up ? num(up.lag_s) : null);
+    return [
+      mechLabel(hop.mechanism),
+      upstream && !["ordered", "origin"].includes(hop.path_confidence) ? `via ${upstream}` : null,
+      cascadeConfidence(hop.path_confidence, upstream, lag),
+      hop.masked_by_health_check ? "health check stayed green" : null,
+      hop.beyond_hypothesis ? "beyond the hypothesis" : null,
+    ].filter(Boolean).join(", ");
+  }
+
+  /** Cascade edge in words. src depends on dst, so the failure travelled dst -> src. */
+  function edgeWords(c, hop) {
+    return [
+      `${c.dst} → ${c.src}`,
+      cap(mechLabel(c.mechanism)),
+      cap(cascadeConfidence(c.confidence, c.dst, num(c.lag_s))),
+      hop && hop.masked_by_health_check ? `${c.src}'s own health check stayed green` : null,
+      hop && hop.beyond_hypothesis ? `${c.src} was not in the hypothesis` : null,
+    ].filter(Boolean);
+  }
+
+  function paintCascadeEdge(ref, c) {
+    const hop = c ? cHops.get(c.src) || null : null;
+    const sig = c ? JSON.stringify([c.mechanism, c.confidence, c.lag_s, hop && hop.masked_by_health_check,
+                                    hop && hop.beyond_hypothesis]) : "";
+    if (ref.cWas === sig) return;
+    ref.cWas = sig;
+    ref.c = c ? { c, hop } : null;
+    ref.badge.style.display = c ? "" : "none";
+    if (!c) { ref.title.textContent = ""; ref.badge.removeAttribute("aria-label"); return; }
+    edgeLayer.appendChild(ref.g);   // above the edges it crosses
+    const words = edgeWords(c, hop);
+    ref.title.textContent = words.join("\n");
+    ref.badge.setAttribute("aria-label", `Failure travelled ${words.join(". ")}`);
+    const lag = num(c.lag_s);
+    const glyph = c.confidence === "ordered" ? (lag !== null ? `+${lag.toFixed(1)}s` : "→")
+      : c.confidence === "same_interval" ? "≈" : "?";
+    const text = glyph + (hop && hop.masked_by_health_check ? " ◐" : "");
+    const w = Math.max(24, Math.round(12 + text.length * 6.6));
+    ref.bText.textContent = text;
+    ref.bRect.setAttribute("x", String(-w / 2));
+    ref.bRect.setAttribute("width", String(w));
+    ref.badge.classList.toggle(`${P}cbadge--soft`, c.confidence !== "ordered");
   }
 
   function setClasses(node, map) {
@@ -602,15 +782,16 @@ export function createTopology(hostEl, { onSelect } = {}) {
     const focus = hovered || selected;
     if (!focus || !nodeEls.has(focus)) {
       for (const { g } of nodeEls.values()) g.classList.remove(`${P}dim`);
-      for (const { g } of edgeEls) { g.classList.remove(`${P}dim`); g.classList.remove("is-rel"); }
+      for (const { g, badge } of edgeEls) { g.classList.remove(`${P}dim`); g.classList.remove("is-rel"); badge.classList.remove(`${P}dim`); }
       return;
     }
     const sub = graph.subtree(focus), up = graph.blastOf(focus);
     const keep = new Set([focus, ...sub, ...up]);
     for (const [name, { g }] of nodeEls) g.classList.toggle(`${P}dim`, !keep.has(name));
-    for (const { e, g } of edgeEls) {
+    for (const { e, g, badge } of edgeEls) {
       const rel = keep.has(e.src) && keep.has(e.dst);
       g.classList.toggle(`${P}dim`, !rel);
+      badge.classList.toggle(`${P}dim`, !rel);
       g.classList.toggle("is-rel", rel && (e.src === focus || e.dst === focus));
     }
   }
@@ -668,12 +849,23 @@ export function createTopology(hostEl, { onSelect } = {}) {
         row("breaks with it", breaks.length ? breaks.join(", ") : "nothing"),
         s.chaos_relevant === false ? row("chaos", "excluded (observability)") : [],
         exps.length ? row("experiments", `${exps.length} · worst ${fmtPct(worst)}${slowP95 ? ` · p95 ${fmtMs(slowP95)}` : ""}`) : [],
+        cHops.has(nd.name) ? row("cascade", hopWords(cHops.get(nd.name))) : [],
       ),
       (crit.reasons || []).length ? el("div", { style: { marginTop: "6px", color: tok("text-mute") }, text: crit.reasons.join(" · ") }) : null,
     );
-    // position next to the node, clamped inside the host
+    placeTip(nodeEls.get(nd.name).g.getBoundingClientRect());
+  }
+
+  function showEdgeTip(ref) {
+    if (!ref.c) return;
+    const [head, ...rest] = edgeWords(ref.c.c, ref.c.hop);
+    clear(tip).append(el("b", { text: `Failure travelled ${head}` }), ...rest.map((t) => el("div", { text: t })));
+    placeTip(ref.badge.getBoundingClientRect());
+  }
+
+  /** Position the tooltip next to a screen rect, clamped inside the host. */
+  function placeTip(r) {
     const box = root.getBoundingClientRect();
-    const r = nodeEls.get(nd.name).g.getBoundingClientRect();
     const tw = 280, th = tip.offsetHeight || 170;
     let x = r.right - box.left + 12, y = r.top - box.top - 6;
     if (x + tw > box.width) x = r.left - box.left - tw - 12;
@@ -685,6 +877,9 @@ export function createTopology(hostEl, { onSelect } = {}) {
 
   // ------------------------------------------------------------ public API
   let lastState = null;
+  function refresh() {
+    if (topo && svgRoot && lastState) { applyLive(lastState); paintFocus(); }
+  }
   return {
     update(state) {
       lastState = state || {};
@@ -718,6 +913,12 @@ export function createTopology(hostEl, { onSelect } = {}) {
       nodeEls.clear(); edgeEls.length = 0;
       clear(hostEl);
       svgRoot = null; L = null; graph = null; topo = null; lastState = null;
+    },
+    /** Show a FINISHED experiment's cascade while nothing is live (a live run always wins), or clear it
+     *  with null. view: {id, label, note, target, expected[], observed[], edges[CascadeEdge], hops[CascadeHop]} */
+    showCascade(v) {
+      replay = v && ((v.edges || []).length || (v.hops || []).length) ? v : null;
+      refresh();
     },
   };
 }

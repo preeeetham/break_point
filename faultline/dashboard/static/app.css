@@ -2402,6 +2402,27 @@ input[type="range"][disabled]::-moz-range-thumb { background: var(--text-mute); 
 .tl__event { color: var(--text); font-weight: 600; }
 .tl__detail { grid-column: 2; color: var(--text-dim); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 
+/* cascade attribution (expanded row): summary, one row per hop, the timing caveat.
+   Confidence is a chip (tone + glyph + text); "masked" / "beyond hypothesis" are text chips. */
+.cascade .exp-sec__title .btn { min-height: 26px; }
+.cascade .btn[aria-pressed="true"] { color: var(--cyan); border-color: var(--tone-cyan-border); background: var(--tone-cyan-bg); }
+.cascade .exp-sec__title .explain__btn { width: 32px; height: 32px; margin-block: -6px; }
+.cascade .explain__body { border-bottom: 0; background: transparent; }
+.cascade { white-space: normal; }
+.cascade__summary { font-size: 12.5px; line-height: 1.6; color: var(--text); max-width: 110ch; }
+.cascade__scroll { overflow-x: auto; min-width: 0; }
+.cascade__table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cascade__table th,
+.cascade__table tbody td { padding: 5px var(--s2); text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.cascade__table thead th { color: var(--text-mute); font-weight: 600; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+.cascade__table tbody th { color: var(--text); font-family: var(--font-mono); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; white-space: nowrap; }
+.cascade__table tbody td { color: var(--text-dim); white-space: normal; }
+.cascade__hop.is-origin th { color: var(--chaos); }
+.cascade__mech { display: block; color: var(--text); }
+.cascade__ev { display: block; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-dim); }
+.cascade__tags { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.cascade__notes { margin: 0; padding-left: var(--s4); font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+
 /* key/value list used throughout the detail region */
 .kv {
   display: grid;
