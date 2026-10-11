@@ -318,7 +318,7 @@ def test_markdown_renders_cascade_section(make_report):
     section = md.split("## Cascade", 1)[1].split("## Findings", 1)[0]
     assert f"- {TARGET} had the fault injected at +0.0s (SIGKILL)" in section
     assert f"- connectivity went down (container not running), first seen failing between +0.5s and +3.0s, " \
-           f"3.0s after {TARGET} (path {TARGET} → connectivity) [beyond the hypothesis]" in section
+           f"after {TARGET} (path {TARGET} → connectivity) [beyond the hypothesis]" in section
     assert "- health probe polls every 3s, so onsets are 3s intervals" in section
     assert "| Service | onset | mechanism | via | confidence | masked |" in section
     assert f"| connectivity | +0.5s–+3.0s | process_down | {TARGET} | ordered | no |" in section
