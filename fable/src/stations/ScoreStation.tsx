@@ -63,6 +63,8 @@ export function ScoreStation() {
         const el = document.getElementById(`exp-finding-${id}-${findingIdx}`);
         if (!el) return toLog();
         el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+        el.setAttribute("data-landed", "");
+        el.addEventListener("blur", () => el.removeAttribute("data-landed"), { once: true });
         el.focus({ preventScroll: true });
       }),
     );

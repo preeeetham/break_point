@@ -11,6 +11,7 @@ import { usePhases } from "./score-data";
 import { RiskPanel } from "./score-risk";
 import { Fixes } from "./score-fixes";
 import { NarrativeTimeline } from "./score-narrative";
+import { findingName } from "./finding-names";
 
 const ISSUE_1865 = "https://github.com/eclipse-ditto/ditto/issues/1865";
 const MASKED = "health_check_masked_failure";
@@ -271,8 +272,9 @@ function Hypothesis({ exp }: { exp: ExperimentSummary }) {
 // `at` is each finding's index in exp.findings: the Score table jumps to `exp-finding-<eid>-<at>`
 type Item = { kind: "one"; f: Finding; at: number } | { kind: "masked"; fs: Finding[]; at: number[] };
 
-// programmatic focus after a click may not match :focus-visible, so the landed finding gets its own ring
-const LANDED = "rounded-[2px] focus:outline-2 focus:outline-offset-2 focus:outline-fg focus:outline-solid";
+// the finding the Score table jumped to gets a ring until it loses focus (ScoreStation sets data-landed);
+// a plain mouse click inside a finding does not draw one
+const LANDED = "rounded-[2px] data-landed:outline-2 data-landed:outline-offset-2 data-landed:outline-fg data-landed:outline-solid";
 
 function Findings({ findings, eid }: { findings: Finding[]; eid: string }) {
   const masked = findings.filter((f) => f.code === MASKED);
@@ -312,9 +314,10 @@ function FindingRow({ f, first, id }: { f: Finding; first: boolean; id: string }
     <li id={id} tabIndex={-1} className={cx(FROW, LANDED, first && "pt-0")}>
       <span className="text-[13px]"><SeverityMark severity={f.severity} /></span>
       <div className="min-w-0">
-        <p className="text-[14px] leading-snug text-fg">
-          <Rich text={f.title} /> <span className="ml-1 font-mono text-[11px] text-fg-2">{f.code}</span>
+        <p className="text-[14px] font-medium leading-snug text-fg">
+          {findingName(f)} <span className="ml-1 font-mono text-[11px] font-normal text-fg-2">{f.code}</span>
         </p>
+        <p className="mt-0.5 text-[13px] leading-snug text-fg-2"><Rich text={f.title} /></p>
         {f.evidence && <p className="mt-1 break-words font-mono text-[12px] leading-relaxed text-fg-2">{tidy(f.evidence)}</p>}
       </div>
     </li>
@@ -328,7 +331,7 @@ function MaskedGroup({ fs, first, ids }: { fs: Finding[]; first: boolean; ids: s
       <span className="text-[13px]"><SeverityMark severity={worst.severity} /></span>
       <div className="min-w-0">
         <p className="text-[15px] font-medium leading-snug text-fg">
-          Health checks stayed green while the API failed
+          {findingName(worst)}
           <span className="ml-2 font-mono text-[11px] font-normal text-fg-2">{MASKED}</span>
         </p>
         <p className="mt-1 max-w-[68ch] text-[13px] leading-relaxed text-fg-2">
