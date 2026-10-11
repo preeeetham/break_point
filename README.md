@@ -194,6 +194,10 @@ scripts/               up / down / status helpers and the UI verifier
 tests/                 offline test suite
 ```
 
+## Team
+
+Built at the Bosch hackathon by [@InnoxCodes](https://github.com/InnoxCodes), [@meddoesdev](https://github.com/meddoesdev), [@r153b](https://github.com/r153b), [@Hita2503](https://github.com/Hita2503) and [@Adnan-Ahmad-Khan](https://github.com/Adnan-Ahmad-Khan).
+
 ## Development
 
 ```bash
