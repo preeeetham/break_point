@@ -306,7 +306,7 @@
   function renderScorecard(s) {
     const box = $('scorecard'); clear(box);
     const sc = s.scorecard;
-    if (!sc) { box.appendChild(empty('No scorecard yet', 'faultline score')); return; }
+    if (!sc) { box.appendChild(empty('No scorecard yet', 'faultline scorecard')); return; }
     box.appendChild(el('div', { class: 'overall' }, [el('span', { class: 'big num ' + scoreClass(sc.overall_score), text: sc.overall_score == null ? '—' : String(Math.round(sc.overall_score)) }), el('span', { class: 'muted', text: '/ 100' })]));
     if (sc.summary) box.appendChild(el('div', { class: 'muted', style: 'margin-top:8px;line-height:1.45', text: sc.summary }));
     box.appendChild(el('ul', { class: 'rank' }, (sc.ranking || []).map((r) => el('li', {}, [
