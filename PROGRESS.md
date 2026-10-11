@@ -3,7 +3,7 @@
 Build log for the Weakness Scout agent on branch `feature/weakness-scout`. The commits below built
 it, on top of `7c984dd`; the concurrent test work has since added more (see **What is left**). The
 feature is described for readers in
-[README.md](README.md#predicting-weaknesses-before-breaking-anything); this file is the record of how
+[docs/REFERENCE.md](docs/REFERENCE.md#predicting-weaknesses-before-breaking-anything); this file is the record of how
 it was built, what was verified and how, and what is not done.
 
 ## What it is, in one paragraph
