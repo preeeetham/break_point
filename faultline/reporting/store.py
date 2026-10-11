@@ -51,6 +51,13 @@ class ReportStore:
         d = self._read(self.root / "topology.json")
         return Topology.model_validate(d) if d else None
 
+    def write_data_quality(self, report: "DataQualityReport") -> Path:
+        from faultline.schemas import DataQualityReport
+        return self._write(self.root / "data_quality.json", DataQualityReport.model_validate(report.model_dump()))
+
+    def data_quality(self) -> Optional[dict]:
+        return self._read(self.root / "data_quality.json")
+
     def write_baseline(self, b: Baseline) -> Path:
         return self._write(self.root / "baseline.json", b)
 

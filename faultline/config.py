@@ -46,6 +46,10 @@ class Settings:
     tc_image: str = "ghcr.io/alexei-led/pumba-alpine-nettools:latest"
     network_name: str = ""
     dashboard_port: int = 8765
+    # Tolerance when correlating timestamps from different clocks (host vs containers) and samplers
+    # (health probe every 3 s). Two events closer than this are "same window": order unknown, never
+    # reported as ordered. See faultline/topology/quality.py same_window().
+    time_lenience_s: float = 1.5
     # ---- approval gate. No defaults that could silently work: an unset ADMIN_EMAIL or an unset
     # credential must fail loudly at the agent's startup check, never quietly approve anything.
     admin_email: str = ""
@@ -74,6 +78,7 @@ class Settings:
 
 
 ENV_MAP = {
+    "TIME_LENIENCE_SECONDS": "time_lenience_s",
     "FAULTLINE_COMPOSE_PROJECT": "compose_project",
     "FAULTLINE_COMPOSE_FILE": "compose_file",
     "FAULTLINE_KNOWLEDGE_FILE": "knowledge_file",

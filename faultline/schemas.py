@@ -19,6 +19,27 @@ class Edge(BaseModel):
     evidence: str = ""
 
 
+class DataQualityIssue(BaseModel):
+    """One action the ingestion validation pass took (or one problem it flagged) on raw input."""
+    check: Literal["null", "consistency", "conformity", "range", "cleaning", "time"]
+    action: Literal["defaulted", "excluded", "clamped", "deduplicated", "normalized", "flagged"]
+    record: str            # service name, edge "src->dst (kind)", or env key it concerns
+    field: str = ""
+    detail: str
+
+
+class DataQualityReport(BaseModel):
+    """reports/data_quality.json: the audit trail of validating and cleaning what comes IN."""
+    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    source: str                       # e.g. "topology:deploy/docker-compose.yml"
+    rules_only: bool = True           # no LLM is involved in any check
+    time_lenience_s: float
+    services_seen: int = 0
+    edges_kept: int = 0
+    counts: dict[str, int] = {}       # issues per check
+    issues: list[DataQualityIssue] = []
+
+
 class ServiceNode(BaseModel):
     name: str
     image: str = ""

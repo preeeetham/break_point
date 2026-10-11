@@ -59,9 +59,15 @@ def build_topology(s: Settings, store: ReportStore, live: bool, knowledge: str |
     from .topology.graph import build
     from .topology.render import markdown
 
+    from .topology import quality
+
     nginx = s.nginx_conf if Path(s.nginx_conf).is_file() else None
-    topo = build(compose or s.compose_file, s.compose_project, nginx, knowledge or s.knowledge_file, live=live)
+    audit = quality.Audit()
+    src = compose or s.compose_file
+    topo = build(src, s.compose_project, nginx, knowledge or s.knowledge_file, live=live, audit=audit)
     store.write_topology(topo)
+    store.write_data_quality(quality.report(f"topology:{src}", audit, s.time_lenience_s,
+                                            len(topo.services), len(topo.edges)))
     (store.root / "topology.md").write_text(markdown(topo))
     return topo
 

@@ -288,3 +288,10 @@ reported as "the failure stayed at policies", consistent with its unchanged p95.
   `narrator._cascade()` when it lands, and `dashboard/control.py`'s live `blast` line will need a
   trivial merge with that tree's edits.
 - `OP_ROUTES` is Ditto-specific, like the probe itself; another target needs its own routes.
+
+## 2026-10-11: ingestion data quality (evaluator feedback)
+
+- New `faultline/topology/quality.py`: null, consistency, conformity, range, cleaning and time-lenience checks on raw compose input, run automatically on every topology build.
+- New `reports/data_quality.json` (`DataQualityReport`), validated before write; `TIME_LENIENCE_SECONDS` setting.
+- Ditto compose: clean, graph unchanged. Mastodon and OpenTelemetry demo: issues recorded, no edges invented.
+- Not yet wired: Repo Onboarding does not write its own data_quality report (it reuses the same compose parsers, so the topology build of an onboarded repo is covered).

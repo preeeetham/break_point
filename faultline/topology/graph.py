@@ -83,10 +83,17 @@ def build(
     nginx_conf_path: str | None = None,
     knowledge_path: str | None = None,
     live: bool = True,
+    audit=None,
 ) -> Topology:
     knowledge = load_knowledge(knowledge_path)
     compose = load_compose(compose_path)
+    if audit is not None:  # ingestion validation + cleaning, recorded in reports/data_quality.json
+        from faultline.topology.quality import check_references, clean_compose
+
+        compose = clean_compose(compose, compose_path, audit)
     nodes = service_nodes(compose, knowledge)
+    if audit is not None:
+        check_references(compose, nodes, audit)
 
     nginx_text: str | None = None
     if nginx_conf_path and Path(nginx_conf_path).is_file():
@@ -96,6 +103,10 @@ def build(
     # de-duplicate across the two sources on (src, dst, kind)
     seen: set[tuple[str, str, str]] = set()
     edges = [e for e in edges if not ((e.src, e.dst, e.kind) in seen or seen.add((e.src, e.dst, e.kind)))]
+    if audit is not None:
+        from faultline.topology.quality import check_edges
+
+        edges = check_edges(edges, nodes, audit)
 
     findings: list[str] = []
     if nginx_conf_path and nginx_text is None:
