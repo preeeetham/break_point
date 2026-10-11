@@ -10,7 +10,7 @@
 ![Open-weights models](https://img.shields.io/badge/models-open--weights-4fd1c5)
 ![Advisory only](https://img.shields.io/badge/fixes-advisory%20only-ff6b4a)
 
-**[Quickstart](#quickstart)** · **[How it works](#how-it-works)** · **[Control room](#the-control-room)** · **[Safety](#safety-first)** · **[Docs](#documentation)**
+**[Live replay](https://faultline-fable.vercel.app)** · **[Demo](#demo)** · **[Quickstart](#quickstart)** · **[How it works](#how-it-works)** · **[Control room](#the-control-room)** · **[Safety](#safety-first)** · **[Docs](#documentation)**
 
 </div>
 
@@ -26,7 +26,15 @@ Built for the Bosch hackathon problem statement *"AI-Driven Chaos Engineering fo
 
 ## Demo
 
-A three-minute walkthrough of the whole loop, from the dependency map to the scorecard: **[watch the demo video](docs/demo/faultline-demo.mp4)** (GitHub plays it in the file viewer). The live-demo runbook behind it is [docs/DEMO.md](docs/DEMO.md).
+<p align="center">
+  <a href="docs/demo/faultline-demo.mp4" title="Click to play the full three-minute demo">
+    <img src="docs/demo/faultline-demo-preview.gif" alt="Faultline demo preview. Click to play the full video." width="85%">
+  </a>
+  <br>
+  <sub>Sped-up preview. <b><a href="docs/demo/faultline-demo.mp4">Click to play the full three-minute demo</a></b>, or try the <b><a href="https://faultline-fable.vercel.app">live replay on Vercel</a></b>.</sub>
+</p>
+
+The video walks the whole loop, from the dependency map to the scorecard. The live-demo runbook behind it is [docs/DEMO.md](docs/DEMO.md).
 
 ## What it does
 
