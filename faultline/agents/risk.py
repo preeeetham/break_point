@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 from typing import Callable, Optional
 
+from ..observe.cascade import flow
 from ..planning.llm import OllamaClient
 from ..reporting.store import ReportStore
-from ..schemas import ExperimentReport, Finding, RiskAssessment, Topology
+from ..schemas import CascadeAttribution, CascadeHop, ExperimentReport, Finding, RiskAssessment, Topology
 from .knowledge import target_service
 
 Level = str
@@ -21,6 +22,15 @@ FINDING_BONUS: dict[str, float] = {
     "manual_restart_required": 0.5,
 }
 
+# Cascade attribution (report.cascade). When present it replaces the bare
+# FINDING_BONUS["cascade_beyond_hypothesis"]: 0.5 per hop of depth beyond the hypothesis (max 1.0),
+# counting only hops the dependency graph explains, plus 0.5 if a beyond-hypothesis hop's own health
+# check stayed green. Reports without `cascade` score exactly as before.
+CASCADE_DEPTH_PER_HOP = 0.5
+CASCADE_DEPTH_CAP = 1.0
+CASCADE_MASKED_BONUS = 0.5
+GRAPH_PATH_CONFIDENCE = frozenset({"ordered", "same_interval", "ambiguous"})
+
 LLM_SYSTEM = (
     "You are an SRE writing a terse incident risk note for a chaos experiment on an Eclipse Ditto deployment. "
     "Write exactly two sentences for each field. Use only the numbers and findings given; do not speculate beyond them. "
@@ -30,6 +40,28 @@ LLM_SYSTEM = (
 
 def _pct(x: Optional[float]) -> str:
     return "n/a" if x is None else f"{round(x * 100)}%"
+
+
+def _hop_depth(hop: CascadeHop) -> int:
+    if hop.hops_from_origin is not None:
+        return max(hop.hops_from_origin, 1)
+    return max(len(hop.path) - 1, 1)
+
+
+def _explained_beyond(cascade: CascadeAttribution) -> list[CascadeHop]:
+    """Beyond-hypothesis hops with a dependency route to the origin; a no_graph_path hop is unexplained."""
+    return [h for h in cascade.hops if h.beyond_hypothesis and h.path_confidence in GRAPH_PATH_CONFIDENCE]
+
+
+def cascade_factors(cascade: CascadeAttribution) -> dict[str, float]:
+    """Recomputed from the hops rather than trusting cascade.hops_beyond_hypothesis, so that a
+    no_graph_path hop cannot deepen the score."""
+    depth = max((_hop_depth(h) for h in _explained_beyond(cascade)), default=0)
+    masked = any(h.masked_by_health_check for h in cascade.hops if h.beyond_hypothesis)
+    return {
+        "cascade_depth": round(min(CASCADE_DEPTH_PER_HOP * depth, CASCADE_DEPTH_CAP), 3),
+        "cascade_masked": CASCADE_MASKED_BONUS if masked else 0.0,
+    }
 
 
 def _level(severity: float) -> Level:
@@ -55,14 +87,19 @@ def _factors(report: ExperimentReport, topology: Optional[Topology]) -> tuple[di
     blast_radius = len(set(report.affected_services_observed or []) | {target_service(report)} - {""})
     ttr = report.recovery.time_to_recover_s
     codes = {f.code for f in report.findings}
+    bonuses = FINDING_BONUS
+    if report.cascade is not None:  # the attribution subsumes the bare cascade finding
+        bonuses = {c: b for c, b in FINDING_BONUS.items() if c != "cascade_beyond_hypothesis"}
 
     factors = {
         "impact": round(4.0 * user_impact, 3),
         "blast": round(2.0 * min(blast_radius / _service_count(topology), 1.0), 3),
         "recovery": round(2.0 * min((ttr or 0.0) / TTR_CEILING_S, 1.0), 3),
         "intervention": 1.5 if (not report.recovery.recovered or report.recovery.remediation_actions) else 0.0,
-        "findings": round(sum(bonus for code, bonus in FINDING_BONUS.items() if code in codes), 3),
+        "findings": round(sum(bonus for code, bonus in bonuses.items() if code in codes), 3),
     }
+    if report.cascade is not None:
+        factors.update(cascade_factors(report.cascade))
     return factors, user_impact, blast_radius, ttr
 
 
@@ -93,6 +130,20 @@ def _recovery_phrase(report: ExperimentReport) -> str:
     return f"recovered in {ttr} without intervention"
 
 
+def _cascade_clause(report: ExperimentReport) -> str:
+    if report.cascade is None:
+        return ""
+    explained = _explained_beyond(report.cascade)
+    if explained:
+        deepest = max(explained, key=_hop_depth)
+        hedge = "" if deepest.path_confidence == "ordered" else ", order not certain"
+        return f" It cascaded beyond the hypothesis along {flow(deepest.path)}{hedge}."
+    stray = [h.service for h in report.cascade.hops if h.beyond_hypothesis]
+    if stray:
+        return f" {', '.join(stray)} also failed with no dependency route to {report.cascade.origin} in the topology."
+    return ""
+
+
 def template_summary(report: ExperimentReport, blast_radius: int) -> str:
     target = target_service(report) or "unknown"
     svc = "service" if blast_radius == 1 else "services"
@@ -103,6 +154,7 @@ def template_summary(report: ExperimentReport, blast_radius: int) -> str:
         f"{_verb(report.failure_type)} `{target}` ({report.failure_type}) moved API success from "
         f"{_pct(report.baseline.success_rate)} to {_pct(report.during.success_rate)} across "
         f"{report.during.sample_count} samples; {blast_radius} {svc} affected; {_recovery_phrase(report)}.{abort}"
+        f"{_cascade_clause(report)}"
     )
 
 
@@ -171,7 +223,12 @@ def _llm_prose(
         "aborted_early": report.safety.aborted_early,
         "findings": [{"code": f.code, "severity": f.severity, "title": f.title} for f in report.findings],
     }
-    data = llm.chat_json(LLM_SYSTEM, json.dumps(payload, default=str))
+    system = LLM_SYSTEM
+    if report.cascade is not None and report.cascade.summary:
+        payload["cascade_summary"] = report.cascade.summary
+        system += (" cascade_summary is the established, deterministic account of how the failure spread: "
+                   "you may cite it, but do not change its order, mechanisms or hedges.")
+    data = llm.chat_json(system, json.dumps(payload, default=str))
     if not data:
         return None
     summary, implication = data.get("summary"), data.get("production_implication")
