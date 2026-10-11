@@ -53,6 +53,7 @@ flowchart LR
         fix["fixes/&lt;id&gt;.json / .md"]
         score["scorecard.json / .md"]
         live["live.json<br/>ACTIVE_EXPERIMENT.json<br/>STOP"]
+        appr["PENDING_APPROVAL.json<br/>approvals/&lt;id&gt;.json"]
     end
 
     T["Topology agent"] -->|compose + env + nginx + docker inspect| topo
@@ -77,6 +78,9 @@ flowchart LR
     N["Narrator agent"] -->|reads everything| bb
     G["Guardian agent<br/>independent process"] -->|watches| live
     G ==>|restore containers| sandbox
+    A["Approval agent<br/>email round trip, no LLM"] -->|holds until answered| I
+    A -->|reads| exp
+    A -->|writes| appr
     D["Control room :8765<br/>control.py + server.py"] -->|reads the whole board| bb
     D ==>|submits jobs - map, baseline,<br/>run, analyse, heal, STOP| I
     D -->|owns the probes| P
@@ -96,6 +100,7 @@ The agents:
 - **Resilience Scorecard agent** (`faultline/agents/scorecard.py`). Score = 100 - mean penalty per service; penalty = 40 x (1 - success during) + 20 x min(TTR / 120 s, 1) + 20 if manual recovery + 10 per high/critical finding (max 3) + 5 for a cascade. Grades A >= 90, B >= 80, C >= 65, D >= 50, else F. Ranked worst first; untested services are listed last with no grade.
 - **Narrator agent**. Turns the blackboard into a plain-English play-by-play for the demo screen (`faultline narrate --watch`).
 - **Guardian agent**. A separate process that does not trust the injector. It restores any sandbox container that is down past the deadline recorded in `ACTIVE_EXPERIMENT.json`, removes leftover chaos helper containers (label `faultline.helper=1`), and obeys the `STOP` file. We do not trust a single agent with the kill switch.
+- **Approval agent** (`faultline/agents/approval.py`). The human in the loop, by email. It holds an operator-chosen experiment the protected-services policy would otherwise have refused, and asks again once an experiment the Risk agent scored high or critical has finished. The admin replies with one word from a closed list; no valid reply within `APPROVAL_TIMEOUT_SECONDS` (120 s) applies the safe default — `SKIP` before injection, `CONTINUE` after. No LLM, and it applies nothing.
 - **Control room** (`faultline/dashboard/`), not an agent but the thing that drives them. A long-lived session that owns the two probes, a single-slot job queue for operator actions, an in-memory event log that every agent writes its narration into, and a 1 Hz telemetry buffer. See [Control room](#control-room) below.
 
 ## The sample application
@@ -183,16 +188,17 @@ To attach Faultline to an existing Ditto compose project instead of the bundled 
 | `baseline [--duration 60]` | Captures steady state and derives the safety thresholds |
 | `catalog` | Prints the failure catalog with parameters and bounds |
 | `plan [--no-llm] [--allow-protected]` | Shows the ranked candidates and the pick; runs nothing |
-| `run [--experiments N] [--target SVC --failure TYPE --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop]` | Plans and executes experiments; operator flags pin a specific one. Note that `--analyze` is opt-in here, whereas the control room always runs the analysis agents after each experiment |
+| `run [--experiments N] [--target SVC --failure TYPE --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop] [--no-approvals]` | Plans and executes experiments; operator flags pin a specific one. Note that `--analyze` is opt-in here, whereas the control room always runs the analysis agents after each experiment |
 | `rerun <id>` | Repeats a previous experiment with the same spec |
 | `risk [ids...] [--force]`, `fix [ids...] [--force]`, `scorecard` | Run the downstream agents on every report that does not have output yet; `--force` redoes them |
 | `narrate [--watch] [--llm]` | Plain-English play-by-play; `--watch` follows the blackboard |
 | `guardian [--interval 5]` | Starts the independent Guardian process |
+| `approvals [--resend <id>] [--limit 5]` | Prints the pending approval decision and the last `--limit` decided ones (`0` = none); `--resend` re-sends that decision's email with the same correlation token. There is deliberately no way to answer from the CLI: the answer comes back by email on purpose, and a CLI bypass would defeat the gate. `stop` / `resume` already cover an operator who is at the laptop |
 | `stop` / `resume` | Writes / removes `reports/STOP` |
 | `heal [--restart]` | Operator reset between runs: clears the active-experiment lock, removes chaos helper containers and leftover `tc` qdiscs, unpauses and reconnects containers, starts anything stopped, optionally restarts the Ditto services in dependency order, then waits up to 10 minutes for `/health` = UP |
 | `status` | One-screen summary of the blackboard |
 | `dashboard [--port N]` | Serves the control room; the port defaults to `dashboard_port` in `config/settings.yaml` (8765) |
-| `demo [--experiments N] [--baseline S]` | topology, scout, baseline, run, risk, fix, scorecard, narrate — the headless path, no browser |
+| `demo [--experiments N] [--baseline S] [--no-approvals]` | topology, scout, baseline, run, risk, fix, scorecard, narrate — the headless path, no browser |
 
 ## Control room
 
@@ -247,10 +253,11 @@ All JSON, `Cache-Control: no-store`, errors as `{"error": "..."}`. The full spec
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/state?since=<seq>` | The single polled snapshot: event-log delta since `<seq>`, session, current job, live run (phase, elapsed, deadline, health, blast radius, abort reason), telemetry points and phase bands, STOP flag, Guardian heartbeat, per-agent states, LLM status, topology, baseline, every experiment summary, scorecard. Polled every 1000 ms when idle, 400 ms while an experiment is live |
+| `GET /api/state?since=<seq>` | The single polled snapshot: event-log delta since `<seq>`, session, current job, live run (phase, elapsed, deadline, health, blast radius, abort reason), telemetry points and phase bands, STOP flag, `pending_approval` (the decision an admin is being waited on for, with `seconds_left`, or `null`), Guardian heartbeat, per-agent states, LLM status, topology, baseline, every experiment summary, scorecard. Polled every 1000 ms when idle, 400 ms while an experiment is live |
 | `GET /api/catalog` | The ten failure types with their parameter bounds, which services each applies to, which are blocked by policy, which are unavailable and why, the protected-service rules and the thresholds in force |
 | `GET /api/plan?llm=0\|1&allow_protected=0\|1` | Ranked candidates plus the planner's pick, rationale and hypothesis. Runs no experiment. Note that it will arm the session (build the topology and start the probes) if that has not happened yet |
 | `GET /api/experiment/<id>` | The full report for one experiment, plus its risk, fix and rendered Markdown |
+| `GET /api/approvals` | `{"pending": ..., "decided": [...]}`: the open decision from `reports/PENDING_APPROVAL.json`, if any, and the last 20 decided records from `reports/approvals/`, newest first. Read-only: there is deliberately no endpoint that answers a decision, because the answer arrives by email |
 | `POST /api/jobs/topology` | Rebuild the application map from compose + env + nginx + live Docker |
 | `POST /api/jobs/baseline` | `{"duration": 60}`, clamped to 20–300 s |
 | `POST /api/jobs/run` | `{"mode":"auto"\|"manual","target":...,"failure":...,"params":{...},"experiments":1,"llm":true,"allow_protected":false,"analyze":true}`; `auto` lets the planner pick |
@@ -298,6 +305,8 @@ Further limits: hard cap of 90 s per experiment; an independent watchdog timer f
 **Protected services.** MongoDB is the sole datastore, so the Day-1 policy is degrade-only: `network_delay`, `network_loss`, `cpu_stress`, `disk_pressure` and `db_flood` are allowed, crash/stop/pause/partition are not. `--allow-protected` overrides this explicitly, and the override is written into the report.
 
 **Kill switch.** The STOP button in the control-room header (or the `Esc` key — one press, no confirmation dialog), `faultline stop`, or `touch reports/STOP`. All three write the same file. The safety monitor checks it every second; the Guardian honours it too. The button then reads RESUME, which clears the flag.
+
+**Approval gate.** An operator-chosen experiment the protected-services policy would otherwise have refused is held before injection while the Approval agent emails `ADMIN_EMAIL` and waits for `APPROVE`, `APPROVE REDUCED`, `SKIP` or `STOP RUN`; after an experiment the Risk agent scored high or critical the choices are `FIX <n>`, `WAIT` or `CONTINUE` and nothing is held. Anything outside that vocabulary is not an answer and decides nothing. A timeout, an unreachable mail host or an unset credential all apply the safe default and record why: `SKIP` before an injection, `CONTINUE` after one. A gate that cannot reach the admin never becomes a no-op that approves everything. `WAIT` and `STOP RUN` write the same `reports/STOP` file as the kill switch; there is no second one. `--allow-protected` still bypasses the gate outright. Full detail in [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md) section 8.4.
 
 **Guardian.** A separate process with its own Docker client. It restores any container in the compose project that is still down past the deadline recorded in `ACTIVE_EXPERIMENT.json`, removes stale Pumba helpers and `tc` qdiscs, and never injects anything.
 
@@ -414,8 +423,10 @@ reports/
   risk/<id>.json             RiskAssessment
   fixes/<id>.json, <id>.md   FixRecommendation (JSON for machines, Markdown for people)
   scorecard.json, .md        per-service scores, ranked worst first
+  approvals/<id>.json        ApprovalRequest plus its decision, one file per decision, kept for good
   live.json                  what the injector is doing right now (dashboard feed)
   ACTIVE_EXPERIMENT.json     lock + deadline while an experiment runs (read by the Guardian)
+  PENDING_APPROVAL.json      present = an admin is being waited on for a decision
   STOP                       present = abort now
   guardian.heartbeat.json    Guardian liveness
   logs/*.log                 per-agent logs
@@ -548,6 +559,8 @@ independently reproduced all four observability role overrides (`prometheus`, `g
 - The Scout's output is bounded by the quality of `topology.json`. It predicts against the dependency graph it is given, so a stale map is a worse prediction: during development a topology missing the documented Pekko-cluster edges produced 16 predictions where the current one produces 21.
 - `confirming_finding_codes` matching is code-plus-severity, not causal proof. "Confirmed" means an experiment that could have shown this prediction did show something consistent with it, which is weaker than an attributed cause — the two gates above keep it from being weaker still, but it is not a proof.
 - `port_beyond_ingress` on a service outside the system under test can never be confirmed, because Faultline will not inject into `grafana` or `prometheus`. Those predictions say so in their policy note rather than sitting in the untested column as if an experiment were pending.
+- The approval gate trusts the mailbox it polls. A reply is matched by the correlation token (`FL-xxxxxxxx`) in the subject line or by `In-Reply-To` pointing at the `Message-ID` Faultline sent — never by "the newest unread mail", because two decisions can be open at once — but there is no signature check and no sender check, so anyone who can write into the `IMAP_MAILBOX` can answer for the admin. The gate is exactly as strong as that mailbox. `ADMIN_EMAIL` is also still a placeholder: the project owner has not supplied the real address, and it is deliberately not hardcoded anywhere.
+- The approval gate only ever fires for an operator-chosen experiment. `Planner.plan_operator` sets `requires_approval` when the policy refuses the pair and the gate is on; `Planner.candidates` (weakness-aware or not) still drops a protected pair from the ranked list rather than marking it for a decision, so an AI-planned run never reaches the gate — and neither does the LangGraph planner in `faultline_langgraph/`, which ranks through the same `Planner.candidates` and only plans, never runs. The Weakness Scout trigger that would widen it is a documented hook, not wired: `scout_predicted_severity()` reads the Scout's real `reports/weaknesses.json` (target and failure type of each `suggested_experiment`, its `predicted_level`), and `needs_pre_injection_approval()` documents where to call it, but nothing calls it yet. In the control room the run job is wired end to end — `POST /api/jobs/run` with `mode: "manual"` on a protected pair and `allow_protected: false` is held, not refused, once the gate is configured — but neither the control room launcher nor Fable sends that request today: both lock a protected card unless the override is ticked, and the override bypasses the gate.
 - The control room is single-operator and unauthenticated. It binds loopback only, has no login and no CSRF protection, and its state lives in one process: two browser tabs share one session, and restarting the server disarms the probes and empties the event log (the experiment reports on disk survive, the narration does not). Do not expose the port.
 - The control room's telemetry starts when you arm it, not when the stack started. Close the server and the chart's history is gone.
 - `pyproject.toml` declares only `static/*.html` as package data, so a non-editable `pip install` would ship the page without its CSS and JS. Install with `pip install -e .`, as the quickstart does.

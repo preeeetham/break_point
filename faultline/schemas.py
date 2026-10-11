@@ -142,6 +142,10 @@ class ExperimentSpec(BaseModel):
     planned_by: Literal["llm", "deterministic", "operator"]
     planner_notes: list[str] = []
     reproduce: list[str] = []
+    # Set by the policy when this candidate would otherwise have needed `--allow-protected`. The run
+    # path must obtain an admin decision before injecting; `--allow-protected` clears it instead.
+    requires_approval: bool = False
+    approval_reason: str = ""
 
 
 # ---------------------------------------------------------------- experiment report
@@ -214,6 +218,9 @@ class ExperimentReport(BaseModel):
     raw_logs_ref: str = ""
     status: Literal["completed", "aborted", "failed", "skipped"]
     error: Optional[str] = None
+    # An admin decision attached to this experiment: the pre-injection gate that cleared it, or the
+    # post-incident choice of which fix they intend to apply. A decision log entry, never an action.
+    approval: Optional["ApprovalDecision"] = None
 
 
 # ---------------------------------------------------------------- downstream agents
@@ -447,3 +454,75 @@ class WeaknessReconciliation(BaseModel):
     experiments_considered: int = 0
     outcomes: list[WeaknessOutcome] = []
     summary: str = ""
+
+
+# ---------------------------------------------------------------- approvals
+# The human-in-the-loop gate. Two scenarios, one mechanism: pause, email the admin a fixed set of
+# replies, wait for one of them or for the deadline. The vocabulary is closed on purpose — an admin
+# answering from a phone should never have to improvise a syntax, and the parser should never have to
+# guess. Anything outside it is not an answer and is never treated as a default action.
+APPROVAL_SCENARIOS = ("pre_injection", "problem_occurred")
+
+# First line of the reply body, matched case-insensitively. Keys are what the admin types.
+PRE_INJECTION_REPLIES = {
+    "APPROVE": "approve",
+    "APPROVE REDUCED": "approve_reduced",
+    "SKIP": "skip",
+    "STOP RUN": "stop_run",
+}
+PROBLEM_REPLIES = {
+    "FIX <n>": "fix",
+    "WAIT": "wait",
+    "CONTINUE": "continue",
+}
+# Safe defaults when nobody answers. Scenario A does not do the risky thing unattended; scenario B
+# does not pause a run over an unanswered post-hoc note, because WAIT must always be a deliberate
+# human choice and never a timeout artefact.
+TIMEOUT_DEFAULTS = {"pre_injection": "skip", "problem_occurred": "continue"}
+
+
+class ApprovalDecision(BaseModel):
+    """How one pending decision ended. `answered` separates a human's answer from a timeout default."""
+    answer: Literal["approve", "approve_reduced", "skip", "stop_run", "fix", "wait", "continue"]
+    answered: bool
+    reason: str
+    decided_at: datetime = Field(default_factory=utcnow)
+    fix_index: Optional[int] = None          # 1-based, as listed in the email; only for `fix`
+    fix_title: str = ""
+    raw_first_line: str = ""                 # what the admin actually typed, for the audit trail
+    clarifications_sent: int = 0             # malformed replies that got the options sent back
+    parameters_before: dict[str, Any] = {}   # only for `approve_reduced`
+    parameters_after: dict[str, Any] = {}
+    parameter_notes: list[str] = []
+
+
+class ApprovalRequest(BaseModel):
+    """`reports/PENDING_APPROVAL.json` while open, then `reports/approvals/<approval_id>.json` for good.
+
+    Same spirit as the `ACTIVE_EXPERIMENT.json` lock: one small file that says what is waiting, since
+    when, and until when, so the Guardian and the control room can see a human is being waited on
+    without a second status channel. It carries the recipient and the correlation token; it never
+    carries the SMTP or IMAP credentials used to send it.
+    """
+    approval_id: str
+    scenario: Literal["pre_injection", "problem_occurred"]
+    experiment_id: str
+    token: str                               # correlation token, carried in the subject line
+    message_id: str = ""                     # Message-ID of the email we sent, matched by In-Reply-To
+    subject: str = ""
+    to: str = ""
+    target_service: str = ""
+    failure_type: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    deadline: datetime
+    timeout_s: float
+    options: list[str] = []                  # the fixed vocabulary offered, verbatim
+    default_on_timeout: str
+    sent: bool = False
+    send_error: str = ""                      # transport failure, no credentials, no recipient
+    resends: int = 0
+    status: Literal["pending", "answered", "timed_out", "failed"] = "pending"
+    decision: Optional[ApprovalDecision] = None
+
+
+ExperimentReport.model_rebuild()

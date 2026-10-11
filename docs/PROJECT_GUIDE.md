@@ -8,7 +8,7 @@ Contents
 2. [Tech stack](#2-tech-stack)
 3. [System overview and the blackboard](#3-system-overview-and-the-blackboard)
 4. [The sample application: Eclipse Ditto](#4-the-sample-application-eclipse-ditto)
-5. [The seven agents](#5-the-seven-agents)
+5. [The eight agents](#5-the-eight-agents)
 6. [How Faultline measures: the two probes](#6-how-faultline-measures-the-two-probes)
 7. [The experiment lifecycle, step by step](#7-the-experiment-lifecycle-step-by-step)
 8. [The safety model](#8-the-safety-model)
@@ -66,7 +66,7 @@ The mapper also reports the gap as a structural finding instead of silently fixi
 
 ### The governing principle: "LLM proposes, code disposes"
 
-Every number that matters (candidate ranking, parameter bounds, abort thresholds, severity, scores, grades) is computed by code. The LLM may only: pick one index from a code-ranked shortlist of five, suggest parameters that the code clamps into catalog bounds, and write prose (rationale, hypothesis, risk summary, up to two extra fix suggestions). If the model is slow, offline or returns nonsense, the deterministic path runs and the report says so. Everything works with `--no-llm` or `FAULTLINE_LLM=false`. The one caveat to this principle is described honestly in [section 8.9](#89-what-the-llm-can-and-cannot-influence).
+Every number that matters (candidate ranking, parameter bounds, abort thresholds, severity, scores, grades) is computed by code. The LLM may only: pick one index from a code-ranked shortlist of five, suggest parameters that the code clamps into catalog bounds, and write prose (rationale, hypothesis, risk summary, up to two extra fix suggestions). If the model is slow, offline or returns nonsense, the deterministic path runs and the report says so. Everything works with `--no-llm` or `FAULTLINE_LLM=false`. The one caveat to this principle is described honestly in [section 8.10](#810-what-the-llm-can-and-cannot-influence).
 
 ---
 
@@ -185,6 +185,8 @@ Consequences you can say out loud: a crashed agent loses nothing; any agent can 
 | `scorecard.md` | Markdown | Scorecard agent | Humans |
 | `live.json` | free-form dict with `updated_at` | Injector, about once per second during a run (`_live`) | Control room (the live phase, telemetry phase bands, live health), Narrator `--watch` |
 | `ACTIVE_EXPERIMENT.json` | free-form dict: experiment id, target, container, failure type, start time, `deadline`, parameters | Injector (set before inject, cleared after rollback); cleared by `faultline heal`; cleared by the Guardian if stale | Injector preflight (the lock), Guardian (what may be down and until when), control room (`deadline_in_s` countdown), demo doctor |
+| `PENDING_APPROVAL.json` | `ApprovalRequest` | Approval agent, when a decision opens and on every resend; deleted when it is decided | `faultline approvals`, `GET /api/approvals`, the control room |
+| `approvals/<approval_id>.json` | `ApprovalRequest` with its `decision` filled in | Approval agent, once the decision is answered, timed out or failed; kept for good | Humans, `GET /api/approvals`; `ExperimentReport.approval` carries the same `ApprovalDecision` for scenario B |
 | `STOP` | presence is the signal; content is reason and timestamp | `faultline stop`, `POST /api/stop`, `POST /api/jobs/cancel` for a run job, or `touch reports/STOP` | Safety monitor (every second), Guardian (every loop), CLI and control-room run loops, launcher (blocks launch), demo doctor |
 | `guardian.heartbeat.json` | free-form dict with `at`, `stop`, `active`, `actions`, `down` | Guardian, every loop | Control room (Guardian pill and pipeline row: alive if under 15 s old), `faultline status`, demo doctor |
 | `logs/<agent>.log` | text | Guardian (`append_log`) | Humans |
@@ -214,9 +216,9 @@ Two Compose setups exist:
 
 ---
 
-## 5. The seven agents
+## 5. The eight agents
 
-The pipeline strip in the control room shows seven agents: Topology, Planner, Injector, Guardian, Risk, Fix, Scorecard. An eighth module, the Narrator, exists for the CLI. For each agent: inputs, outputs, algorithm, and what the LLM does versus what code decides.
+The pipeline strip in the control room shows seven agents: Topology, Planner, Injector, Guardian, Risk, Fix, Scorecard. An eighth, the Approval agent, sits outside the strip because it waits on a human by email rather than on the stack. A ninth module, the Narrator, exists for the CLI. For each agent: inputs, outputs, algorithm, and what the LLM does versus what code decides.
 
 ### 5.1 Topology agent (`faultline/topology/`)
 
@@ -333,11 +335,36 @@ Every `--interval` seconds (default 5.0):
 
 **LLM:** none.
 
-### 5.8 Narrator (`faultline/agents/narrator.py`, CLI only)
+### 5.8 Approval agent (`faultline/agents/approval.py`)
+
+The human in the loop, by email. Two scenarios, one mechanism: pause, notify, wait for a constrained answer, time out to a safe default.
+
+**Inputs:** for `pre_injection`, the `ExperimentSpec` the planner produced — it fires when `spec.requires_approval` is set, which `Planner.plan_operator` does when the protected-services policy refuses the (service, failure) pair and the planner was built with `approval_gate=True`, instead of raising "pass `--allow-protected` to override". For `problem_occurred`, the finished `ExperimentReport`, its `RiskAssessment`, its `FixRecommendation` and the Narrator's lines — all read back off the blackboard, and computed on the fly without the LLM when a file is missing, so the trigger does not silently depend on `--analyze` having been used. Plus the six `SMTP_*` and six `IMAP_*` settings and `ADMIN_EMAIL` from `.env`.
+
+**Outputs:** `reports/PENDING_APPROVAL.json` while a decision is open, then `reports/approvals/<approval_id>.json` for good; `ExperimentReport.approval` (an `ApprovalDecision`) for scenario B; `reports/STOP` for `WAIT` and `STOP RUN`. Credentials are never logged and never written into any `reports/` file: a record says who was emailed and which token correlates the reply, never what was used to send it.
+
+**Algorithm:**
+
+1. **Trigger.** `needs_pre_injection_approval(spec)` returns true when `spec.requires_approval` is set, and the run loop holds the injector for that candidate until it has an answer. Only the operator path sets the flag: `Planner.candidates` still drops a protected pair from the ranked list rather than offering it for approval, deliberately — "a gate on who authorises a specific experiment is not a licence to reopen that policy for the planner". `problem_occurred(report, risk)` returns true when `risk.level` is `high` or `critical`, or when `recovery.remediation_actions` is non-empty; this one blocks nothing by itself.
+2. **Preflight.** `preflight(settings)` names everything unset or unusable — `ADMIN_EMAIL`, each `SMTP_*` and `IMAP_*` credential, a non-positive timeout — the same discipline as the LLM client reporting `LLM_API_KEY not set`.
+3. **Open.** One `ApprovalRequest`: a 12-character `approval_id`, a correlation token `FL-xxxxxxxx` (`secrets.token_hex(4)`), the recipient, the deadline, the timeout and the timeout default. Written to `PENDING_APPROVAL.json`, the same shape and spirit as the `ACTIVE_EXPERIMENT.json` lock.
+4. **Send.** One plain-text mail carrying only facts other agents already wrote: for scenario A the target, failure type, clamped parameters, criticality, the planner's rationale, the hypothesis, why the admin is being asked, the planner notes and the reproduce commands; for scenario B the Narrator's prose, the Risk agent's own `summary` and `production_implication`, and the Fix agent's ranked recommendations, numbered so `FIX <n>` is unambiguous. The token goes in the subject line.
+5. **Wait.** Poll `IMAP` every `APPROVAL_POLL_SECONDS` (5 s) with one short-lived connection per poll, until an independent `safety.monitor.Watchdog` on its own thread says the deadline passed — the same reason the injector has one, so a poll stuck in a blocking socket call cannot outlive the deadline. A reply is matched by the token in the subject or by `In-Reply-To` pointing at the `Message-ID` that was sent, never by "the newest unread mail", because two decisions can be open at once.
+6. **Parse.** The first non-empty, non-quoted line of the `text/plain` body, whitespace collapsed, surrounding quotes and one trailing full stop or exclamation mark dropped, matched case-insensitively against the scenario's closed vocabulary: `APPROVE`, `APPROVE REDUCED`, `SKIP`, `STOP RUN` for `pre_injection`; `FIX <n>` (1 to the number of fixes listed), `WAIT`, `CONTINUE` for `problem_occurred`. Longest phrase first, so `APPROVE REDUCED` is never read as a bare `APPROVE`. Anything else is not an answer: one short mail re-states the options, at most `MAX_CLARIFICATIONS` = 3 times, and nothing is decided.
+7. **Act.** `APPROVE` runs the experiment as planned. `APPROVE REDUCED` halves whichever of `duration_s`, `delay_ms`, `jitter_ms`, `loss_percent`, `workers`, `writers`, `size_mb` and `rps` the experiment actually carries (floor, not round, so half an odd duration is not a fraction `pumba --duration` would have to carry), then `clamp()` in `chaos/catalog.py` enforces the catalog's own bounds and every change is recorded in `planner_notes` like any other clamped parameter — the admin never supplies a raw number by email. `SKIP` rejects the candidate and the planner moves to the next-ranked one. `FIX <n>` is a decision log entry written to the experiment's report, not an action: no agent in this project ever applies a fix, and this one is no exception. `CONTINUE` acknowledges and the run proceeds. `WAIT` and `STOP RUN` call `store.request_stop()`, which is the existing `reports/STOP` kill switch — there is no second one.
+8. **Finish.** The decision is attached to the request, the status becomes `answered`, `timed_out` or `failed`, the record is written to `reports/approvals/<approval_id>.json` and `PENDING_APPROVAL.json` is cleared.
+
+**Timeout and failing safe:** the deadline is `APPROVAL_TIMEOUT_SECONDS` (120 s, `faultline/config.py`). `TIMEOUT_DEFAULTS` in `faultline/schemas.py` gives the safe default per scenario: `pre_injection` falls to `SKIP`, `problem_occurred` to `CONTINUE`. Both record `answered: false` and the reason. `WAIT` is never a timeout default, only ever a deliberate human choice, because an unanswered post-hoc note must not pause a run. An unreachable `SMTP` or `IMAP` host, any unset credential and an unset `ADMIN_EMAIL` are all treated exactly as a timeout, so scenario A falls to `SKIP`: a gate that cannot reach the admin never becomes a no-op that approves everything. A `STOP` latched while waiting is treated the same way.
+
+**LLM:** none. Not "none for the numbers" — none at all. This agent sends and receives mail, matches a reply against a fixed vocabulary and writes a record; there is no prompt, no model client and no prose for a model to rewrite anywhere in the file. A closed vocabulary exists precisely so that nothing has to guess what the admin meant.
+
+**Where it is called from, and what is not wired:** `cmd_run` turns the gate on with `approvals_enabled()` unless `--no-approvals` was passed, and off — saying why once — when `preflight()` finds anything unset; it then calls `gate()` before each held experiment and `run_post_experiment()` after each one that was not skipped. A spec that is marked for a decision while the gate is unusable is skipped, never injected on the grounds that nobody can be asked. `ControlPlane._job_run` has the same hold (`_gate`, which blocks the single job slot for up to the timeout while leaving `POST /api/stop`, `/api/resume` and `/api/jobs/cancel` served on their own handler threads) and builds its planner with `approval_gate` set from `gate_available()`, so `POST /api/jobs/run` with `mode: "manual"` on a protected pair and `allow_protected: false` is held rather than refused once the gate is configured. Neither browser front end sends that request today: the control room launcher and Fable both lock a protected card unless the override is ticked, and the override bypasses the gate. The Weakness Scout trigger is a documented hook, not a code path: `scout_predicted_severity(store, spec)` reads the Scout's `reports/weaknesses.json` through `store.weaknesses()` and returns the `predicted_level` of a weakness whose `suggested_experiment` matches the spec's target and failure type (or `None` when the Scout has not run), and `needs_pre_injection_approval()` documents that the call belongs in `Planner.candidates` next to the policy check, so the trigger stays in one place. Nothing calls it today (section 17).
+
+### 5.9 Narrator (`faultline/agents/narrator.py`, CLI only)
 
 `faultline narrate [--watch] [--llm]` prints a plain-English play-by-play of each experiment from the blackboard (header, timeline, impact, recovery, hypothesis, safety, findings, risk, fix). `--watch` polls every 3 s and also prints live lines from `live.json`. With `--llm` the model may write one two-to-three sentence paragraph using only the facts provided. It writes nothing to the blackboard.
 
-### 5.9 Summary: who decides what
+### 5.10 Summary: who decides what
 
 | Decision | Code | LLM |
 |---|---|---|
@@ -352,6 +379,7 @@ Every `--interval` seconds (default 5.0):
 | Risk summary and implication prose | template fallback | may rewrite |
 | Fix recommendations | 18 rules, up to 6 | up to 2 extras, confidence at most 0.6 |
 | Scores and grades | yes | no |
+| Whether a held experiment runs, runs reduced or is skipped, and which fix is recorded as chosen | asks the admin, enforces the closed vocabulary and the safe default on timeout | never asked, never consulted |
 
 ---
 
@@ -531,6 +559,7 @@ An exception while applying or observing sets status `failed` with the error tex
 | Experiments per run | `max_experiments_per_run` = 10 | `cmd_run`, `ControlPlane._job_run` |
 | Pause between experiments | 30 s | same |
 | Recovery wait cap | `timeout_seconds` = 300 s | `_wait_recovery` |
+| Approval deadline | `APPROVAL_TIMEOUT_SECONDS` = 120 s, polled every `APPROVAL_POLL_SECONDS` = 5 s (both `faultline/config.py`) | `ApprovalAgent._wait`, with an independent `Watchdog` on its own thread |
 | Protected services | `mongodb`: only `network_delay`, `network_loss`, `cpu_stress`, `disk_pressure`, `db_flood` | `Policy.allows` (planner, operator path, catalog endpoint, launcher cards) |
 | Never-targets | role `ui` (`skip_roles`) and role `other` (`chaos_relevant: false`) | `Planner.candidates`, `applicable()` |
 | Disk fill bound | `size_mb` at most 1024 | catalog |
@@ -568,30 +597,51 @@ Who reacts: the safety monitor inside a running experiment (within about 1 s, ve
 
 Clearing it: `faultline resume`, `POST /api/resume` (the header button reads RESUME while STOP is latched), or `faultline run --resume-stop`. Note: a run job submitted directly to `POST /api/jobs/run` clears STOP by default (`resume_stop` defaults to true in `_job_run`); the launcher UI blocks that path by refusing to launch until you press RESUME.
 
-### 8.4 One-experiment lock and the single-job rule
+### 8.4 Approval gate
+
+A second kind of pause, and the only one that waits on a person. The Approval agent (section 5.8) holds an operator-chosen experiment before injection when the protected-services policy refused it and the gate is on, and asks again after an experiment the Risk agent scored `high` or `critical` or whose recovery needed the escalation ladder. `--allow-protected` is the explicit override and still bypasses the gate entirely, which is what an unattended run uses; `--no-approvals` turns the gate off without reopening the policy, so a refused pair goes back to being refused.
+
+| Property | Value |
+|---|---|
+| Who is asked | `ADMIN_EMAIL`. No default, deliberately not hardcoded anywhere; the project owner has not supplied the real address yet |
+| On or off | on for `run`, `rerun` and `demo` unless `--no-approvals`; `approvals_enabled()` turns it off and logs the first `preflight()` issue when it cannot reach a human. A spec already marked for a decision is then skipped, never injected |
+| What triggers it | scenario A: `Planner.plan_operator` set `requires_approval` because the policy refused the pair. Scenario B: `risk.level` in (`high`, `critical`), or a non-empty `recovery.remediation_actions` |
+| Scenario A vocabulary (`pre_injection`) | `APPROVE`, `APPROVE REDUCED`, `SKIP`, `STOP RUN` — blocks the injector for that candidate |
+| Scenario B vocabulary (`problem_occurred`) | `FIX <n>`, `WAIT`, `CONTINUE` — blocks nothing by itself |
+| How a reply is read | the first non-empty, non-quoted line of the `text/plain` body, case-insensitively, against that closed list. Anything else gets the options back once (at most `MAX_CLARIFICATIONS` = 3) and decides nothing |
+| How a reply is matched | the correlation token `FL-xxxxxxxx` in the subject, or `In-Reply-To` pointing at the sent `Message-ID`. Never "the newest unread mail": two decisions can be open at once |
+| Deadline | `APPROVAL_TIMEOUT_SECONDS` = 120 s, enforced by an independent `safety.monitor.Watchdog` timer on its own thread |
+| Timeout default | `SKIP` for scenario A, `CONTINUE` for scenario B (`TIMEOUT_DEFAULTS`, `faultline/schemas.py`); both record `answered: false` and the reason |
+| Unconfigured or unreachable | an unset `ADMIN_EMAIL` or credential, or an unreachable `SMTP` / `IMAP` host, is treated exactly as a timeout — so scenario A falls to `SKIP`. Not configured is not consent |
+| Side effects | `WAIT` and `STOP RUN` write `reports/STOP`, the same kill switch as section 8.3. `APPROVE REDUCED` halves duration and intensity and `clamp()` then enforces the catalog bounds. `FIX <n>` writes a decision log entry to `ExperimentReport.approval` and nothing else |
+| Where it is visible | `reports/PENDING_APPROVAL.json` while open, `reports/approvals/<approval_id>.json` once decided, `faultline approvals`, `GET /api/approvals` |
+
+`WAIT` is never a timeout default: pausing a whole run is a deliberate human choice, never something an unanswered mail does on the admin's behalf. There is deliberately no command that answers a decision from the CLI — the answer comes back by email on purpose, and a local bypass would defeat the gate; `faultline stop` and `faultline resume` already cover an operator who is physically at the laptop.
+
+### 8.5 One-experiment lock and the single-job rule
 
 Two independent constraints:
 
 - `ACTIVE_EXPERIMENT.json`: any process that runs an experiment refuses while it exists. This is what stops a CLI `faultline run` in another terminal from colliding with one started in the browser.
 - The control room's job slot: `ControlPlane.submit()` refuses a second job while one is running (`JobBusy`, HTTP 409 with `'<label>' is already running`). This covers map rebuilds, baselines, analysis and heals too.
 
-### 8.5 Protected services
+### 8.6 Protected services
 
 `mongodb` is protected because it is the sole datastore ("Day-1 policy is degrade-only, never a full outage"). Crash, stop, pause and partition are blocked; delay, loss, CPU, disk and write flood are allowed. `--allow-protected` (CLI) or the `allow_protected` flag in the run payload overrides it, and the override text is written into `planner_notes` in the report.
 
-### 8.6 Idempotent rollback
+### 8.7 Idempotent rollback
 
 Every injection returns a `Handle`. `revert()` takes a lock, sets a flag, and only the first caller does the work. Callers: normal completion, abort, the watchdog thread, the `finally` block, and (indirectly, by restoring containers) the Guardian. What each revert does is listed per failure type in section 9.
 
-### 8.7 Blast radius is part of the hypothesis
+### 8.8 Blast radius is part of the hypothesis
 
 The hypothesis' `expected_affected` list does two jobs: it defines which services the blast-radius abort protects (everything else), and it is the baseline for the `cascade_beyond_hypothesis` finding.
 
-### 8.8 Advisory only and reproducible
+### 8.9 Advisory only and reproducible
 
 No agent edits the stack's configuration. Every report carries `reproduce`: the shell commands equivalent to the injection (`reproduce_commands` in `catalog.py`), so a finding can be verified by hand without Faultline. Some of these are approximations; see section 17.
 
-### 8.9 What the LLM can and cannot influence
+### 8.10 What the LLM can and cannot influence
 
 Cannot: see or change any threshold, the watchdog, the hard cap, the policy, the severity, the scores, or pick a service or failure that is not in the code's top five.
 
@@ -793,10 +843,11 @@ All JSON. Errors as `{"error": "..."}`.
 
 | Method and path | Purpose | Notes |
 |---|---|---|
-| `GET /api/state?since=<seq>` | The single polled snapshot: `now`, `seq`, events since `seq`, session (armed, error, probe, project, Ditto URL), job, run, telemetry, `stop_requested`, guardian heartbeat, agents, llm, topology, baseline, experiment summaries (newest first, with risk and fix inlined), scorecard | Polled every 1000 ms idle, 400 ms while a run is live |
+| `GET /api/state?since=<seq>` | The single polled snapshot: `now`, `seq`, events since `seq`, session (armed, error, probe, project, Ditto URL), job, run, telemetry, `stop_requested`, `pending_approval` (the decision an admin is being waited on for, with a `seconds_left` that goes negative once the deadline has passed, or `null`), guardian heartbeat, agents, llm, topology, baseline, experiment summaries (newest first, with risk and fix inlined), scorecard | Polled every 1000 ms idle, 400 ms while a run is live |
 | `GET /api/catalog` | Ten failure types with params and bounds, `applies_to`, `policy_blocked_on`, availability and reason, protected rules, thresholds in force | Thresholds come from `baseline.json` if present |
 | `GET /api/plan?llm=0\|1&allow_protected=0\|1` | Ranked candidates, the pick (spec, rationale, hypothesis, notes, reproduce), LLM status | Runs nothing and does not arm; needs `topology.json` |
 | `GET /api/experiment/<id>` | Full report, risk, fix and rendered Markdown | 404 for unknown ids or ids containing `/` or `..` |
+| `GET /api/approvals` | `{"pending": ..., "decided": [...]}`: the open decision from `reports/PENDING_APPROVAL.json` plus the last 20 decided records in `reports/approvals/`, newest first | Read-only, and there is deliberately no POST and no job kind: the answer arrives by email from the admin's own mailbox, and a button here would let whoever has the dashboard open wave through the very experiment the gate exists to hold back |
 | `POST /api/jobs/topology` | Rebuild the map | 202 with the job, or 409 if busy |
 | `POST /api/jobs/baseline` | `{"duration": 60}` | clamped to 20-300 s |
 | `POST /api/jobs/run` | `{"mode":"auto"\|"manual","target","failure","params":{},"experiments":1,"llm":true,"allow_protected":false,"analyze":true}` | `experiments` capped at 10; manual runs exactly one; clears STOP unless `resume_stop: false` |
@@ -889,6 +940,19 @@ Copy `.env.example` to `.env`. Precedence: process environment, then `.env`, the
 | `LLM_BASE_URL` | API base URL | provider default |
 | `LLM_API_KEY` | Key for hosted providers; without it the client reports `LLM_API_KEY not set` and planning is deterministic | empty |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | Legacy aliases; `LLM_*` win when both are set | |
+| `ADMIN_EMAIL` | **Placeholder.** Who the approval gate asks. The project owner has not supplied the real address yet and it is deliberately not hardcoded anywhere; until it is set the gate reports itself unconfigured and applies the safe default rather than approving. Use `admin@example.invalid` in examples | empty |
+| `SMTP_HOST` | Outgoing mail host for the request | empty |
+| `SMTP_PORT` | Outgoing mail port; 465 switches to implicit TLS (`SMTP_SSL`) | `587` |
+| `SMTP_USER`, `SMTP_PASSWORD` | Credentials to send with. Never logged and never written into any `reports/` file | empty |
+| `SMTP_FROM` | `From` header | empty = `SMTP_USER` |
+| `SMTP_STARTTLS` | Issue `STARTTLS` before logging in (skipped on port 465) | `true` |
+| `IMAP_HOST` | Host polled for the reply | empty = `SMTP_HOST` |
+| `IMAP_PORT` | Port polled for the reply | `993` |
+| `IMAP_USER`, `IMAP_PASSWORD` | Credentials to read the reply with | empty = the `SMTP_*` ones |
+| `IMAP_MAILBOX` | Mailbox selected when polling | `INBOX` |
+| `IMAP_SSL` | Connect with `IMAP4_SSL` rather than plain `IMAP4` | `true` |
+| `APPROVAL_TIMEOUT_SECONDS` | How long a decision stays open before the safe default is applied | `120` |
+| `APPROVAL_POLL_SECONDS` | Interval between mailbox polls while waiting | `5` |
 
 The demo laptop's `.env` defines `FAULTLINE_COMPOSE_PROJECT`, `DITTO_URL`, `DITTO_USER`, `DITTO_PASSWORD`, `PROMETHEUS_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL` and `LLM_API_KEY` (attached to project `bosch-ditto`, Groq). Never commit `.env`.
 
@@ -905,16 +969,17 @@ The console script is `faultline`; `.venv/bin/python -m faultline <command>` is 
 | `baseline [--duration 60]` | Captures steady state and derives thresholds |
 | `catalog` | Prints the failure catalog |
 | `plan [--no-llm] [--allow-protected]` | Shows the ranked candidates and the pick; runs nothing |
-| `run [--experiments N] [--target S --failure F --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop]` | Plans and executes experiments (operator flags pin one) |
+| `run [--experiments N] [--target S --failure F --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop] [--no-approvals]` | Plans and executes experiments (operator flags pin one). `--no-approvals` runs unattended: the gate is never consulted and a policy-refused pair is refused as before |
 | `rerun <id>` | Repeats a previous experiment's target, failure and parameters |
 | `risk [ids] [--force] [--no-llm]`, `fix [ids] [--force] [--no-llm]`, `scorecard` | Downstream agents over reports without output (or all with `--force`) |
 | `narrate [--watch] [--llm]` | Plain-English play-by-play |
 | `guardian [--interval 5]` | The independent Guardian process (blocks) |
+| `approvals [--resend <id>] [--limit 5]` | Prints the pending approval decision, its deadline and its timeout default, then the last `--limit` decided ones (`0` = none), and finally anything `preflight()` says is unset. `--resend` re-sends the pending decision's email with the same correlation token. Deliberately no way to answer a decision from the CLI |
 | `stop` / `resume` | Write / remove `reports/STOP` |
 | `heal [--restart]` | Clear the lock, remove helpers, reconnect, unpause and start containers, delete `tc` qdiscs on the core services; with `--restart` restart `mongodb`, `policies`, `things`, `things-search`, `connectivity`, `gateway` in that order (10 s after MongoDB, 5 s after each other); then wait up to 10 minutes for `/health` = UP |
 | `status` | Container states, STOP, active lock, experiment count, Guardian alive or offline |
 | `dashboard [--port N]` | Serves the control room (default port 8765) |
-| `demo [--experiments 3] [--baseline 45] [--no-llm]` | Headless: topology, baseline, run with analysis, narrate |
+| `demo [--experiments 3] [--baseline 45] [--no-llm] [--allow-protected] [--no-approvals]` | Headless: topology, baseline, run with analysis, narrate |
 
 `make` targets wrap these: `venv`, `up`, `down`, `status`, `setup`, `topology`, `baseline`, `run` (N=3), `demo`, `dashboard` (PORT=8765), `guardian`, `test`, `clean-reports`.
 
@@ -1159,7 +1224,7 @@ Script line that is true in every case: "The synthetic client saw 0 % success, a
 - Java cold start dominates crash recovery: a killed Ditto service needs 60-120 s to restart and rejoin the cluster, so crash TTR mostly measures JVM boot.
 - The health probe uses `docker exec` because port 7626 is not published; a paused or CPU-starved container makes that slow, which adds jitter to the health timeline.
 - Findings are heuristics: `data_loss_suspected` is a canary read-back, not a journal audit; readiness findings compare fractions over a window, not individual requests.
-- The LLM can choose any value inside catalog bounds and can widen `expected_affected`, which narrows the blast-radius abort (section 8.9).
+- The LLM can choose any value inside catalog bounds and can widen `expected_affected`, which narrows the blast-radius abort (section 8.10).
 - The control room is single-operator, unauthenticated, loopback only; its event log and telemetry live in memory and are lost on restart.
 - Telemetry starts when the session is armed, not when the stack started.
 - `rich` is declared as a dependency but unused.
@@ -1204,6 +1269,7 @@ The code wins in every case below.
 19. **`faultline demo` baseline.** README implies 60 s; the `demo` subcommand's default `--baseline` is 45 s.
 20. **Package data.** README's known limitations say `pyproject.toml` ships only `static/*.html`; it now also lists `static/*.css`, `static/*.js` and `static/*.svg`.
 21. **Screen layout.** README and UI_CONTRACT describe a no-scroll three-column grid with the experiments row at the bottom; the layout is being changed to a scrolling page (section 11.5).
+22. **The approval gate's reach is narrower than "the policy requires a decision" suggests.** `README.md` and section 8.4 describe an experiment the protected-services policy would have refused as being held for an admin. Only the operator path does that: `Planner.plan_operator` sets `ExperimentSpec.requires_approval` when the policy refuses the pair and the planner was built with `approval_gate=True`, while `Planner.candidates` still drops a protected pair from the ranked list, so an AI-planned `faultline run` never reaches the gate. The weakness-aware ranking and the LangGraph planner in `faultline_langgraph/` both rank through the same `Planner.candidates`, so neither reaches the gate either (and the LangGraph CLI only plans, it never runs). In the control room `ControlPlane._job_run` passes `approval_gate` and holds a manual protected launch sent over HTTP, but the launcher and Fable both lock a protected card unless the override is ticked, so no button in either UI produces that request. `scout_predicted_severity()`, which would widen the trigger, now reads the Scout's real `reports/weaknesses.json` and is still uncalled by design.
 
 ---
 
@@ -1226,6 +1292,10 @@ The code wins in every case below.
 | Kill switch | `reports/STOP`; aborts and rolls back everything |
 | Watchdog | An independent timer that forces rollback at the hard deadline even if the main loop hangs |
 | Guardian | A separate process that only restores the sandbox |
+| Approval gate | The human-in-the-loop pause: Faultline emails `ADMIN_EMAIL` a closed set of replies and waits for one of them or for the deadline (section 8.4) |
+| Correlation token | `FL-xxxxxxxx`, carried in an approval email's subject line; how a reply is matched to the decision it answers, rather than to the newest unread mail |
+| Timeout default (safe default) | The answer applied when nobody replies within `APPROVAL_TIMEOUT_SECONDS`, or when the gate cannot reach the admin at all: `SKIP` before injection, `CONTINUE` after. Not "escalation", which in Faultline means the injector's recovery ladder |
+| Clarification | The one short mail sent back when a reply is not one of the options; it re-states them and decides nothing |
 | Recovery | Return to steady state: 3 consecutive good checks plus a 20 s soak |
 | Soak | Extra observation after apparent recovery to catch relapses |
 | Relapse | Degradation again during the soak; resets the recovery wait |

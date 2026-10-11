@@ -74,7 +74,7 @@ The server reads settings **once at startup** — restart it after editing `.env
 
 ## 3. Architecture in one page
 
-**Blackboard pattern.** Seven agents communicate only through JSON files in `reports/`. No message
+**Blackboard pattern.** Eight agents communicate only through JSON files in `reports/`. No message
 bus. You can watch them work independently.
 
 ```
@@ -88,9 +88,11 @@ reports/
   live.json                  what the injector is doing right now
   ACTIVE_EXPERIMENT.json     the single-experiment lock
   STOP                       kill-switch flag; its presence aborts everything
+  PENDING_APPROVAL.json      an admin is being waited on for a decision (absent = none)
+  approvals/<id>.json        ApprovalRequest + its decision, one file per decision
 ```
 
-**The seven agents**
+**The eight agents**
 
 | Agent | File | Job |
 |---|---|---|
@@ -101,6 +103,7 @@ reports/
 | Risk | `faultline/agents/risk.py` | Deterministic 0-10 severity. LLM only writes prose. |
 | Fix | `faultline/agents/fix.py` | 18 Ditto-specific rules in `knowledge.py` + ≤2 LLM extras. **Never applies anything.** |
 | Scorecard | `faultline/agents/scorecard.py` | 0-100 per service, worst first, untested shown as untested. |
+| Approval | `faultline/agents/approval.py` | Human in the loop, by email. Blocks an experiment that would have needed `--allow-protected`; asks again after a high/critical result. Closed reply vocabulary, 120 s deadline, safe default on timeout. **No LLM. Applies nothing.** |
 
 **The governing principle: "LLM proposes, code disposes."** Every number (severity, score, ranking,
 thresholds) is computed by code. The model may make an experiment *safer* (shorter, lighter) but can
@@ -191,6 +194,39 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
 - `tokens.css`, `app.css`, `app.js`, `index.html`, `topology.js`, `charts.js`, `util.js`,
   `icons.js`, `copy.js`, `scripts/verify_ui.py`.
 - Docs: `README.md`, `docs/DEMO.md`, `docs/ARCHITECTURE.md`, `docs/UI_CONTRACT.md`.
+
+### Approval agent — landed and wired on the CLI path
+- `faultline/agents/approval.py`: two scenarios (`pre_injection`, `problem_occurred`), one mechanism
+  — pause, email `ADMIN_EMAIL`, wait for one of a closed set of replies or for the
+  `APPROVAL_TIMEOUT_SECONDS` (120 s) deadline on an independent `Watchdog`, record what happened and
+  why. Safe default on timeout, on an unreachable mailbox and on any unset credential: `SKIP` before
+  an injection, `CONTINUE` after one. `WAIT` / `STOP RUN` reuse `reports/STOP`; `FIX <n>` is a
+  decision log entry on `ExperimentReport.approval` and nothing else. Schemas, the twelve
+  `SMTP_*` / `IMAP_*` settings, `ReportStore.pending_approval` / `write_approval` and
+  `tests/fakemail.py` (in-process SMTP and IMAP doubles — a test must never touch a real inbox) are
+  all in. Documented in `README.md`, `docs/PROJECT_GUIDE.md` 5.8 and 8.4, `docs/ARCHITECTURE.md`,
+  `.env.example`.
+- **Wired:** `cmd_run` enables the gate via `approvals_enabled()` unless `--no-approvals`, calls
+  `gate()` before a held experiment and `run_post_experiment()` after each non-skipped one;
+  `Planner.plan_operator` sets `requires_approval` when the policy refuses the pair and
+  `approval_gate=True`; `faultline approvals [--resend ID] [--limit 5]` and `GET /api/approvals` are
+  read-only views.
+- **Not wired, check these:** `Planner.candidates` (weakness-aware or not, and therefore the
+  LangGraph planner in `faultline_langgraph/` too) deliberately never marks a protected pair for
+  approval, so an AI-planned run never reaches the gate — only an operator-chosen one does.
+  `ControlPlane._job_run` passes `approval_gate` and holds a manual protected launch sent to
+  `POST /api/jobs/run`, but the launcher and Fable both lock a protected card unless the override is
+  ticked (and the override bypasses the gate), so no button produces that request yet.
+  `scout_predicted_severity()` reads the Scout's real `reports/weaknesses.json` (tested against the
+  real schema) but nothing calls it: wiring it into `Planner.candidates` next to the policy check
+  would widen who gets asked, which is a product decision. See PROJECT_GUIDE section 17, item 22.
+- **`ADMIN_EMAIL` is a placeholder.** No default, deliberately not hardcoded anywhere; the project
+  owner has not supplied the real address. Leave it empty until they do — the gate then reports
+  itself unconfigured and applies the safe default rather than approving anything. Use
+  `admin@example.invalid` in examples.
+- There is deliberately no way to answer a decision from the CLI or over HTTP. The answer comes back
+  by email on purpose; a local bypass would defeat the gate, and `faultline stop` / `resume` already
+  cover an operator at the laptop.
 
 ### In flight when the session ended — CHECK THESE FIRST
 1. **`launcher.js` restyle** — the panel still uses its own `fl-launch-*` class names and only
