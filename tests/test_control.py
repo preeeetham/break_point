@@ -36,7 +36,8 @@ from faultline.safety.thresholds import thresholds_from
 from .conftest import PROJECT, ROOT
 
 STATE_KEYS = {"now", "seq", "events", "session", "job", "run", "telemetry", "stop_requested", "guardian",
-              "agents", "llm", "topology", "baseline", "experiments", "scorecard", "weaknesses"}
+              "agents", "llm", "topology", "baseline", "experiments", "scorecard", "weaknesses",
+              "reconciliation", "target"}
 
 
 def wait_for(pred, timeout: float = 5.0) -> bool:
@@ -223,7 +224,18 @@ def test_run_state_reads_live_file_and_derives_blast(control, tmp_store):
     run = control.state(0)["run"]
     assert run["phase"] == "injecting" and run["experiment_id"] == "abc" and run["target_service"] == "things"
     assert sorted(run["blast"]["observed"]) == ["policies", "things"]
-    assert run["safety"] == {"abort_reason": None, "detail": {}}
+    assert run["safety"] == {"abort_reason": None, "detail": {}} and run["timeline"] == []
+
+
+def test_run_state_carries_timeline_and_safety_detail_when_the_injector_writes_them(control, tmp_store):
+    # the monitor's verdict detail is spread flat into live.json by Injector._live
+    tmp_store.write_live({"phase": "rollback", "experiment_id": "abc", "abort_reason": "error_rate",
+                          "trailing_samples": 20, "error_rate": 0.9, "threshold": 0.5, "p95_ms": 900,
+                          "timeline": [{"t_plus_s": 0.7, "event": "injected", "detail": "SIGKILL"}]})
+    run = control.state(0)["run"]
+    assert run["safety"] == {"abort_reason": "error_rate",
+                             "detail": {"trailing_samples": 20, "error_rate": 0.9, "threshold": 0.5}}
+    assert run["timeline"] == [{"t_plus_s": 0.7, "event": "injected", "detail": "SIGKILL"}]
 
 
 def test_analyze_job_shows_as_analyzing_phase(control, monkeypatch):
@@ -348,6 +360,188 @@ def test_scout_job_failure_is_reported_like_any_other_job(control, monkeypatch):
     job = wait_job(control)
     assert job["status"] == "failed" and "FileNotFoundError" in job["error"]
     assert control.state(0)["weaknesses"] is None
+
+
+# ---------------------------------------------------------------- reconcile
+def test_reconcile_job_closes_the_loop_and_exposes_state(control, tmp_store, make_report):
+    assert "reconcile" in control_mod.JOB_KINDS and control_mod.AGENTS[-1] == "reconcile"
+    assert control.state(0)["reconciliation"] is None
+    tmp_store.write_weaknesses(weakness_report())
+    tmp_store.write_experiment(make_report(service="things", finding_codes=["health_check_masked_failure"]))
+    job = control.submit("reconcile", {})
+    assert job.label == "Reconcile predictions against experiments"
+    done = wait_job(control)
+    assert done["status"] == "done"
+    assert done["result"] == {"predicted": 1, "confirmed": 1, "cleared": 0, "untested": 0,
+                              "experiments_considered": 1}
+    st = control.state(0)
+    assert st["agents"]["reconcile"] == {**st["agents"]["reconcile"], "state": "done", "detail": "1/1 confirmed"}
+    rec = st["reconciliation"]
+    assert {"generated_at", "project", "predicted_total", "confirmed", "cleared", "untested",
+            "experiments_considered", "outcomes", "summary"} <= set(rec)
+    assert rec["confirmed"] == 1 and rec["outcomes"][0]["state"] == "confirmed"
+    assert rec["outcomes"][0]["weakness_id"] == "w1" and isinstance(rec["generated_at"], str)
+    json.dumps(st)
+    lines = [e for e in st["events"] if e["source"] == "reconcile"]
+    assert any("1 confirmed" in e["text"] and e["level"] == "success" for e in lines)
+
+
+def test_reconcile_job_without_a_scout_report_fails_clearly(control):
+    control.submit("reconcile", {})
+    job = wait_job(control)
+    assert job["status"] == "failed" and "scout" in job["error"]
+    assert control.state(0)["agents"]["reconcile"]["state"] == "error"
+    assert control.state(0)["reconciliation"] is None
+
+
+def test_analyze_reconciles_after_every_run_and_survives_a_reconcile_error(control, tmp_store, make_report,
+                                                                            topology, monkeypatch):
+    import faultline.agents.reconcile as reconcile_mod
+
+    tmp_store.write_topology(topology)
+    tmp_store.write_experiment(make_report(service="things", finding_codes=["health_check_masked_failure"]))
+    control.submit("analyze", {"llm": False})
+    assert wait_job(control)["status"] == "done"
+    assert control.state(0)["reconciliation"] is None  # no predictions: nothing to reconcile
+    tmp_store.write_weaknesses(weakness_report())
+    control.submit("analyze", {"llm": False})
+    assert wait_job(control)["status"] == "done"
+    assert control.state(0)["reconciliation"]["confirmed"] == 1
+
+    def boom(store, project, log=print):
+        raise RuntimeError("reconcile exploded")
+
+    monkeypatch.setattr(reconcile_mod, "run", boom)
+    control.submit("analyze", {"llm": False})
+    job = wait_job(control)
+    assert job["status"] == "done" and job["result"]["risks"] == 0  # already scored by the second pass
+    assert control.state(0)["agents"]["reconcile"]["state"] == "error"
+    assert any("Reconcile skipped" in e["text"] and e["level"] == "warn" for e in control.state(0)["events"])
+
+
+# ---------------------------------------------------------------- planner + baseline agent entries
+def test_control_room_planner_is_weakness_aware(control, tmp_store, topology):
+    tmp_store.write_topology(topology)
+    assert control._planner(False, False, arm=False).weaknesses is None
+    tmp_store.write_weaknesses(weakness_report())
+    planner = control._planner(False, False, arm=False)
+    assert planner.weaknesses is not None and planner.weaknesses.weaknesses[0].weakness_id == "w1"
+
+
+def test_baseline_job_drives_its_own_agent_entry(control, monkeypatch, make_report, thresholds):
+    import faultline.observe.baseline as baseline_mod
+    from faultline.schemas import Baseline, WindowStats, utcnow
+
+    assert "baseline" in control_mod.AGENTS and control.state(0)["agents"]["baseline"]["state"] == "idle"
+
+    def fake_capture(api, health, window, duration, url, policy, log=print):
+        assert duration == 20
+        return Baseline(captured_at=utcnow(), duration_s=duration, ditto_url=url,
+                        api=WindowStats(sample_count=80, success_rate=1.0, p50_ms=20, p95_ms=44, p99_ms=90),
+                        health_availability={}, thresholds=thresholds)
+
+    monkeypatch.setattr(baseline_mod, "capture", fake_capture)
+    control.submit("baseline", {"duration": 20})
+    assert wait_job(control)["status"] == "done"
+    agent = control.state(0)["agents"]["baseline"]
+    assert agent["state"] == "done" and agent["detail"] == "success 100.00%, p95 44.0 ms"
+
+    def boom(*a, **kw):
+        raise ConnectionError("probe lost")
+
+    monkeypatch.setattr(baseline_mod, "capture", boom)
+    control.submit("baseline", {"duration": 20})
+    assert wait_job(control)["status"] == "failed"
+    assert control.state(0)["agents"]["baseline"]["state"] == "error"
+
+
+# ---------------------------------------------------------------- narrator
+def test_narrative_fills_missing_risk_and_fix_in_memory(control, tmp_store, make_report):
+    tmp_store.write_experiment(make_report(experiment_id="abc", finding_codes=["health_check_masked_failure"]))
+    story = control.narrative("abc")
+    assert set(story) == {"header", "timeline", "impact", "recovery", "hypothesis", "safety", "findings",
+                          "risk", "fix", "error", "llm"}
+    assert story["header"].startswith("[") and "Experiment abc" in story["header"]
+    assert story["timeline"] == ["[+0.0s] inject — container_crash"]
+    assert story["impact"].startswith("Impact: success 100% → 10%")
+    assert story["recovery"].startswith("Recovery: 14 s")
+    assert story["hypothesis"].startswith("Hypothesis: held")
+    assert story["findings"] == ["Finding [HIGH] policies health check masked failure (health_check_masked_failure)"]
+    assert story["risk"].startswith("Risk: ") and "not yet assessed" not in story["risk"]
+    assert story["fix"].startswith("Top fix: ") and "not yet available" not in story["fix"]
+    assert story["safety"] is None and story["llm"] is None and story["error"] is None
+    assert tmp_store.risk("abc") is None and tmp_store.fix("abc") is None  # computed, never written
+    assert control.narrative("missing") is None
+    json.dumps(story)
+
+
+def test_run_job_pushes_the_play_by_play_into_the_feed(control, injector):
+    injector()
+    control.submit("run", {"mode": "auto", "analyze": False, "llm": False})
+    assert wait_job(control)["status"] == "done"
+    lines = [e for e in control.state(0)["events"] if e["source"] == "narrator"]
+    texts = [e["text"] for e in lines]
+    assert texts[0].startswith("[") and "Experiment" in texts[0]
+    assert any(t.startswith("Impact:") for t in texts) and any(t.startswith("Hypothesis: held") for t in texts)
+    assert not any(t.startswith(" ") for t in texts)
+    assert all(e["level"] == infer_level(e["text"], "narrator") for e in lines)
+
+
+# ---------------------------------------------------------------- target
+def test_adopt_target_accepts_repo_relative_paths_and_disarms(control, sessions):
+    control.arm()
+    seq = control.events.seq
+    out = control.adopt_target({"compose": "deploy/docker-compose.yml", "knowledge": None})
+    assert out == {"compose_file": str(ROOT / "deploy" / "docker-compose.yml"),
+                   "knowledge_file": control.s.knowledge_file, "project": PROJECT}
+    assert control.state(0)["target"] == out
+    assert sessions[0].closed and control.session is None
+    assert control.state(0)["agents"]["topology"]["state"] == "idle"
+    assert any(e["source"] == "system" and "Target adopted" in e["text"] and e["seq"] > seq
+               for e in control.state(0)["events"])
+    out = control.adopt_target({"knowledge": "config/ditto_knowledge.yaml"})
+    assert out["knowledge_file"] == str(ROOT / "config" / "ditto_knowledge.yaml")
+
+
+def test_adopt_target_rejects_outside_paths_and_missing_files(control, tmp_path):
+    before = control.state(0)["target"]
+    secret = tmp_path / "docker-compose.yml"
+    secret.write_text("services: {}")
+    with pytest.raises(ValueError, match="must live under"):
+        control.adopt_target({"compose": str(secret)})
+    with pytest.raises(ValueError, match="not found"):
+        control.adopt_target({"compose": "deploy/nope.yml"})
+    with pytest.raises(ValueError, match="must live under"):
+        control.adopt_target({"knowledge": "../" * 6 + "etc/hosts"})
+    # inside the repo is not enough: a YAML error on a file like .env would echo its contents
+    with pytest.raises(ValueError, match="must live under"):
+        control.adopt_target({"compose": "README.md"})
+    with pytest.raises(ValueError, match="nothing to adopt"):
+        control.adopt_target({})
+    assert control.state(0)["target"] == before
+
+
+def test_topology_job_honours_compose_knowledge_and_live(control, monkeypatch, topology):
+    seen = []
+
+    def fake_build(s, store, live, knowledge=None, compose=None):
+        seen.append({"live": live, "knowledge": knowledge, "compose": compose})
+        return topology
+
+    monkeypatch.setattr(cli, "build_topology", fake_build)
+    control.submit("topology", {})
+    assert wait_job(control)["status"] == "done"
+    assert seen[-1] == {"live": True, "knowledge": None, "compose": None}
+    control.s.compose_file = str(ROOT / "deploy" / "configured-elsewhere.yml")
+    control.submit("topology", {"compose": "deploy/docker-compose.yml", "knowledge": "config/ditto_knowledge.yaml"})
+    assert wait_job(control)["status"] == "done"
+    # a compose file other than the configured one defaults to a static read: no docker to inspect
+    assert seen[-1] == {"live": False, "compose": str(ROOT / "deploy" / "docker-compose.yml"),
+                        "knowledge": str(ROOT / "config" / "ditto_knowledge.yaml")}
+    control.submit("topology", {"compose": "deploy/docker-compose.yml", "live": True})
+    assert wait_job(control)["status"] == "done" and seen[-1]["live"] is True
+    control.submit("topology", {"compose": "/etc/hosts"})
+    assert wait_job(control)["status"] == "failed" and len(seen) == 3
 
 
 # ---------------------------------------------------------------- jobs

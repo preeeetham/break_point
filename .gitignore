@@ -25,3 +25,6 @@ reports/*
 
 # Onboarding: shallow clones of target repos
 .cache/
+
+# Claude frontend (claude-frontend/)
+node_modules/

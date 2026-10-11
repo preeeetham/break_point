@@ -199,6 +199,21 @@ Exactly one job runs at a time.
 
 ### GET `/api/experiment/<id>` → `{"experiment":{...full report...},"risk":{...},"fix":{...},"markdown":"..."}`
 
+### GET `/api/narrative/<id>?llm=0|1`
+The Narrator's play-by-play for one experiment as JSON (missing risk/fix computed in memory, no LLM, never written).
+`{"header","timeline":[str],"impact","recovery","hypothesis","safety":str|null,"findings":[str],"risk","fix","error":str|null,"llm":str|null}`; 404 for an unknown id. `llm` defaults off: it costs one model call per request. After every control-room run the same lines also land in the event log with `source:"narrator"`.
+
+### POST `/api/target` `{"compose": path|null, "knowledge": path|null}`
+Points the room at another compose and/or knowledge file (e.g. one `onboard` just wrote). Paths must resolve under `deploy/`, `config/` or `.cache/onboarding/` (or be the files configured at startup), else 400. Disarms first; rebuild the map next. Returns the new `target`.
+
+### Additions to `/api/state` and jobs
+- `"target": {"compose_file","knowledge_file","project"}` and `"reconciliation": <WeaknessReconciliation> | null` (reports/weaknesses_reconcile.json; severities inside are still predictions, only `state` per outcome is measured).
+- `agents` now also carries `baseline` (between `scout` and `planner`) and `reconcile` (last). Event `source` adds `reconcile` and `narrator`.
+- `POST /api/jobs/reconcile` `{}`: scores predictions against experiments; fails with a clear error if the Scout has not run. `analyze` also reconciles at its end when predictions exist, and never fails because of it.
+- `POST /api/jobs/topology` accepts `{"compose","knowledge","live"}` (same path rules as `/api/target`); `live` defaults to false when `compose` differs from the configured file.
+- `run.timeline` and `run.safety.detail` are filled from `live.json` when the injector writes them.
+- `/fable/` serves the Fable front end build (`fable/dist`), next to `/` (control room) and `/site/`.
+
 ### Static
 `/` → `static/index.html`; `/static/<file>` → css/js/svg with correct MIME. Unknown → 404 JSON.
 

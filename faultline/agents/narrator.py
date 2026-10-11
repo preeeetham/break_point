@@ -191,6 +191,37 @@ def narrate(
     return lines
 
 
+def narrate_sections(
+    report: ExperimentReport,
+    risk: Optional[RiskAssessment],
+    fix: Optional[FixRecommendation],
+    llm: Optional[OllamaClient],
+    use_llm: bool,
+) -> dict:
+    """The same play-by-play as `narrate()`, one key per section, for JSON consumers. Strings are
+    stripped of the console indent; absent sections are "" / [] / None."""
+    out = {"header": _header(report), "timeline": [], "impact": "", "recovery": "", "hypothesis": "",
+           "safety": None, "findings": [], "risk": "", "fix": "", "error": None, "llm": None}
+    if report.status == "skipped":
+        out["impact"] = f"Skipped: {report.error or 'no injection performed'}"
+        return out
+    out["timeline"] = [t.strip() for t in _timeline(report)]
+    out["impact"] = _impact(report).strip()
+    out["recovery"] = _recovery(report).strip()
+    out["hypothesis"] = _hypothesis(report).strip()
+    safety = _safety(report)
+    out["safety"] = safety.strip() if safety else None
+    out["findings"] = [f.strip() for f in _findings(report)]
+    out["risk"] = _risk(risk).strip()
+    out["fix"] = _fix(fix).strip()
+    if report.status == "failed" and report.error:
+        out["error"] = report.error
+    if use_llm:
+        para = _llm_paragraph(llm, report, risk, fix)
+        out["llm"] = para.strip() if para else None
+    return out
+
+
 def _narrate_id(store: ReportStore, eid: str, llm: Optional[OllamaClient], use_llm: bool, log: Callable[[str], None]) -> None:
     report = store.experiment(eid)
     if report is None:

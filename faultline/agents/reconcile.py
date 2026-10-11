@@ -182,11 +182,20 @@ def _untested_detail(
     aborted = [r for r in bearing if r.status == "aborted"]
     completed = [r for r in bearing if r.status == CLEARING_STATUS]
     if severe:
-        quoted = [f"{_where(r)} raised {sev}-severity {code}" for r, code, sev in severe[:MAX_QUOTED_EVIDENCE]]
-        return (
-            f"{_names(quoted)}, which is not one of this prediction's confirming codes "
-            f"({_names(sorted(set(weakness.confirming_finding_codes)))}), so {services} is neither confirmed nor cleared"
-        )
+        codes = set(weakness.confirming_finding_codes)
+        # A confirming code can still miss: a service-attributed finding only counts for the services it
+        # names, so a masked failure about things-search says nothing about things' own health check.
+        unrelated = [x for x in severe if x[1] not in codes][:MAX_QUOTED_EVIDENCE]
+        elsewhere = [x for x in severe if x[1] in codes][:MAX_QUOTED_EVIDENCE]
+        parts = []
+        if unrelated:
+            quoted = list(dict.fromkeys(f"{_where(r)} raised {sev}-severity {code}" for r, code, sev in unrelated))
+            parts.append(f"{_names(quoted)}, {'which is not' if len(unrelated) == 1 else 'none of which is'} "
+                         f"one of this prediction's confirming codes ({_names(sorted(codes))})")
+        if elsewhere:
+            quoted = list(dict.fromkeys(f"{_where(r)} raised {sev}-severity {code}" for r, code, sev in elsewhere))
+            parts.append(f"{_names(quoted)} about other services, not {services}")
+        return f"{'; '.join(parts)}, so {services} is neither confirmed nor cleared"
     if aborted and not completed:
         n = len(aborted)
         return (

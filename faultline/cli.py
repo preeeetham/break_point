@@ -54,12 +54,13 @@ class Session:
                 p.stop()
 
 
-def build_topology(s: Settings, store: ReportStore, live: bool, knowledge: str | None = None):
+def build_topology(s: Settings, store: ReportStore, live: bool, knowledge: str | None = None,
+                   compose: str | None = None):
     from .topology.graph import build
     from .topology.render import markdown
 
     nginx = s.nginx_conf if Path(s.nginx_conf).is_file() else None
-    topo = build(s.compose_file, s.compose_project, nginx, knowledge or s.knowledge_file, live=live)
+    topo = build(compose or s.compose_file, s.compose_project, nginx, knowledge or s.knowledge_file, live=live)
     store.write_topology(topo)
     (store.root / "topology.md").write_text(markdown(topo))
     return topo

@@ -15,16 +15,20 @@ import time
 import traceback
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..config import Settings
+from ..config import ROOT, Settings
 from ..reporting.store import ReportStore
 
 # pipeline order; the UI strip and docs/UI_CONTRACT.md §4 follow this sequence
-AGENTS = ("onboarding", "topology", "scout", "planner", "injector", "guardian", "risk", "fix", "scorecard")
-JOB_KINDS = ("topology", "scout", "baseline", "run", "analyze", "heal", "plan", "onboard")
+AGENTS = ("onboarding", "topology", "scout", "baseline", "planner", "injector", "guardian", "risk", "fix",
+          "scorecard", "reconcile")
+JOB_KINDS = ("topology", "scout", "baseline", "run", "analyze", "heal", "plan", "onboard", "reconcile")
 ONBOARD_CACHE_DIR = ".cache/onboarding"   # same default as `faultline onboard --cache-dir`
 KNOWLEDGE_SUFFIX = "_knowledge.yaml"
+# keys the safety monitor's verdict detail spreads flat into live.json (injector._live)
+SAFETY_DETAIL_KEYS = ("trailing_samples", "error_rate", "threshold", "threshold_ms", "consecutive_failures")
 TELEMETRY_WINDOW_S = 300
 TELEMETRY_SAMPLE_S = 1.0
 MAX_EVENTS = 4000
@@ -158,6 +162,8 @@ class ControlPlane:
         self._onboarding: Optional[dict] = None   # last `onboard` job, surfaced in state()
         self._last_plan_sig: str = ""
         self._llm_cache: Optional[dict] = None
+        # whatever the operator configured at startup stays adoptable even if it lives elsewhere
+        self._startup_targets = {Path(p).resolve() for p in (settings.compose_file, settings.knowledge_file) if p}
         self._stopping = threading.Event()
         self._sampler = threading.Thread(target=self._sample_loop, daemon=True, name="telemetry")
         self._sampler.start()
@@ -263,7 +269,8 @@ class ControlPlane:
             return f"Onboard {repo[:60]}" if repo else "Onboard a repository"
         return {"topology": "Rebuild application map", "baseline": "Capture steady-state baseline",
                 "analyze": "Run analysis agents", "heal": "Heal sandbox",
-                "scout": "Scout for predicted weaknesses"}.get(kind, kind)
+                "scout": "Scout for predicted weaknesses",
+                "reconcile": "Reconcile predictions against experiments"}.get(kind, kind)
 
     def cancel(self) -> dict:
         job = self._job
@@ -280,7 +287,7 @@ class ControlPlane:
             handler = {"topology": self._job_topology, "scout": self._job_scout,
                        "baseline": self._job_baseline, "run": self._job_run,
                        "analyze": self._job_analyze, "heal": self._job_heal,
-                       "onboard": self._job_onboard}[job.kind]
+                       "onboard": self._job_onboard, "reconcile": self._job_reconcile}[job.kind]
             job.result = handler(body) or {}
             job.status = "cancelled" if self._cancel.is_set() and job.kind != "run" else "done"
             self.log("system", f"Job finished: {job.label}", "success")
@@ -358,11 +365,58 @@ class ControlPlane:
             self._agent("onboarding", "error", f"{type(exc).__name__}: {exc}")
             raise
 
+    # -- target files ------------------------------------------------------
+    def _target_path(self, raw: Any, kind: str) -> Optional[Path]:
+        """Resolve an operator-supplied compose/knowledge path and refuse anything outside deploy/, config/
+        or the onboarding cache. Not the whole repo: a parse error would echo a line of `.env` to the browser."""
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        p = Path(text).expanduser()
+        candidates = [p] if p.is_absolute() else [ROOT / p, Path.cwd() / p]
+        path = next((c.resolve() for c in candidates if c.is_file()), None)
+        if path is None:
+            raise ValueError(f"{kind} file not found: {text}")
+        roots = (ROOT / "deploy", ROOT / "config", ROOT / ONBOARD_CACHE_DIR)
+        if path not in self._startup_targets and not any(path.is_relative_to(r.resolve()) for r in roots):
+            raise ValueError(f"{kind} file must live under deploy/, config/ or {ONBOARD_CACHE_DIR}/: {text}")
+        return path
+
+    def _target_state(self) -> dict:
+        return {"compose_file": self.s.compose_file, "knowledge_file": self.s.knowledge_file,
+                "project": self.s.compose_project}
+
+    def adopt_target(self, body: dict) -> dict:
+        """Point the room at another compose file and/or knowledge file. Disarms first: the probes and
+        the in-memory map belong to the old target."""
+        compose = self._target_path(body.get("compose"), "compose")
+        knowledge = self._target_path(body.get("knowledge"), "knowledge")
+        if compose is None and knowledge is None:
+            raise ValueError("nothing to adopt: give a compose and/or knowledge path")
+        self.disarm()
+        if compose is not None:
+            self.s.compose_file = str(compose)
+        if knowledge is not None:
+            self.s.knowledge_file = str(knowledge)
+        self._last_plan_sig = ""
+        for name in ("topology", "scout"):
+            self._agent(name, "idle", "target changed")
+        target = self._target_state()
+        self.log("system", f"Target adopted: compose {target['compose_file']}, knowledge "
+                           f"{target['knowledge_file']}. Rebuild the map before running anything.", "warn", target)
+        return target
+
     def _job_topology(self, body: dict) -> dict:
         from ..cli import build_topology
 
-        self._agent("topology", "working", "scanning compose, env vars, nginx and live docker")
-        topo = build_topology(self.s, self.store, live=True)
+        compose = self._target_path(body.get("compose"), "compose")
+        knowledge = self._target_path(body.get("knowledge"), "knowledge")
+        foreign = compose is not None and compose != Path(self.s.compose_file).resolve()
+        live = bool(body.get("live", not foreign))
+        self._agent("topology", "working", "scanning compose, env vars, nginx" + (" and live docker" if live else ""))
+        topo = build_topology(self.s, self.store, live=live,
+                              knowledge=str(knowledge) if knowledge else None,
+                              compose=str(compose) if compose else None)
         if self.session is not None:
             self.session.topology = topo
         top = topo.criticality[0] if topo.criticality else None
@@ -408,14 +462,20 @@ class ControlPlane:
     def _job_baseline(self, body: dict) -> dict:
         from ..observe.baseline import capture, to_markdown
 
-        session = self._require_session()
         duration = max(20, min(300, int(body.get("duration", 60) or 60)))
-        self.log("probe", f"Measuring steady state for {duration}s ...")
-        b = capture(session.api, session.health, session.window, duration, self.s.ditto_url,
-                    session.policy_raw, log=self._logger("probe"))
-        self.store.write_baseline(b)
-        (self.store.root / "baseline.md").write_text(to_markdown(b))
-        session.thresholds = b.thresholds
+        self._agent("baseline", "working", f"measuring steady state for {duration}s")
+        try:
+            session = self._require_session()
+            self.log("probe", f"Measuring steady state for {duration}s ...")
+            b = capture(session.api, session.health, session.window, duration, self.s.ditto_url,
+                        session.policy_raw, log=self._logger("probe"))
+            self.store.write_baseline(b)
+            (self.store.root / "baseline.md").write_text(to_markdown(b))
+            session.thresholds = b.thresholds
+        except Exception as exc:
+            self._agent("baseline", "error", f"{type(exc).__name__}: {exc}")
+            raise
+        self._agent("baseline", "done", f"success {100 * (b.api.success_rate or 0):.2f}%, p95 {b.api.p95_ms} ms")
         self.log("probe", f"Baseline captured: success {100 * (b.api.success_rate or 0):.2f}%, "
                           f"p95 {b.api.p95_ms} ms. Abort thresholds are now calibrated.", "success")
         for n in b.notes:
@@ -438,8 +498,10 @@ class ControlPlane:
             policy, docker = Policy(load_policy(self.s.thresholds_file)), None
         images = {k for k, img in (("pumba", self.s.pumba_image), ("tc", self.s.tc_image))
                   if docker is None or docker.has_image(img)}
+        # same extra ranking signal the CLI passes (cli._planner): predictions break near-ties only
         return Planner(topo, policy, self.store.experiments(),
-                       llm_client(self.s, use_llm), self.s, images, allow_protected)
+                       llm_client(self.s, use_llm), self.s, images, allow_protected,
+                       weaknesses=self.store.weaknesses())
 
     def plan(self, use_llm: bool = False, allow_protected: bool = False) -> dict:
         """Preview the ranked plan. The UI polls this, so it only narrates when the pick changes."""
@@ -527,6 +589,7 @@ class ControlPlane:
                                  f"{[f.code for f in report.findings]}", level)
             if body.get("analyze", True):
                 self._analyze(use_llm, only=[report.experiment_id])
+            self._narrate(report)
             if i < count - 1 and not self._cancel.is_set():
                 pause = session.policy.pause_between_s
                 self.log("system", f"Settling for {pause:.0f}s before the next experiment ...")
@@ -549,10 +612,72 @@ class ControlPlane:
         self._agent("scorecard", "working", "ranking services")
         sc = scorecard.run(self.store, topo, self.s.compose_project, log=self._logger("scorecard"))
         self._agent("scorecard", "done", f"overall {sc.overall_score}" if sc and sc.overall_score is not None else "no data")
+        # close the loop the scout opened; never let it fail the analysis that just ran
+        if self.store.weaknesses() is not None:
+            try:
+                self._reconcile()
+            except Exception as exc:
+                self.log("reconcile", f"Reconcile skipped: {type(exc).__name__}: {exc}", "warn")
         return {"risks": len(risks), "fixes": len(fixes)}
 
     def _job_analyze(self, body: dict) -> dict:
         return self._analyze(bool(body.get("llm", True)))
+
+    def _reconcile(self):
+        """Pure arithmetic over reports/: predicted vs confirmed. None when the scout has not run."""
+        from ..agents import reconcile
+
+        self._agent("reconcile", "working", "scoring predictions against experiments")
+        try:
+            rec = reconcile.run(self.store, self.s.compose_project, log=self._logger("reconcile"))
+        except Exception as exc:
+            self._agent("reconcile", "error", f"{type(exc).__name__}: {exc}")
+            raise
+        if rec is None:
+            self._agent("reconcile", "idle", "no predictions yet")
+            return None
+        self._agent("reconcile", "done", f"{rec.confirmed}/{rec.predicted_total} confirmed")
+        self.log("reconcile", f"Reconciled {rec.predicted_total} prediction(s) across "
+                              f"{rec.experiments_considered} experiment(s): {rec.confirmed} confirmed, "
+                              f"{rec.cleared} cleared, {rec.untested} untested.", "success")
+        return rec
+
+    def _job_reconcile(self, body: dict) -> dict:
+        rec = self._reconcile()
+        if rec is None:
+            msg = "no predicted weaknesses yet: run the scout job before reconciling"
+            self._agent("reconcile", "error", msg)
+            raise RuntimeError(msg)
+        return {"predicted": rec.predicted_total, "confirmed": rec.confirmed, "cleared": rec.cleared,
+                "untested": rec.untested, "experiments_considered": rec.experiments_considered}
+
+    # ------------------------------------------------------------------ narrator
+    def _narration(self, report, use_llm: bool = False) -> tuple:
+        """Inputs for the narrator, with the CLI's fallbacks: a missing risk or fix is computed in memory
+        without an LLM, never written."""
+        from ..agents import fix as fix_agent
+        from ..agents import risk as risk_agent
+        from ..cli import llm_client
+
+        eid = report.experiment_id
+        topo = self.session.topology if self.session else self.store.topology()
+        risk = self.store.risk(eid) or risk_agent.assess(report, topo, None)
+        fix = self.store.fix(eid) or fix_agent.recommend(report, risk, None)
+        return report, risk, fix, (llm_client(self.s, True) if use_llm else None), use_llm
+
+    def _narrate(self, report) -> None:
+        from ..agents import narrator
+
+        for line in narrator.narrate(*self._narration(report)):
+            self.log("narrator", line.strip())
+
+    def narrative(self, eid: str, use_llm: bool = False) -> Optional[dict]:
+        from ..agents import narrator
+
+        report = self.store.experiment(eid)
+        if report is None:
+            return None
+        return narrator.narrate_sections(*self._narration(report, use_llm))
 
     def _job_heal(self, body: dict) -> dict:
         import argparse
@@ -717,7 +842,9 @@ class ControlPlane:
         observed = [svc for svc, h in (live.get("health") or {}).items()
                     if h and (h.get("status") != "running" or (h.get("alive") not in (None, 200)))]
         out["blast"] = {"expected": expected, "observed": observed}
-        out["safety"] = {"abort_reason": live.get("abort_reason"), "detail": {}}
+        out["timeline"] = list(live.get("timeline") or [])
+        detail = live.get("safety_detail") or {k: live[k] for k in SAFETY_DETAIL_KEYS if k in live}
+        out["safety"] = {"abort_reason": live.get("abort_reason"), "detail": dict(detail)}
         return out
 
     def _agents_state(self) -> dict:
@@ -817,6 +944,12 @@ class ControlPlane:
                 "weaknesses": [x.model_dump(mode="json") for x in w.weaknesses],
                 "systemic_patterns": [x.model_dump(mode="json") for x in w.systemic_patterns]}
 
+    def _reconciliation_state(self) -> Optional[dict]:
+        """Predicted vs confirmed, straight off reports/weaknesses_reconcile.json. Severities inside are
+        still the Scout's predictions; only `state` per outcome is measured."""
+        rec = self.store.reconciliation()
+        return rec.model_dump(mode="json") if rec else None
+
     def state(self, since: int = 0) -> dict:
         safe = _safe
         probe = {"running": False, "rps": self.s.probe_rps, "canary": f"{self.s.probe_namespace}:canary",
@@ -843,7 +976,9 @@ class ControlPlane:
             "experiments": safe(self._experiments_state, []),
             "scorecard": safe(self._scorecard_state),
             "weaknesses": safe(self._weaknesses_state),
+            "reconciliation": safe(self._reconciliation_state),
             "onboarding": self._onboarding,
+            "target": self._target_state(),
         }
 
     def experiment_detail(self, eid: str) -> Optional[dict]:

@@ -18,10 +18,15 @@ from ..reporting.store import ReportStore
 from .control import JOB_KINDS, ControlPlane, JobBusy
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+# The Claude frontend (claude-frontend/, built with `npm run build`) is served at /claude/ next to
+# the control room, so it reaches /api on the same origin.
+CLAUDE_DIR = Path(__file__).resolve().parents[2] / "claude-frontend" / "dist"
+# The stage-by-stage React front end (fable/, built with base /fable/) is served the same way.
+FABLE_DIR = Path(__file__).resolve().parents[2] / "fable" / "dist"
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
         ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml",
-        ".woff2": "font/woff2", ".png": "image/png", ".ico": "image/x-icon",
+        ".woff2": "font/woff2", ".woff": "font/woff", ".png": "image/png", ".ico": "image/x-icon",
         ".map": "application/json; charset=utf-8"}
 POST_JOBS = {f"/api/jobs/{k}" for k in JOB_KINDS if k != "plan"}
 MAX_BODY = 1 << 20
@@ -80,9 +85,10 @@ class Handler(BaseHTTPRequestHandler):
             raise BadRequest("JSON body must be an object")
         return data
 
-    def _static(self, name: str) -> None:
-        path = (STATIC_DIR / name).resolve()
-        if not path.is_relative_to(STATIC_DIR.resolve()) or not path.is_file():
+    def _static(self, name: str, root: Optional[Path] = None) -> None:
+        root = root or STATIC_DIR  # looked up per call so tests can repoint the module global
+        path = (root / name).resolve()
+        if not path.is_relative_to(root.resolve()) or not path.is_file():
             self._json(404, {"error": "not found", "path": name})
             return
         self._send(200, path.read_bytes(), MIME.get(path.suffix, "application/octet-stream"))
@@ -96,6 +102,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._static("index.html")
             elif path.startswith("/static/"):
                 self._static(path[len("/static/"):])
+            elif path in ("/claude", "/claude/"):
+                self._static("index.html", CLAUDE_DIR)
+            elif path.startswith("/claude/"):
+                self._static(path[len("/claude/"):], CLAUDE_DIR)
+            elif path in ("/fable", "/fable/"):
+                self._static("index.html", FABLE_DIR)
+            elif path.startswith("/fable/"):
+                self._static(path[len("/fable/"):], FABLE_DIR)
             elif path == "/api/state":
                 try:
                     since = int((query.get("since") or ["0"])[0] or 0)
@@ -118,6 +132,14 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 detail = self.control.experiment_detail(eid)
                 self._json(200, detail) if detail else self._json(404, {"error": "no such experiment"})
+            elif path.startswith("/api/narrative/"):
+                eid = path[len("/api/narrative/"):].strip("/")
+                if not eid or "/" in eid or ".." in eid:
+                    self._json(404, {"error": "not found"})
+                    return
+                use_llm = (query.get("llm") or ["0"])[0] in ("1", "true", "yes")
+                story = self.control.narrative(eid, use_llm)
+                self._json(200, story) if story else self._json(404, {"error": "no such experiment"})
             else:
                 self._json(404, {"error": "not found", "path": path})
         except Exception as exc:  # the dashboard must never die on a bad request
@@ -139,6 +161,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, c.disarm())
             elif path == "/api/jobs/cancel":
                 self._json(200, c.cancel())
+            elif path == "/api/target":
+                try:
+                    self._json(200, c.adopt_target(body))
+                except ValueError as exc:
+                    raise BadRequest(str(exc)) from None
             elif path in POST_JOBS:
                 kind = path.rsplit("/", 1)[-1]
                 self._json(202, {"ok": True, "job": c.submit(kind, body).as_dict()})

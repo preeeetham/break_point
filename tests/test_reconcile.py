@@ -97,6 +97,24 @@ def test_high_severity_other_finding_is_not_cleared(make_report):
     assert "data_loss_suspected" in o.detail
 
 
+def test_confirming_code_about_another_service_is_explained_as_such(make_report):
+    """The masked-failure finding from crashing `things` names things-search, not `things`: the detail must
+    say the finding was about other services, never that the code is not a confirming code."""
+    w = _weakness("shallow_health_check:things", services=["things"],
+                  codes=["dependency_blind_readiness", "health_check_masked_failure"])
+    findings = [Finding(code="health_check_masked_failure", severity="high",
+                        title=f"{svc} answered /ready=200 while the API failed", evidence=f"{svc}: ready_ok_fraction=1.0")
+                for svc in ("things-search", "gateway")]
+    findings.append(Finding(code="api_impact", severity="high", title="API failed", evidence="0% success"))
+    exp = make_report(service="things", affected=["things"], findings=findings)
+    o = agent.reconcile(_report([w]), [exp], PROJECT).outcomes[0]
+
+    assert o.state == "untested"
+    assert "health_check_masked_failure about other services, not things" in o.detail
+    assert o.detail.count("health_check_masked_failure about") == 1  # two findings, one phrase
+    assert "api_impact, which is not one of this prediction's confirming codes" in o.detail
+
+
 def test_info_severity_match_does_not_confirm(make_report):
     """`api_impact` fires on every experiment; at `info` it says the API was UNAFFECTED."""
     w = _weakness("wk-info", category="no_rate_limiting", services=["gateway"], codes=["api_impact"])

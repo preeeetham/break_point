@@ -225,6 +225,50 @@ def test_negative_content_length_does_not_hang(base):
     assert resp.startswith(b"HTTP/1.1 4")
 
 
+def test_fable_build_is_served_under_its_own_prefix(base, tmp_path, monkeypatch):
+    fable = tmp_path / "fable-dist"
+    (fable / "assets").mkdir(parents=True)
+    (fable / "index.html").write_text("<html>fable</html>")
+    (fable / "assets" / "app.js").write_text("export {}")
+    (tmp_path / "outside.txt").write_text("top secret")
+    monkeypatch.setattr(server_mod, "FABLE_DIR", fable)
+    for path in ("/fable", "/fable/"):
+        status, body, hdrs = call(base, "GET", path)
+        assert status == 200 and b"fable" in body and hdrs["Content-Type"].startswith("text/html")
+    status, _, hdrs = call(base, "GET", "/fable/assets/app.js")
+    assert status == 200 and hdrs["Content-Type"].startswith("text/javascript")
+    conn = http.client.HTTPConnection(base.split("//")[1], timeout=5)
+    conn.request("GET", "/fable/../outside.txt")
+    r = conn.getresponse()
+    assert r.status == 404 and b"top secret" not in r.read()
+    conn.close()
+
+
+def test_narrative_over_http(base, tmp_store, make_report):
+    tmp_store.write_experiment(make_report(experiment_id="abc123"))
+    status, out, _ = call(base, "GET", "/api/narrative/abc123")
+    assert status == 200 and out["header"] and isinstance(out["timeline"], list) and out["llm"] is None
+    assert call(base, "GET", "/api/narrative/nope")[0] == 404
+    assert call(base, "GET", "/api/narrative/")[0] == 404
+
+
+def test_target_over_http(base, control):
+    status, out, _ = call(base, "POST", "/api/target", {"compose": "README.md"})
+    assert status == 400 and "must live under" in out["error"]
+    status, out, _ = call(base, "POST", "/api/target", {})
+    assert status == 400
+    status, out, _ = call(base, "POST", "/api/target", {"compose": "deploy/docker-compose.yml"})
+    assert status == 200 and out["compose_file"].endswith("deploy/docker-compose.yml")
+    assert call(base, "GET", "/api/state")[1]["target"] == out
+
+
+def test_reconcile_job_over_http_fails_cleanly_without_predictions(base, control):
+    status, out, _ = call(base, "POST", "/api/jobs/reconcile", {})
+    assert status == 202 and out["job"]["kind"] == "reconcile"
+    job = wait_job(control)
+    assert job["status"] == "failed" and "scout" in job["error"]
+
+
 def test_static_guard_rejects_sibling_prefix_dirs(base, tmp_path, monkeypatch):
     static = tmp_path / "static"
     static.mkdir()
