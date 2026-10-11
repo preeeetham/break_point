@@ -46,14 +46,26 @@ export function ScoreStation() {
     }
   };
 
-  // the summary panels open an experiment in the log: select it, bring it into view, focus its row
-  const open = (id: string) => {
+  // the summary panels open an experiment in the log: select it, bring it into view, focus its row.
+  // With a finding index (its place in exp.findings), land on that finding inside the detail instead.
+  const open = (id: string, findingIdx?: number) => {
     setPicked(id);
-    const target = window.matchMedia("(max-width: 1023px)").matches ? detailRef.current : logRef.current;
-    requestAnimationFrame(() => {
+    // read the refs after the re-render: picking another experiment replaces the detail element
+    const toLog = () => {
+      const target = window.matchMedia("(max-width: 1023px)").matches ? detailRef.current : logRef.current;
       target?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
       document.getElementById(`exp-tab-${id}`)?.focus({ preventScroll: true });
-    });
+    };
+    // two frames: the picked experiment's detail has committed by then, even if it was already open
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (findingIdx == null) return toLog();
+        const el = document.getElementById(`exp-finding-${id}-${findingIdx}`);
+        if (!el) return toLog();
+        el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+        el.focus({ preventScroll: true });
+      }),
+    );
   };
 
   return (

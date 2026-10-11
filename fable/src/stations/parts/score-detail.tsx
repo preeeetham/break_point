@@ -37,7 +37,7 @@ export const ExperimentDetail = forwardRef<HTMLDivElement, { exp: ExperimentSumm
       <Measured exp={exp} />
       {aborted && <Safety exp={exp} />}
       <Hypothesis exp={exp} />
-      <Findings findings={exp.findings} />
+      <Findings findings={exp.findings} eid={id} />
       <SheetSection label="Risk" aside="Risk agent">
         <RiskPanel risk={exp.risk} findings={exp.findings} eid={id} />
       </SheetSection>
@@ -268,19 +268,24 @@ function Hypothesis({ exp }: { exp: ExperimentSummary }) {
   );
 }
 
-type Item = { kind: "one"; f: Finding } | { kind: "masked"; fs: Finding[] };
+// `at` is each finding's index in exp.findings: the Score table jumps to `exp-finding-<eid>-<at>`
+type Item = { kind: "one"; f: Finding; at: number } | { kind: "masked"; fs: Finding[]; at: number[] };
 
-function Findings({ findings }: { findings: Finding[] }) {
+// programmatic focus after a click may not match :focus-visible, so the landed finding gets its own ring
+const LANDED = "rounded-[2px] focus:outline-2 focus:outline-offset-2 focus:outline-fg focus:outline-solid";
+
+function Findings({ findings, eid }: { findings: Finding[]; eid: string }) {
   const masked = findings.filter((f) => f.code === MASKED);
+  const maskedAt = findings.flatMap((f, i) => (f.code === MASKED ? [i] : []));
   const items: Item[] = [];
   let placed = false;
-  for (const f of findings) {
-    if (f.code !== MASKED) items.push({ kind: "one", f });
+  findings.forEach((f, at) => {
+    if (f.code !== MASKED) items.push({ kind: "one", f, at });
     else if (!placed) {
-      items.push({ kind: "masked", fs: masked });
+      items.push({ kind: "masked", fs: masked, at: maskedAt });
       placed = true;
     }
-  }
+  });
   return (
     <SheetSection label="Findings" aside={`${findings.length} raised by code`}>
       {findings.length === 0 ? (
@@ -288,7 +293,11 @@ function Findings({ findings }: { findings: Finding[] }) {
       ) : (
         <ul className="divide-y divide-line">
           {items.map((it, i) =>
-            it.kind === "one" ? <FindingRow key={i} f={it.f} first={i === 0} /> : <MaskedGroup key={i} fs={it.fs} first={i === 0} />,
+            it.kind === "one" ? (
+              <FindingRow key={i} f={it.f} first={i === 0} id={`exp-finding-${eid}-${it.at}`} />
+            ) : (
+              <MaskedGroup key={i} fs={it.fs} first={i === 0} ids={it.at.map((at) => `exp-finding-${eid}-${at}`)} />
+            ),
           )}
         </ul>
       )}
@@ -298,9 +307,9 @@ function Findings({ findings }: { findings: Finding[] }) {
 
 const FROW = "grid gap-x-4 gap-y-1 py-3 sm:grid-cols-[5.5rem_minmax(0,1fr)]";
 
-function FindingRow({ f, first }: { f: Finding; first: boolean }) {
+function FindingRow({ f, first, id }: { f: Finding; first: boolean; id: string }) {
   return (
-    <li className={cx(FROW, first && "pt-0")}>
+    <li id={id} tabIndex={-1} className={cx(FROW, LANDED, first && "pt-0")}>
       <span className="text-[13px]"><SeverityMark severity={f.severity} /></span>
       <div className="min-w-0">
         <p className="text-[14px] leading-snug text-fg">
@@ -312,7 +321,7 @@ function FindingRow({ f, first }: { f: Finding; first: boolean }) {
   );
 }
 
-function MaskedGroup({ fs, first }: { fs: Finding[]; first: boolean }) {
+function MaskedGroup({ fs, first, ids }: { fs: Finding[]; first: boolean; ids: string[] }) {
   const worst = fs.reduce((a, f) => (SEV_RANK[f.severity] > SEV_RANK[a.severity] ? f : a), fs[0]);
   return (
     <li className={cx(FROW, first && "pt-0")}>
@@ -338,7 +347,7 @@ function MaskedGroup({ fs, first }: { fs: Finding[]; first: boolean }) {
         </a>
         <ul className="mt-1 flex flex-col gap-2 border-l-2 border-fail/60 pl-3">
           {fs.map((f, i) => (
-            <li key={i}>
+            <li key={i} id={ids[i]} tabIndex={-1} className={LANDED}>
               <p className="text-[14px] leading-snug text-fg"><Rich text={f.title} /></p>
               {f.evidence && <p className="break-words font-mono text-[12px] leading-relaxed text-fg-2">{tidy(f.evidence)}</p>}
             </li>
