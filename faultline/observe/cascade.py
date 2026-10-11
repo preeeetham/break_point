@@ -226,16 +226,16 @@ def _operations(api: list[Sample], injected_at: float, window_end: float, servic
                 mech_count[m] = mech_count.get(m, 0) + c
             dominant_kind = max(kinds.items(), key=lambda kv: (kv[1], kv[0]))[0]
             top_mech, top_n = max(mech_count.items(), key=lambda kv: (kv[1], kv[0]))
-            failing = f"{f}/{ns} requests while it was failing, {n} in the window"
+            failing = f"{f} of the {ns} requests sent while it was failing failed ({n} requests in the whole window)"
             if f / ns < MINORITY_FRACTION:
                 mechanism = "elevated_error_rate"
-                evidence = f"only {failing} failed (mostly {dominant_kind})"
+                evidence = f"only {failing}, mostly {dominant_kind}"
             elif top_n / f >= DOMINANT_MECHANISM_SHARE:
                 mechanism = top_mech
-                evidence = f"{failing} failed ({_kinds_text(kinds)})"
+                evidence = f"{failing}: {_kinds_text(kinds)}"
             else:
                 mechanism = "elevated_error_rate"
-                evidence = f"{failing} failed with no dominant kind ({_kinds_text(kinds)})"
+                evidence = f"{failing}, with no dominant kind: {_kinds_text(kinds)}"
         sig = OperationSignal(
             op=op, route=route, requests=n, failures=f,
             first_failure_s=_r(first_fail.ts - injected_at) if first_fail else None,
