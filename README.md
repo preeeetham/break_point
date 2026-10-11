@@ -24,6 +24,10 @@ Built for the Bosch hackathon problem statement *"AI-Driven Chaos Engineering fo
 
 > **The LLM proposes, the code disposes.** A model can pick from a code-ranked shortlist and write a hypothesis. It cannot raise a safety threshold, skip the kill switch or apply a fix. Nothing Faultline recommends is ever applied to the application.
 
+## Demo
+
+A three-minute walkthrough of the whole loop, from the dependency map to the scorecard: **[watch the demo video](docs/demo/faultline-demo.mp4)** (GitHub plays it in the file viewer). The live-demo runbook behind it is [docs/DEMO.md](docs/DEMO.md).
+
 ## What it does
 
 | Step | What happens | Where to look |
