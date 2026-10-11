@@ -4,6 +4,27 @@ Audience: hackathon judges. Goal: show all five required steps (map, plan, injec
 
 The screen is the **control room** at http://127.0.0.1:8765. Two long-running commands are started before the judges arrive — the dashboard and the Guardian — and during the six minutes you type nothing at all, apart from the one optional terminal segment below. Everything the UI does is a real action against a real Docker Compose stack; there is no scripted mode and no replay.
 
+The full six-minute sequence below does not fit a 3-minute video: the speaking budget alone is six minutes, and any crash-type fault on a Ditto Java service (a `policies` stop, say) needs about 2-3 minutes of wall-clock time by itself (20 s probe warm-up, the fault, 60-120 s JVM cold start, a 20 s soak and an 8 s after-window before the report is written). Use the cut below for the video.
+
+## 3-minute cut (demo video)
+
+The same five steps, driven from the terminal with the CLI commands the control room runs underneath, so each one is a single command that is easy to cut around. The dashboard stays on screen for the kill switch and the results.
+
+Before recording: finish the pre-demo checklist, start the dashboard and the Guardian, and start the narrator in a fourth terminal (`faultline narrate --watch`); Terminal 3 is where you type the commands. If you want a dramatic `policies` result in the scorecard, run `faultline run --target policies --failure container_stop --param duration_s=30` off camera and let it write its report. Do not run it on camera; its recovery alone takes most of the budget.
+
+| Time | Step (section below) | On screen | Budget |
+|---|---|---|---|
+| 0:00-0:20 | What you are looking at (shortened) | Faultline dashboard; one sentence on Ditto (nginx, gateway, four Java services in one Pekko cluster, one MongoDB) and Faultline | 20 s |
+| 0:20-0:50 | Step 1: `faultline topology` | Terminal 3: criticality table and the `mongodb: not referenced by any depends_on` finding | 30 s |
+| 0:50-1:20 | Step 2: `faultline plan` | Terminal 3: ranked candidates, the pick, rationale and hypothesis; "LLM proposes, code disposes" | 30 s |
+| 1:20-2:20 | Steps 3-4 + kill switch: `faultline run --target things --failure network_delay --param duration_s=60 --param delay_ms=1500` | Narrator shows `▶ injecting`; about 10 s later press STOP on the dashboard; narrator and report show `status: aborted`, `abort_reason: operator_stop` | 60 s on screen (about 70-80 s wall clock: trim the 20 s probe warm-up and the 20 s soak in the edit, or talk over them) |
+| 2:20-2:50 | Step 5: `faultline risk && faultline fix && faultline scorecard` | Terminal 3 output, then expand the experiment on the dashboard: risk level, findings, first fix recommendation (advisory). With a slow local model, add `--no-llm` to `risk` and `fix` to stay inside the budget | 30 s |
+| 2:50-3:00 | Close (one sentence) | Dashboard | 10 s |
+
+After recording: `faultline resume` to clear the STOP file.
+
+**Alternative for the 1:20-2:20 slot, no button press: an automatic threshold abort.** `faultline run --target things --failure container_crash --duration 30` shows the *automatic* stop the brief asks for ("stop if impact exceeds defined thresholds"). In the Day-2 verification run (experiment `1de6fb6a0969`, see [FINDINGS.md](FINDINGS.md#safety-the-kill-switch-fired-for-real)) the narrator showed `injected` at +0.8 s, `safety_abort — error_rate` (100% errors > 30% threshold) and `rollback_done` at +7.2-7.6 s, then `recovered` at +53.8 s after Docker restarted `things` and the 20 s soak passed. The abort itself is on screen within 10 s of launch; cut or talk over the recovery wait. `faultline resume` is not needed afterwards because no STOP file is written.
+
 ## Setup
 
 Three terminals, three browser tabs. Tab 1 is the demo; tabs 2 and 3 exist only to prove the application is real and to corroborate the numbers from an independent source; Terminal 3 is used only if you run the optional onboarding segment.
@@ -26,11 +47,12 @@ The control room needs no internet: no CDN, no web fonts, system font stack. Ven
 ```bash
 cd <repo> && . .venv/bin/activate
 
-scripts/up.sh                                  # idempotent; waits for /health = UP (cold start ~2 min)
+scripts/up.sh                                  # bundled stack only (skip when attaching via FAULTLINE_COMPOSE_PROJECT);
+                                               # idempotent; waits for /health = UP (cold start ~2 min)
 faultline heal --restart                       # reset: clear the lock, drop chaos leftovers and tc qdiscs,
                                                # restart the Ditto services in dependency order, wait for UP
 faultline resume                               # make sure no stale reports/STOP is latched
-faultline setup                                # Docker ok, stack ok, Pumba images present, LLM reachable
+faultline setup                                # Docker ok, stack ok, Pumba images present, prints "llm <provider>:<model>: available"
 faultline status                               # every container running, guardian offline (not started yet), no active experiment
 ```
 
@@ -44,7 +66,7 @@ Then capture the two slow things up front, because neither is worth 60 seconds o
 
 ```bash
 faultline topology                             # ~5 s; you will re-run this live anyway, it is the hook
-faultline baseline --duration 60               # expect success 100 %, p95 well under 100 ms, no notes
+faultline baseline --duration 60               # expect success >= 99 % and no notes; note the p95: the latency abort is max(3000 ms, 5 x p95)
 faultline plan                                 # confirms the planner answers; warms a local model if you use one
 ```
 
@@ -177,7 +199,7 @@ Point, in this order:
 
 Then watch the ribbon move to Recover and then Soak. Say: "The fault is gone. Soak exists because a system can look recovered and then relapse — twenty more seconds of watching before it is allowed to claim recovery, and a relapse resets the clock."
 
-The findings are computed from what happened, not scripted, so do not promise a specific one. The one to hope for is `health_check_masked_failure`: a service on the request path kept answering `/ready` = 200 while real requests through it were failing. If it appears, say: "That is Eclipse Ditto issue 1865 — readiness does not consider subsystem health. An orchestrator would have kept routing traffic at it. Faultline detects that automatically by comparing what the platform claims with what the synthetic client actually experienced."
+The findings are computed from what happened, not scripted, so do not promise a specific one. The one to hope for is a readiness finding: a service on the request path kept answering `/ready` = 200 while real requests through it were failing. A paused container counts as down, so for this run it is reported as `dependency_blind_readiness` (the services that depend on `things` stayed "ready"); `health_check_masked_failure` is the variant raised when the faulted service itself stays up and keeps answering `/ready`, as under a latency, packet-loss or CPU fault. If either appears, say: "That is the pattern behind Eclipse Ditto issue 1865 — readiness does not consider subsystem health. An orchestrator would have kept routing traffic at it. Faultline detects that automatically by comparing what the platform claims with what the synthetic client actually experienced."
 
 ### 3:30–4:15  The kill switch
 
@@ -187,9 +209,11 @@ Wait for the ribbon to reach Inject and the p95 line to climb — about 10 secon
 
 What the audience sees, in about a second: a red toast, "Kill switch fired — rolling back"; a red line in the feed, "KILL SWITCH: stop requested. The running experiment rolls back within ~1 s and the guardian restores anything still down."; the ribbon leaving Observe for Recover; the p95 line dropping back to the baseline; and the STOP button turning into **RESUME**. The abort reason itself (`operator_stop`) is not in the live feed — it is in the report, which you open in the next segment, under `safety.abort_reason` with `operator_stop: true` and `status: aborted`.
 
-Say: "The stop is a file on disk, `reports/STOP`. Three things watch for it independently: the safety monitor inside the experiment checks it every second and rolls back — here, remove the Pumba sidecar and delete the `tc` qdisc on the target; the report is written with `status: aborted` and `abort_reason: operator_stop`; and the Guardian over there has its own Docker client and would restore the container at the deadline even if the injector process had died. We do not trust a single agent with the kill switch. The same file is written by `faultline stop` from any shell, or by `touch reports/STOP`."
+Say: "The stop is a file on disk, `reports/STOP`. Three things watch for it independently: the safety monitor inside the experiment checks it every second and rolls back — here, remove the Pumba sidecar and delete the `tc` qdisc on the target; once the API has recovered and soaked, the report is written with `status: aborted` and `abort_reason: operator_stop`; and the Guardian over there has its own Docker client: on STOP it removes chaos helpers and restores anything down straight away, and if the injector process itself had died it would clean up once the deadline in `ACTIVE_EXPERIMENT.json` passed. We do not trust a single agent with the kill switch. The same file is written by `faultline stop` from any shell, or by `touch reports/STOP`."
 
-Click **RESUME** before moving on, or the next launch is refused.
+If the latency threshold (max(3000 ms, 5 x baseline p95)) fires before you press STOP, the report reads `abort_reason: latency` instead: that is the automatic kill switch, so say so rather than pressing STOP.
+
+Click **RESUME** before moving on (or `faultline resume`): no new experiment starts while the STOP file exists, so the next launch would be refused.
 
 ### 4:15–5:15  Step 5: analyse and report
 
@@ -228,7 +252,7 @@ Stop. Take questions with the control room on screen. If a judge asks whether an
 
 **The stack is unhealthy before or during the demo.** In order of escalation: `faultline heal` (removes leftovers, unpauses, reconnects, starts anything stopped), `faultline heal --restart` (also restarts the Ditto services in dependency order — 1–2 min), `docker compose -f deploy/docker-compose.yml restart <service>` for a single sick service, `scripts/down.sh && scripts/up.sh` as a last resort at about 2–3 minutes. `faultline status` tells you which.
 
-**Pumba images missing (no network at the venue).** `faultline setup` pulls `gaiaadm/pumba` and `ghcr.io/alexei-led/pumba-alpine-nettools` in advance. Without them the network faults show up greyed out in the launcher with "missing helper image(s)" as the reason, and the planner drops them from the candidate list. Use **Process freeze (SIGSTOP)** on `things` for the kill-switch segment instead — it is just as visible and needs no helper image.
+**Pumba images missing (no network at the venue).** `faultline setup` pulls `gaiaadm/pumba` and `ghcr.io/alexei-led/pumba-alpine-nettools` in advance. Without them the network faults show up greyed out in the launcher with "missing helper image(s)" as the reason, and the planner drops them from the candidate list. Use **Process freeze (SIGSTOP)** on `things` for the kill-switch segment instead — it is just as visible and needs no helper image (the error-rate threshold may fire before you press STOP; the report then shows `abort_reason: error_rate`).
 
 **Docker or the laptop fails entirely.** Keep a rehearsal copy of a full blackboard: after a good dry run, `cp -r reports reports.rehearsal`. If live injection becomes impossible, `cp -r reports.rehearsal/. reports/`, reload the control room and walk through the map, the experiments table, the fixes and the scorecard from the captured reports. Say plainly that it is a rehearsal capture and that nothing is running.
 
