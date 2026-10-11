@@ -1,0 +1,61 @@
+{
+  "captured_at": "2026-10-10T09:31:04.332183Z",
+  "duration_s": 60.0,
+  "ditto_url": "http://127.0.0.1:8080",
+  "api": {
+    "sample_count": 240,
+    "success_rate": 1.0,
+    "p50_ms": 17.9,
+    "p95_ms": 41.2,
+    "p99_ms": 98.3,
+    "by_operation": {
+      "get_thing": {
+        "count": 90,
+        "success_rate": 1.0,
+        "p95_ms": 35.02
+      },
+      "put_property": {
+        "count": 60,
+        "success_rate": 1.0,
+        "p95_ms": 37.08
+      },
+      "search": {
+        "count": 60,
+        "success_rate": 1.0,
+        "p95_ms": 45.32
+      },
+      "get_property": {
+        "count": 30,
+        "success_rate": 1.0,
+        "p95_ms": 24.72
+      }
+    },
+    "status_counts": {
+      "200": 180,
+      "204": 60
+    }
+  },
+  "health_availability": {
+    "mongodb": 1.0,
+    "policies": 1.0,
+    "things": 1.0,
+    "things-search": 1.0,
+    "connectivity": 1.0,
+    "gateway": 1.0,
+    "nginx": null
+  },
+  "thresholds": {
+    "abort_error_rate_above": 0.3,
+    "abort_p95_ms_above": 3000.0,
+    "trailing_samples": 10,
+    "non_target_health_failures_in_a_row": 3,
+    "max_experiment_seconds": 90,
+    "watchdog_grace_seconds": 15,
+    "recovery_success_rate_at_least": 0.95,
+    "recovery_p95_ms_below": 300.0,
+    "recovery_consecutive_checks": 3,
+    "recovery_timeout_seconds": 300,
+    "baseline_p95_ms": 41.2
+  },
+  "notes": []
+}
