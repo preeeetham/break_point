@@ -14,14 +14,18 @@ from typing import Callable
 from ..chaos.actions import ACTIONS, Context, Handle
 from ..chaos.catalog import CATALOG
 from ..chaos.docker_ctl import DockerController
+from ..observe.cascade import attribute, flow
 from ..observe.probes import HealthProbe, ThingsApiProbe, summarize_health
 from ..observe.window import SampleWindow
 from ..reporting.store import ReportStore
 from ..safety.monitor import SafetyMonitor, Watchdog
-from ..schemas import (ExperimentReport, ExperimentSpec, Finding, HealthSummary, HypothesisResult, RecoveryOutcome,
-                       SafetyOutcome, Thresholds, TimelineEvent, Topology, WindowStats)
+from ..schemas import (CascadeAttribution, ExperimentReport, ExperimentSpec, Finding, HealthSummary, HypothesisResult,
+                       RecoveryOutcome, SafetyOutcome, Thresholds, TimelineEvent, Topology, WindowStats)
 
 Log = Callable[[str], None]
+
+# Provisional cascade attribution for the dashboard is recomputed at most this often during the fault.
+LIVE_CASCADE_EVERY_S = 3.0
 
 
 def _utc(ts: float) -> datetime:
@@ -43,6 +47,8 @@ class Injector:
         self.log = log
         self.soak_s = float(getattr(policy, "recovery_soak_s", 20.0))
         self._relapses: list[float] = []
+        self._live_cascade: dict = {}       # last good provisional attribution, merged into live.json
+        self._live_cascade_failed = False
 
     # ------------------------------------------------------------------ preflight
     def preflight(self, spec: ExperimentSpec) -> list[str]:
@@ -68,6 +74,7 @@ class Injector:
     def run(self, spec: ExperimentSpec) -> ExperimentReport:
         t_start = time.time()
         timeline: list[TimelineEvent] = []
+        self._live_cascade, self._live_cascade_failed = {}, False
 
         def ev(event: str, detail: str = "") -> None:
             timeline.append(TimelineEvent(at=_utc(time.time()), t_plus_s=round(time.time() - t_start, 1), event=event, detail=detail))
@@ -80,7 +87,8 @@ class Injector:
         if issues:
             ev("skipped", "; ".join(issues))
             return self._report(spec, t_start, pre_stats, WindowStats(), WindowStats(), [], timeline,
-                                RecoveryOutcome(recovered=True), SafetyOutcome(thresholds=self.t), [], "skipped", "; ".join(issues))
+                                RecoveryOutcome(recovered=True), SafetyOutcome(thresholds=self.t), [], "skipped", "; ".join(issues),
+                                cascade=None)
 
         ft = CATALOG[spec.failure_type]
         duration = float(spec.parameters.get("duration_s", 30))
@@ -113,6 +121,7 @@ class Injector:
         first_error_at: float | None = None
         condition_at: float | None = None
         revert_at = injected_at
+        last_live_cascade = 0.0
         try:
             handle = ACTIONS[spec.failure_type](ctx)
             injected_at = time.time()
@@ -129,18 +138,22 @@ class Injector:
                 if condition_at is None and (st.get("status") != "running" or st.get("health") == "unhealthy" or st.get("paused")):
                     condition_at = time.time()
                     ev("target_condition_observed", f"docker reports {st.get('status')}/{st.get('health')}")
-                self._live("injecting", spec, injected_at, cur, verdict.detail)
+                self._live("injecting", spec, injected_at, cur, {**verdict.detail, **self._live_cascade})
                 if verdict.abort:
                     safety.aborted_early, safety.abort_reason, safety.abort_detail = True, verdict.reason, verdict.detail
                     safety.operator_stop = verdict.reason == "operator_stop"
                     status = "aborted"
                     ev("safety_abort", f"{verdict.reason} {json.dumps(verdict.detail)}")
                     self._live("injecting", spec, injected_at, cur,
-                               {**verdict.detail, "abort_reason": verdict.reason})
+                               {**verdict.detail, "abort_reason": verdict.reason, **self._live_cascade})
                     break
                 if handle.finished():
                     ev("injection_ended", "fault expired on its own")
                     break
+                # Dashboard-only provisional attribution, after the safety checks so it can never delay an abort.
+                if time.time() - last_live_cascade >= LIVE_CASCADE_EVERY_S:
+                    last_live_cascade = time.time()
+                    self._update_live_cascade(spec, injected_at, pre_stats)
         except Exception as exc:
             status, error = "failed", f"{type(exc).__name__}: {exc}"
             ev("error", error)
@@ -148,7 +161,7 @@ class Injector:
             wd.disarm()
             revert_at = time.time()
             self._live("rollback", spec, injected_at, self.window.stats_since(injected_at),
-                       {"abort_reason": safety.abort_reason})
+                       {"abort_reason": safety.abort_reason, **self._live_cascade})
             ev("rollback_started")
             if handle:
                 try:
@@ -175,8 +188,13 @@ class Injector:
         time.sleep(8)
         after = self.window.stats_since(after_t0)
         health_summary = summarize_health(health_samples, self.topo.relevant_services())
+        # Observational only: computed after the "after" window so the whole recovery is covered. It never
+        # feeds back into safety, findings' severities or the status; a failure here just leaves cascade=None.
+        cascade = self._attribute(spec, injected_at, revert_at, pre_stats, ev)
         findings = self._findings(spec, pre_stats, during, health_summary, recovery, safety, first_error_at, injected_at, revert_at)
-        report = self._report(spec, t_start, pre_stats, during, after, health_summary, timeline, recovery, safety, findings, status, error)
+        findings = self._enrich_cascade_finding(spec, findings, health_summary, cascade)
+        report = self._report(spec, t_start, pre_stats, during, after, health_summary, timeline, recovery, safety, findings, status, error,
+                              cascade=cascade)
         self._save_logs(spec, injected_at, report)
         self.store.write_experiment(report)
         self.store.write_live({"phase": "idle", "experiment_id": spec.experiment_id})
@@ -203,7 +221,7 @@ class Injector:
             ok = (st.sample_count >= 5 and (st.success_rate or 0) >= t.recovery_success_rate_at_least
                   and (st.p95_ms is None or st.p95_ms <= t.recovery_p95_ms_below) and healthy)
             consecutive = consecutive + 1 if ok else 0
-            self._live("recovering", spec, injected_at, st, {"consecutive_ok": consecutive, "healthy": healthy})
+            self._live("recovering", spec, injected_at, st, {"consecutive_ok": consecutive, "healthy": healthy, **self._live_cascade})
             if consecutive >= t.recovery_consecutive_checks:
                 candidate = time.time()
                 ev("recovery_candidate", f"success {st.success_rate:.0%}, p95 {st.p95_ms} ms; soaking {self.soak_s:.0f}s to rule out a relapse")
@@ -238,7 +256,7 @@ class Injector:
         while time.time() - since < self.soak_s:
             time.sleep(2)
             st = _stats(self.window.between(since))
-            self._live("soaking", spec, injected_at, st, {"soak_elapsed_s": round(time.time() - since)})
+            self._live("soaking", spec, injected_at, st, {"soak_elapsed_s": round(time.time() - since), **self._live_cascade})
             if st.sample_count >= 5 and (st.success_rate or 0) < self.t.recovery_success_rate_at_least:
                 return False
         return True
@@ -319,8 +337,7 @@ class Injector:
         if rec.data_integrity_ok is False:
             out.append(Finding(code="data_loss_suspected", severity="critical", title="An acknowledged write was lost",
                                evidence=rec.data_integrity_detail))
-        unexpected = [h.service for h in health if h.service not in set(spec.hypothesis.expected_affected) | {spec.target_service}
-                      and (h.container_down_seen or (h.alive_ok_fraction is not None and h.alive_ok_fraction < 0.5))]
+        unexpected = self._unexpected(spec, health)
         if unexpected:
             out.append(Finding(code="cascade_beyond_hypothesis", severity="medium", title=f"Blast radius exceeded the hypothesis: {unexpected}",
                                evidence="these services lost health although the hypothesis did not expect them to"))
@@ -328,6 +345,76 @@ class Injector:
             out.append(Finding(code="safety_abort", severity="info" if safety.operator_stop else "medium",
                                title=f"Kill switch fired ({safety.abort_reason})", evidence=json.dumps(safety.abort_detail)))
         return out
+
+    @staticmethod
+    def _unexpected(spec, health: list[HealthSummary]) -> list[str]:
+        """Services that lost health although the hypothesis did not expect them to (cascade_beyond_hypothesis)."""
+        return [h.service for h in health if h.service not in set(spec.hypothesis.expected_affected) | {spec.target_service}
+                and (h.container_down_seen or (h.alive_ok_fraction is not None and h.alive_ok_fraction < 0.5))]
+
+    # ------------------------------------------------------------------ cascade attribution (observational only)
+    def _attribution(self, spec, injected_at: float, revert_at: float, window_end: float, pre_stats) -> CascadeAttribution:
+        interval = float(getattr(self.health, "interval", 3.0) or 3.0)
+        result = attribute(
+            topology=self.topo, target=spec.target_service, expected_affected=list(spec.hypothesis.expected_affected),
+            health_samples=self.health.between(injected_at - 2 * interval, window_end),
+            api_samples=self.window.between(injected_at, window_end),
+            injected_at=injected_at, revert_at=revert_at, window_end=window_end,
+            health_interval_s=interval, baseline=pre_stats)
+        if not isinstance(result, CascadeAttribution):
+            raise TypeError(f"attribute() returned {type(result).__name__}, expected CascadeAttribution")
+        return result
+
+    def _attribute(self, spec, injected_at: float, revert_at: float, pre_stats, ev) -> CascadeAttribution | None:
+        """Final attribution over fault + recovery + after window. Never raises: on any error, cascade=None."""
+        try:
+            return self._attribution(spec, injected_at, revert_at, time.time(), pre_stats)
+        except Exception as exc:
+            try:
+                ev("cascade_attribution_failed", f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+            return None
+
+    def _update_live_cascade(self, spec, injected_at: float, pre_stats) -> None:
+        """Provisional attribution over the samples so far, for live.json. Keeps the last good value on error."""
+        try:
+            now = time.time()
+            attr = self._attribution(spec, injected_at, now, now, pre_stats)
+            self._live_cascade = {
+                "cascade_edges": [e.model_dump() for e in attr.edges],
+                "cascade_hops": [{"service": h.service, "mechanism": h.mechanism, "path_confidence": h.path_confidence,
+                                  "masked_by_health_check": h.masked_by_health_check,
+                                  "beyond_hypothesis": h.beyond_hypothesis} for h in attr.hops],
+            }
+        except Exception as exc:
+            if not self._live_cascade_failed:  # log once per run, never touch the timeline or the loop
+                self._live_cascade_failed = True
+                try:
+                    self.log(f"live cascade attribution unavailable: {type(exc).__name__}: {exc}")
+                except Exception:
+                    pass
+
+    def _enrich_cascade_finding(self, spec, findings: list[Finding], health: list[HealthSummary],
+                                cascade: CascadeAttribution | None) -> list[Finding]:
+        """Append the attributed path(s) to the existing cascade_beyond_hypothesis evidence. Adds no finding and
+        changes no severity, so Risk / Scorecard numbers are unaffected."""
+        if cascade is None:
+            return findings
+        try:
+            unexpected = set(self._unexpected(spec, health))
+            hops = [h for h in cascade.hops if h.service in unexpected]
+            if not hops:
+                return findings
+            paths = "; ".join(f"{flow(h.path) if h.path else h.service} ({h.mechanism}, {h.path_confidence})" for h in hops)
+            out = []
+            for f in findings:
+                if f.code == "cascade_beyond_hypothesis":
+                    f = f.model_copy(update={"evidence": f"{f.evidence}; attributed path(s): {paths}"})
+                out.append(f)
+            return out
+        except Exception:
+            return findings
 
     def _hypothesis_result(self, spec, during: WindowStats, health: list[HealthSummary], rec: RecoveryOutcome) -> HypothesisResult:
         h = spec.hypothesis
@@ -347,7 +434,8 @@ class Injector:
                                 observed_recovery_s=rec.time_to_recover_s, unexpected_affected=unexpected, notes=notes)
 
     # ------------------------------------------------------------------ output
-    def _report(self, spec, t_start, pre, during, after, health, timeline, recovery, safety, findings, status, error) -> ExperimentReport:
+    def _report(self, spec, t_start, pre, during, after, health, timeline, recovery, safety, findings, status, error,
+                cascade: CascadeAttribution | None = None) -> ExperimentReport:
         affected = sorted({spec.target_service} | {h.service for h in health if h.container_down_seen or (h.alive_ok_fraction or 1) < 0.9})
         return ExperimentReport(
             experiment_id=spec.experiment_id, started_at=_utc(t_start), ended_at=_utc(time.time()),
@@ -357,7 +445,7 @@ class Injector:
             criticality_score=spec.criticality_score, planned_by=spec.planned_by, baseline=pre, during=during, after=after,
             health=health, recovery=recovery, safety=safety, affected_services_observed=affected, findings=findings,
             timeline=timeline, reproduce=spec.reproduce, raw_logs_ref=f"reports/experiments/{spec.experiment_id}/",
-            status=status, error=error,
+            status=status, error=error, cascade=cascade,
         )
 
     def _save_logs(self, spec, since: float, report: ExperimentReport) -> None:
