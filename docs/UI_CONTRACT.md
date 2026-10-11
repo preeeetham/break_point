@@ -67,7 +67,13 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
     "health": {"things":{"alive":null,"ready":null,"status":"exited"}, ...},
     "timeline":[{"t_plus_s":0.7,"event":"injected","detail":"SIGKILL ..."}],
     "safety":{"abort_reason":null,"detail":{}},
-    "blast":{"expected":["gateway"],"observed":["gateway","things-search"]}
+    "blast":{"expected":["gateway"],"observed":["gateway","things-search"],
+             // cascade attribution so far, straight from live.json; [] when the injector wrote none
+             // (older injectors, or nothing attributed yet). See §2.3.
+             "cascade_edges":[{"src":"gateway","dst":"things","mechanism":"dependency_timeout",
+                               "confidence":"ordered","lag_s":4.0}],
+             "cascade_hops":[{"service":"gateway","mechanism":"dependency_timeout","path_confidence":"ordered",
+                              "masked_by_health_check":true,"beyond_hypothesis":false}]}
   },
   "telemetry": { "points":[{"t":1760000000.0,"success":1.0,"p95":42.0,"n":8}],  // 1 Hz, last 300 s
                  "phases":[{"from":...,"to":...,"phase":"injecting","experiment_id":"ab12"}] },
@@ -125,6 +131,8 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
  "data_integrity_ok":true,"data_integrity_detail":"...",
  "aborted_early":true,"abort_reason":"error_rate","watchdog_fired":false,"operator_stop":false,
  "affected_services_observed":["things"],
+ "cascade_hops_beyond_hypothesis":1 | null,   // null = report has no cascade attribution (older reports)
+ "cascade_beyond":["connectivity"],            // services the cascade reached outside the hypothesis, [] if none
  "findings":[{"code":"health_check_masked_failure","severity":"high","title":"...","evidence":"..."}],
  "risk":{"severity":5.8,"level":"high","summary":"...","production_implication":"...",
          "blast_radius":1,"factors":{"impact":4.0,"blast":0.3,...},"generated_by":"rules"} | null,
@@ -152,6 +160,45 @@ row whose provenance channel is `data-tone="violet"` (= AI-authored / not measur
  "why_it_matters":"...",
  "status":"predicted|confirmed|cleared",
  "label":"[predicted, unconfirmed]", "generated_by":"rules|llm+rules"}
+```
+
+### 2.3 Cascade attribution
+Mirrors `faultline.schemas.CascadeAttribution` / `CascadeHop` / `CascadeEdge`, built deterministically
+by `faultline/observe/cascade.py` (timing + topology, no LLM). The full record is only in
+`GET /api/experiment/<id>` as `experiment.cascade` (`null` on reports written before it existed, and
+on skipped runs); the polled summary carries just the two `cascade_*` keys of §2.1. During a run the
+injector writes the attribution so far into `live.json`, surfaced as `run.blast.cascade_edges` /
+`run.blast.cascade_hops`.
+
+- `CascadeEdge.src` depends on `dst` (same direction as a topology edge); the failure travelled
+  `dst → src`. `confidence` ∈ `origin|ordered|same_interval|ambiguous|no_graph_path`; `mechanism` ∈
+  `CASCADE_MECHANISMS` (short labels in `copy.js` `CASCADE_MECHANISM`, mirroring `MECHANISM_TEXT`).
+- Application map: when cascade edges are present only those edges pulse (dependency → dependent),
+  instead of every edge between two affected services; `ordered` = solid line and pulse with a
+  `+lag` badge, `same_interval` (`≈`) / `ambiguous` (`?`) = dashed line and softer pulse. Each cascade
+  edge has an SVG `<title>` and a focusable midpoint badge with an `aria-label`. Attributed hops join
+  the observed blast radius even when their health stayed green, and carry a text marker under the
+  card (`◐ HEALTH CHECK GREEN`, `⊘ NO GRAPH PATH`). Under `prefers-reduced-motion` the pulse is off;
+  a cascade edge's arrowhead then points at the dependent, so direction survives without motion.
+  With no cascade data the map behaves exactly as before.
+- Experiment detail: a "Cascade" block with `summary`, one row per hop (service, onset `+1.2 s` or
+  `+0.0–3.1 s`, mechanism + evidence, via `upstream` and any other candidate upstreams, confidence
+  chip, `masked` / `beyond hypothesis` / `after rollback` tags) and `notes`. Expanding a row with a
+  cascade also replays it on the map (`topology.showCascade`) while nothing is live; a live run always
+  takes the map back.
+```jsonc
+{"method":"timing+topology v1","origin":"things","health_interval_s":3.0,
+ "window_start_s":0.0,"window_end_s":30.0,
+ "hops":[{"service":"gateway","onset_earliest_s":0.0,"onset_latest_s":3.1,
+          "onset_source":"injection|health_probe|api_probe","phase":"during_fault|after_rollback",
+          "mechanism":"dependency_timeout","mechanism_evidence":"...","masked_by_health_check":true,
+          "upstream":"things","edge_kinds":["env"],"lag_s":3.1,"path":["gateway","things"],
+          "candidate_paths":[["gateway","things"],["gateway","things-search","things"]],
+          "path_confidence":"ambiguous","hops_from_origin":1,"beyond_hypothesis":false,"note":""}],
+ "edges":[{"src":"gateway","dst":"things","mechanism":"dependency_timeout","confidence":"ambiguous","lag_s":3.1}],
+ "transitions":[...], "operations":[...],
+ "hops_beyond_hypothesis":0, "beyond_hypothesis":[], "unattributed":[],
+ "summary":"...", "notes":["..."]}
 ```
 
 ### GET `/api/catalog`
@@ -201,7 +248,7 @@ Exactly one job runs at a time.
 
 ### GET `/api/narrative/<id>?llm=0|1`
 The Narrator's play-by-play for one experiment as JSON (missing risk/fix computed in memory, no LLM, never written).
-`{"header","timeline":[str],"impact","recovery","hypothesis","safety":str|null,"findings":[str],"risk","fix","error":str|null,"llm":str|null}`; 404 for an unknown id. `llm` defaults off: it costs one model call per request. After every control-room run the same lines also land in the event log with `source:"narrator"`.
+`{"header","timeline":[str],"impact","cascade":[str],"recovery","hypothesis","safety":str|null,"findings":[str],"risk","fix","error":str|null,"llm":str|null}`; 404 for an unknown id. `cascade` is the hop-by-hop section (header line, one line per hop, optional timing caveat), `[]` when the report has no cascade attribution. `llm` defaults off: it costs one model call per request. After every control-room run the same lines also land in the event log with `source:"narrator"`.
 
 ### POST `/api/target` `{"compose": path|null, "knowledge": path|null}`
 Points the room at another compose and/or knowledge file (e.g. one `onboard` just wrote). Paths must resolve under `deploy/`, `config/` or `.cache/onboarding/` (or be the files configured at startup), else 400. Disarms first; rebuild the map next. Returns the new `target`.
@@ -225,7 +272,10 @@ exports a factory that returns an object with at least `update(state)` and `dest
 
 ```js
 // topology.js
-export function createTopology(hostEl, {onSelect}) -> {update(state), select(name), destroy()}
+export function createTopology(hostEl, {onSelect, onReplayClear})
+  -> {update(state), select(name), showCascade(view|null), destroy()}
+// showCascade view: {id, label, note, target, expected[], observed[], edges[CascadeEdge], hops[CascadeHop]};
+// painted only while run.phase is idle. onReplayClear() fires when the operator clears it on the map.
 // charts.js
 export function createLiveChart(hostEl, opts) -> {update(telemetry, run), destroy()}
 export function createSparkline(hostEl, opts) -> {update(values), destroy()}

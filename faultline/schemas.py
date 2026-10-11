@@ -187,6 +187,102 @@ class HypothesisResult(BaseModel):
     notes: str = ""
 
 
+# ---------------------------------------------------------------- cascade attribution
+# How the failure moved through the dependency graph, hop by hop. Observational only: computed from
+# the health-probe and API-probe samples the injector already takes, matched against topology.json's
+# real edges by deterministic rules. No LLM decides a path or a mechanism. Timing is reported as an
+# interval (the failure began somewhere between the last good observation and the first bad one), so
+# two services whose intervals overlap are "same_interval": the data cannot say which went first.
+CASCADE_MECHANISMS = (
+    "injected_fault",          # the origin: Faultline did this on purpose
+    "process_down",            # container not running (exited / missing)
+    "process_paused",          # container frozen (SIGSTOP)
+    "liveness_failed",         # /alive not 200 (or mongosh ping failed)
+    "readiness_failed",        # /alive 200 but /ready not 200: subsystem-level failure
+    "dependency_timeout",      # requests through it timed out (client timeout or 504)
+    "dependency_unreachable",  # connection refused / reset, or 502 from the proxy
+    "dependency_error",        # it answered, with 5xx (e.g. 503 when a dependency is gone)
+    "auth_failure",            # 401 / 403 where the baseline had none
+    "elevated_error_rate",     # failures with no dominant kind, or a minority of requests failing
+    "latency_degraded",        # no errors, but p95 well above baseline
+)
+PATH_CONFIDENCE = (
+    "origin",          # the injected target itself
+    "ordered",         # exactly one graph path fits, and every hop's onset is strictly after its upstream's
+    "same_interval",   # one path fits, but at least one hop's onset overlaps its upstream's: direction unclear
+    "ambiguous",       # several graph paths fit the timing; candidates listed, most likely named by a stated rule
+    "no_graph_path",   # affected, but topology.json has no dependency route to the origin
+)
+
+
+class HealthTransition(BaseModel):
+    """One change of a service's health state, as the health probe saw it (only changes are kept)."""
+    service: str
+    t_plus_s: float                     # seconds after injection (negative = before)
+    state: Literal["healthy", "process_down", "process_paused", "liveness_failed", "readiness_failed"]
+    detail: str = ""                    # e.g. "alive=200 ready=503 docker=healthy"
+
+
+class OperationSignal(BaseModel):
+    """What one synthetic API operation saw during the window. `route` is the services it passes
+    through (faultline.observe.probes.OP_ROUTES), filtered to services present in the topology."""
+    op: str
+    route: list[str]
+    requests: int
+    failures: int
+    first_failure_s: Optional[float] = None
+    last_ok_before_failure_s: Optional[float] = None
+    error_kinds: dict[str, int] = {}    # "timeout", "connection_error", "503", ...
+    mechanism: Optional[str] = None     # one of CASCADE_MECHANISMS, None if the op never failed
+
+
+class CascadeHop(BaseModel):
+    service: str
+    onset_earliest_s: Optional[float]   # failure began no earlier than this (t+ injection)
+    onset_latest_s: Optional[float]     # ...and no later than this
+    onset_source: Literal["injection", "health_probe", "api_probe"]
+    phase: Literal["during_fault", "after_rollback"] = "during_fault"
+    mechanism: str                      # one of CASCADE_MECHANISMS
+    mechanism_evidence: str
+    masked_by_health_check: bool = False  # health stayed green the whole window while traffic through it failed
+    upstream: Optional[str] = None      # the dependency it most likely failed through (None for the origin)
+    edge_kinds: list[str] = []          # evidence kinds of the topology edge service -> upstream
+    lag_s: Optional[float] = None       # onset_latest(service) - onset_latest(upstream); None if not computable
+    path: list[str] = []                # most likely path, this service first, origin last
+    candidate_paths: list[list[str]] = []  # every graph path that fits the timing (incl. `path`)
+    path_confidence: str                # one of PATH_CONFIDENCE
+    hops_from_origin: Optional[int] = None
+    beyond_hypothesis: bool = False
+    note: str = ""
+
+
+class CascadeEdge(BaseModel):
+    """For the dashboard: one dependency edge the failure travelled along (src depends on dst,
+    matching Edge's direction), labelled with how the dependent failed."""
+    src: str
+    dst: str
+    mechanism: str
+    confidence: str                     # PATH_CONFIDENCE of the hop that used this edge
+    lag_s: Optional[float] = None
+
+
+class CascadeAttribution(BaseModel):
+    method: str = "timing+topology v1"
+    origin: str
+    health_interval_s: float            # health-probe polling interval: the timing resolution of health onsets
+    window_start_s: float
+    window_end_s: float
+    hops: list[CascadeHop] = []         # origin first, then by onset
+    edges: list[CascadeEdge] = []
+    transitions: list[HealthTransition] = []
+    operations: list[OperationSignal] = []
+    hops_beyond_hypothesis: int = 0     # max hops_from_origin over hops with beyond_hypothesis
+    beyond_hypothesis: list[str] = []
+    unattributed: list[str] = []        # affected services with no graph path to the origin
+    summary: str = ""                   # deterministic one-paragraph account; Narrator may rephrase, never re-derive
+    notes: list[str] = []
+
+
 class ExperimentReport(BaseModel):
     schema_version: str = "1.0"
     experiment_id: str
@@ -214,6 +310,8 @@ class ExperimentReport(BaseModel):
     raw_logs_ref: str = ""
     status: Literal["completed", "aborted", "failed", "skipped"]
     error: Optional[str] = None
+    # Absent on reports written before cascade attribution existed, and on skipped runs.
+    cascade: Optional[CascadeAttribution] = None
 
 
 # ---------------------------------------------------------------- downstream agents

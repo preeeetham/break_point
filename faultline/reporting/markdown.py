@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-from ..schemas import ExperimentReport, WindowStats
+from typing import Optional
+
+from ..observe.cascade import describe_hop
+from ..schemas import CascadeAttribution, ExperimentReport, WindowStats
 
 
 def _w(s: WindowStats) -> str:
     if not s.sample_count:
         return "- | - | -"
     return f"{s.sample_count} | {100 * (s.success_rate or 0):.1f}% | {s.p95_ms}"
+
+
+def _onset(earliest: Optional[float], latest: Optional[float]) -> str:
+    f = lambda x: "?" if x is None else f"+{x:.1f}s"
+    return f(latest) if earliest == latest else f"{f(earliest)}–{f(latest)}"
+
+
+def _cascade(c: CascadeAttribution) -> list[str]:
+    """How the failure moved through the dependency graph, hop by hop (deterministic prose from describe_hop)."""
+    out = ["## Cascade", ""]
+    out += [f"- {describe_hop(h, c.origin)}" for h in c.hops] or ["- no hops attributed"]
+    if c.notes:
+        out += ["", "Notes:"] + [f"- {n}" for n in c.notes]
+    if c.hops:
+        out += ["", "| Service | onset | mechanism | via | confidence | masked |", "|---|---|---|---|---|---|"]
+        for h in c.hops:
+            out.append(f"| {h.service} | {_onset(h.onset_earliest_s, h.onset_latest_s)} | {h.mechanism} | {h.upstream or '—'} "
+                       f"| {h.path_confidence} | {'yes' if h.masked_by_health_check else 'no'} |")
+    out += ["", f"_Method: {c.method}; health checks every {c.health_interval_s:g}s, so onsets are intervals of that resolution._", ""]
+    return out
 
 
 def experiment_markdown(r: ExperimentReport) -> str:
@@ -25,6 +48,8 @@ def experiment_markdown(r: ExperimentReport) -> str:
         for h in r.health:
             out.append(f"| {h.service} | {h.ticks} | {h.alive_ok_fraction} | {h.ready_ok_fraction} | {h.docker_unhealthy_seen} | {h.container_down_seen} |")
         out.append("")
+    if r.cascade is not None:
+        out += _cascade(r.cascade)
     out += ["## Findings", ""] + ([f"- **{f.severity}** `{f.code}` — {f.title}. {f.evidence}" for f in r.findings] or ["- none"]) + [""]
     out += ["## Safety", "", f"- aborted early: {r.safety.aborted_early} ({r.safety.abort_reason}), watchdog fired: {r.safety.watchdog_fired}, operator stop: {r.safety.operator_stop}", ""]
     out += ["## Timeline", ""] + [f"- +{e.t_plus_s:6.1f}s  {e.event}  {e.detail}" for e in r.timeline] + [""]

@@ -186,3 +186,105 @@ at all.
 - **Nothing has been pushed, because there is no git remote configured** (`git remote -v` is empty).
   The commits exist only on this machine, on `feature/weakness-scout`. A PR body is
   written and ready; opening it needs a remote.
+
+---
+
+# Progress — Cascade Attribution
+
+Branch `feature/cascade-attribution`, cut from `887b85f` (the tip of `feature/weakness-scout`, because
+`main` is still the single initial commit). For each experiment, an ordered per-hop account of how the
+failure moved through the dependency graph: **where** (which real topology edge, and when, as an
+interval) and **how** (a fixed set of mechanism labels). It is the lightweight, timing-and-topology
+version of the roadmap's OpenTelemetry item; real per-request tracing is still a roadmap item.
+
+## What the code said before anything was built
+
+- The fine-grained data already existed, transiently. `HealthProbe` kept every per-service,
+  timestamped `/alive` + `/ready` + docker-state sample in memory, and `SampleWindow` kept every API
+  request with its start time, operation, status and error kind. The injector collapsed the health
+  samples into `HealthSummary` fractions and persisted neither. So the new state is a stored
+  analysis of samples the probes already take, not a new metric or a new monitor.
+- **The cascade the brief imagined is not visible in health checks.** Across all 13 experiment reports
+  on disk, only the injected target ever failed a health check; `gateway`, `things-search` and the rest
+  kept `/ready` = 200 while 100 % of API traffic through them failed (Ditto #1865). Attribution from
+  health timing alone would have reported no cascade at all. The design therefore uses both probes:
+  health transitions where a service really does fail its check, and the API probe's per-operation
+  routes (`OP_ROUTES`: thing reads/writes via `things`, search via `things-search`) for services whose
+  traffic failed while their own check stayed green — flagged `masked_by_health_check`.
+- Timing is coarse: a short aborted run gets two health ticks at 3 s polling. Every onset is stored
+  as an interval and overlapping intervals are reported `same_interval`, never as an order.
+- Old reports cannot be back-filled: their raw samples were never stored.
+
+## Build order and commits
+
+| Step | Commit | What |
+|---|---|---|
+| 5 (contract first) | `b4fde01` | `CascadeAttribution` schema, optional on `ExperimentReport` so every old report still validates; `OP_ROUTES`; the shared `describe_hop()` sentence |
+| 2 | `4d4fb59` | Injector hands the raw samples (fault + recovery + after window) to attribution; provisional attribution into `live.json` every 3 s; Markdown section. An exception leaves `cascade=None` and changes nothing else |
+| 3 + 4 | `3db01b5` | Deterministic mechanism classification and path matching against `topology.json` |
+| 7 | `20d5fb7` | Risk: `cascade_depth` + `cascade_masked` factors (own commit) |
+| 7 | `d254a5c` | Narrator: hop-by-hop section, LLM gets the hops as facts (own commit) |
+| 6 | `1b408ff` | Fixes found by the first live run |
+| 8 | `f27812a` | Control room: only the cascade path pulses, labelled with mechanism and confidence |
+| 6 | `c3a0841` | Fix found by the second live run |
+
+Built with four parallel agents against the committed contract (core logic, injector wiring,
+Risk + Narrator, dashboard), each reviewed before commit.
+
+## Step 6 — validated against real experiments on the live stack
+
+Three experiments were run against the live Ditto stack (compose project `bosch-ditto`) from the
+branch's own blackboard, each with the deterministic planner and full safety limits.
+
+**`841f241dfa92` — `container_stop` on `policies`, 20 s.** Expected beforehand (from the earlier
+`reports-demo` run): 503s through gateway. Observed instead: **API success stayed at 100 %**, but p95
+rose 69 → 314 ms (search 95 → 800 ms) from about +16 s — Ditto kept serving from cached policy
+enforcers and slowed as they aged. Attribution reported exactly that: `gateway`, `things`,
+`things-search` `latency_degraded` from +16.1–17.1 s with health checks green; `gateway` ambiguous
+between `policies → gateway` and `policies → things → gateway` (both are real edges, and the timing
+cannot separate them); `mongodb` flagged `no_graph_path`. **The path matched; the run also exposed
+three bugs**, fixed in `1b408ff`:
+- t=0 was stamped after the blocking `docker stop` returned, so the target's own shutdown looked
+  "already unhealthy before the injection". t=0 is now when the fault command is issued.
+- `mongodb`'s onset interval (+14.9..+21.4 s) straddled the revert (+21.2 s) and was labelled
+  `after_rollback` on its upper bound alone. Now only intervals that begin after the revert are.
+- `liveness_failed` said "/alive" for MongoDB, whose check is a `mongosh ping`.
+- The `mongodb` blip itself is most likely the 3 s `mongosh ping` timing out while the policies JVM
+  restarted; it is reported as `no_graph_path` ("an undeclared dependency or a coincidence") rather
+  than forced onto a path, which is the intended behaviour, and it adds no Risk depth.
+
+**`fa94eb25fce6` — `container_pause` on `things`, 15 s (aborted by the error-rate threshold).** Every
+request timed out for ~6 s, yet attribution said "the failure stayed at things". **This was a real
+false negative:** the 10 % significance bar was computed over the whole window, so ~30 s of healthy
+recovery traffic diluted 3 timeouts in 61 requests below it. Fixed in `c3a0841`: fractions are taken
+over the span between an operation's first and last failure; two failures far apart are still noise.
+
+**`3200d6e73851` — the same `container_pause` on `things`, after the fix.** Attribution: `things`
+paused (health probe saw `process_paused` at +0.8 s); `gateway` and `things-search` requests timed
+out from +0.0–0.2 s and +0.0–0.4 s with their health checks green; `nginx` beyond the hypothesis;
+`gateway` ambiguous between `things → gateway` and `things → things-search → gateway`. **This matches
+what is known about the run independently:** the injector's own `dependency_blind_readiness` finding,
+computed by separate code from health fractions, names the same services as having stayed "ready"
+while `things` was down, and the API probe recorded 7/7 timeouts.
+
+`2cf082c7bc16` (a repeat of the policies stop) recovered in 14.5 s with no latency signal and was
+reported as "the failure stayed at policies", consistent with its unchanged p95.
+
+## Verified, and how
+
+- `pytest`: 449 passed (offline). New: `tests/test_cascade.py`, `test_injector_cascade.py`,
+  `test_risk_cascade.py`, `test_narrator_cascade.py`, plus control-room pass-through tests.
+- Risk on 36 old-style reports and Narrator on 3: byte-identical output to before.
+- Control room: screenshots of the live map (only the cascade path pulses; ordered solid with its
+  lag, ambiguous / same-interval dashed and badged; reduced-motion static) and of the expanded
+  experiment's Cascade block.
+
+## What is left
+
+- No git remote is configured, so nothing has been pushed and no PR is open.
+- The `fable/` React frontend does not render the cascade yet (it reads only `blast.expected` /
+  `blast.observed`).
+- The main tree's uncommitted `narrate_sections()` should gain a `"cascade"` key from
+  `narrator._cascade()` when it lands, and `dashboard/control.py`'s live `blast` line will need a
+  trivial merge with that tree's edits.
+- `OP_ROUTES` is Ditto-specific, like the probe itself; another target needs its own routes.

@@ -19,7 +19,7 @@ export const EXPLAIN = {
   },
   graph: {
     title: "The application map, built automatically",
-    body: "Services, dependencies and data flows are discovered from the Compose file, the containers' environment variables, the nginx routes and live Docker inspection. The key finding: Compose's depends_on never mentions MongoDB, yet every Ditto service reaches it through MONGO_DB_HOSTNAME. Only the environment scan reveals that it is the single biggest point of failure. Node size follows criticality; during an experiment the blast radius spreads across the edges in real time.",
+    body: "Services, dependencies and data flows are discovered from the Compose file, the containers' environment variables, the nginx routes and live Docker inspection. The key finding: Compose's depends_on never mentions MongoDB, yet every Ditto service reaches it through MONGO_DB_HOSTNAME. Only the environment scan reveals that it is the single biggest point of failure. Node size follows criticality; during an experiment the blast radius spreads across the edges in real time. When the failure's path has been worked out, only that path pulses, travelling from the broken dependency to the services that rely on it; a dashed pulse means the timing could not prove which way it went.",
   },
   chart: {
     title: "What the probe sees",
@@ -48,6 +48,10 @@ export const EXPLAIN = {
   fixes: {
     title: "What to fix, and how",
     body: "One card per recommendation, pulled from every experiment's report and sorted by the risk it addresses. Each card names the problem, says why it happened, and lists concrete steps plus a way to verify the fix worked. This is advice only: Faultline never changes the target system, so every step here is something a person still has to do.",
+  },
+  cascade: {
+    title: "How the failure travelled",
+    body: "When one service breaks, the services that depend on it fail too. This reconstructs the order from timestamps and the dependency map, not from a model: who failed first, who failed next, through which dependency, and how (a timeout, a refused connection, a server error). Where the timing cannot prove the direction it says so, and 'masked' marks a service whose own health check stayed green while real requests through it were failing.",
   },
   topologyFindings: {
     title: "What the mapper noticed",
@@ -93,3 +97,34 @@ export const EMPTY = {
   weaknesses: { title: "No predictions yet", hint: "The Scout reads the deployment's config and predicts where it is weak, without breaking anything.", action: "Scout weaknesses" },
   fixes: { title: "No fixes yet", hint: "Run an experiment and the fix agent will recommend what to change and how.", action: null },
 };
+
+// Cascade attribution (faultline/observe/cascade.py). Short labels for CASCADE_MECHANISMS, mirroring
+// MECHANISM_TEXT there; never add a mechanism here that the backend cannot emit.
+export const CASCADE_MECHANISM = {
+  injected_fault: "fault injected",
+  process_down: "process down",
+  process_paused: "process paused",
+  liveness_failed: "/alive failed",
+  readiness_failed: "/ready failed",
+  dependency_timeout: "dependency timeout",
+  dependency_unreachable: "dependency unreachable",
+  dependency_error: "dependency error (5xx)",
+  auth_failure: "auth failure",
+  elevated_error_rate: "elevated error rate",
+  latency_degraded: "latency degraded",
+};
+
+// PATH_CONFIDENCE in words. `upstream` is the dependency the hop failed through, `lag` its lag in seconds.
+// ordered = direction proven by timing; the rest are honest about what the timing cannot prove.
+export function cascadeConfidence(confidence, upstream, lag) {
+  switch (confidence) {
+    case "origin": return "origin: the fault was injected here";
+    case "ordered":
+      return typeof lag === "number" && upstream ? `ordered, +${lag.toFixed(1)} s after ${upstream}`
+        : upstream ? `ordered, after ${upstream}` : "ordered";
+    case "same_interval": return "same polling interval — direction unclear";
+    case "ambiguous": return "one of several plausible paths";
+    case "no_graph_path": return "no graph path to the origin";
+    default: return confidence || "unknown";
+  }
+}

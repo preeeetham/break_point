@@ -23,6 +23,18 @@ from .window import Sample, SampleWindow
 Log = Callable[[str], None]
 
 
+# Which services each synthetic operation passes through, entry first. Ditto-specific, like the
+# probe itself: thing reads/writes are served by `things` (which enforces policies), search by
+# `things-search`. Cascade attribution uses it to say whose traffic failed while their own health
+# checks stayed green. Services absent from the topology are dropped at use.
+OP_ROUTES: dict[str, list[str]] = {
+    "get_thing": ["nginx", "gateway", "things"],
+    "put_property": ["nginx", "gateway", "things"],
+    "get_property": ["nginx", "gateway", "things"],
+    "search": ["nginx", "gateway", "things-search"],
+}
+
+
 class ThingsApiProbe(threading.Thread):
     OPS = ("get_thing", "put_property", "get_thing", "search", "get_property", "put_property", "get_thing", "search")
 

@@ -26,6 +26,9 @@ from faultline.observe.window import SampleWindow
 from faultline.planning.planner import Policy
 from faultline.schemas import (
     PREDICTED_LABEL,
+    CascadeAttribution,
+    CascadeEdge,
+    CascadeHop,
     PredictedWeakness,
     SuggestedExperiment,
     SystemicPattern,
@@ -261,6 +264,79 @@ def test_experiments_newest_first_and_detail(control, tmp_store, make_report):
     assert control.experiment_detail("missing") is None
 
 
+# ---------------------------------------------------------------- cascade attribution
+LIVE_EDGES = [{"src": "gateway", "dst": "things", "mechanism": "dependency_timeout", "confidence": "ambiguous",
+               "lag_s": 2.9},
+              {"src": "nginx", "dst": "gateway", "mechanism": "dependency_error", "confidence": "ordered",
+               "lag_s": 4.0}]
+LIVE_HOPS = [{"service": "things", "mechanism": "injected_fault", "path_confidence": "origin",
+              "masked_by_health_check": False, "beyond_hypothesis": False},
+             {"service": "gateway", "mechanism": "dependency_timeout", "path_confidence": "ambiguous",
+              "masked_by_health_check": True, "beyond_hypothesis": False}]
+
+
+def test_run_state_passes_live_cascade_through_to_blast(control, tmp_store):
+    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "things",
+                          "health": {"things": {"alive": None, "ready": None, "status": "exited"}},
+                          "cascade_edges": LIVE_EDGES + ["junk", None], "cascade_hops": LIVE_HOPS})
+    blast = control.state(0)["run"]["blast"]
+    assert blast["observed"] == ["things"]
+    assert blast["cascade_edges"] == LIVE_EDGES       # malformed entries dropped, the rest verbatim
+    assert blast["cascade_hops"] == LIVE_HOPS
+
+
+@pytest.mark.parametrize("extra", [{}, {"cascade_edges": None, "cascade_hops": "nope"}])
+def test_run_state_without_cascade_degrades_to_empty_lists(control, tmp_store, extra):
+    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "things",
+                          "health": {"things": {"alive": None, "ready": None, "status": "exited"}}, **extra})
+    blast = control.state(0)["run"]["blast"]
+    assert blast["cascade_edges"] == [] and blast["cascade_hops"] == []
+    assert set(blast) == {"expected", "observed", "cascade_edges", "cascade_hops"}
+
+
+def cascade_attribution() -> CascadeAttribution:
+    hops = [
+        CascadeHop(service="things", onset_earliest_s=0.0, onset_latest_s=0.0, onset_source="injection",
+                   mechanism="injected_fault", mechanism_evidence="docker kill", path=["things"],
+                   path_confidence="origin", hops_from_origin=0),
+        CascadeHop(service="gateway", onset_earliest_s=0.0, onset_latest_s=3.1, onset_source="api_probe",
+                   mechanism="dependency_timeout", mechanism_evidence="12/14 requests timed out",
+                   masked_by_health_check=True, upstream="things", edge_kinds=["env"], lag_s=3.1,
+                   path=["gateway", "things"],
+                   candidate_paths=[["gateway", "things"], ["gateway", "things-search", "things"]],
+                   path_confidence="ambiguous", hops_from_origin=1),
+        CascadeHop(service="connectivity", onset_earliest_s=6.0, onset_latest_s=6.0, onset_source="health_probe",
+                   mechanism="readiness_failed", mechanism_evidence="alive=200 ready=503",
+                   path_confidence="no_graph_path", beyond_hypothesis=True),
+    ]
+    return CascadeAttribution(
+        origin="things", health_interval_s=3.0, window_start_s=0.0, window_end_s=30.0, hops=hops,
+        edges=[CascadeEdge(src="gateway", dst="things", mechanism="dependency_timeout", confidence="ambiguous",
+                           lag_s=3.1)],
+        hops_beyond_hypothesis=1, beyond_hypothesis=["connectivity"], unattributed=["connectivity"],
+        summary="things was killed; gateway timed out waiting on it.", notes=["health onsets are +/- 3.0 s"])
+
+
+def test_experiment_summary_and_detail_carry_the_cascade(control, tmp_store, make_report):
+    tmp_store.write_experiment(make_report(experiment_id="casc", service="things", cascade=cascade_attribution()))
+    summary = control.state(0)["experiments"][0]
+    assert summary["cascade_hops_beyond_hypothesis"] == 1 and summary["cascade_beyond"] == ["connectivity"]
+    assert "cascade" not in summary          # the full attribution stays out of the 1 Hz poll
+    cascade = control.experiment_detail("casc")["experiment"]["cascade"]
+    assert cascade["origin"] == "things" and cascade["summary"].startswith("things was killed")
+    assert [h["service"] for h in cascade["hops"]] == ["things", "gateway", "connectivity"]
+    assert cascade["hops"][1]["masked_by_health_check"] is True
+    assert cascade["edges"] == [{"src": "gateway", "dst": "things", "mechanism": "dependency_timeout",
+                                 "confidence": "ambiguous", "lag_s": 3.1}]
+
+
+def test_experiment_without_cascade_degrades_to_todays_payload(control, tmp_store, make_report):
+    tmp_store.write_experiment(make_report(experiment_id="old"))
+    summary = control.state(0)["experiments"][0]
+    assert summary["cascade_hops_beyond_hypothesis"] is None and summary["cascade_beyond"] == []
+    assert control.experiment_detail("old")["experiment"]["cascade"] is None
+
+
 # ---------------------------------------------------------------- predicted weaknesses
 def weakness_report(**overrides) -> WeaknessReport:
     """A minimal but complete WeaknessReport, built straight from the schema."""
@@ -459,8 +535,9 @@ def test_baseline_job_drives_its_own_agent_entry(control, monkeypatch, make_repo
 def test_narrative_fills_missing_risk_and_fix_in_memory(control, tmp_store, make_report):
     tmp_store.write_experiment(make_report(experiment_id="abc", finding_codes=["health_check_masked_failure"]))
     story = control.narrative("abc")
-    assert set(story) == {"header", "timeline", "impact", "recovery", "hypothesis", "safety", "findings",
-                          "risk", "fix", "error", "llm"}
+    assert set(story) == {"header", "timeline", "impact", "cascade", "recovery", "hypothesis", "safety",
+                          "findings", "risk", "fix", "error", "llm"}
+    assert story["cascade"] == []  # no attribution on this report
     assert story["header"].startswith("[") and "Experiment abc" in story["header"]
     assert story["timeline"] == ["[+0.0s] inject — container_crash"]
     assert story["impact"].startswith("Impact: success 100% → 10%")
