@@ -122,7 +122,11 @@ class Injector:
         condition_at: float | None = None
         revert_at = injected_at
         last_live_cascade = 0.0
+        # Cascade attribution's t=0 is when the fault command was issued, not when it returned: a graceful
+        # `docker stop` blocks while the target shuts down, and that shutdown is already the fault.
+        fault_issued_at = injected_at
         try:
+            fault_issued_at = time.time()
             handle = ACTIONS[spec.failure_type](ctx)
             injected_at = time.time()
             ev("injected", handle.description)
@@ -153,7 +157,7 @@ class Injector:
                 # Dashboard-only provisional attribution, after the safety checks so it can never delay an abort.
                 if time.time() - last_live_cascade >= LIVE_CASCADE_EVERY_S:
                     last_live_cascade = time.time()
-                    self._update_live_cascade(spec, injected_at, pre_stats)
+                    self._update_live_cascade(spec, fault_issued_at, pre_stats)
         except Exception as exc:
             status, error = "failed", f"{type(exc).__name__}: {exc}"
             ev("error", error)
@@ -190,7 +194,7 @@ class Injector:
         health_summary = summarize_health(health_samples, self.topo.relevant_services())
         # Observational only: computed after the "after" window so the whole recovery is covered. It never
         # feeds back into safety, findings' severities or the status; a failure here just leaves cascade=None.
-        cascade = self._attribute(spec, injected_at, revert_at, pre_stats, ev)
+        cascade = self._attribute(spec, fault_issued_at, revert_at, pre_stats, ev)
         findings = self._findings(spec, pre_stats, during, health_summary, recovery, safety, first_error_at, injected_at, revert_at)
         findings = self._enrich_cascade_finding(spec, findings, health_summary, cascade)
         report = self._report(spec, t_start, pre_stats, during, after, health_summary, timeline, recovery, safety, findings, status, error,

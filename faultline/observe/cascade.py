@@ -39,7 +39,7 @@ MECHANISM_TEXT: dict[str, str] = {
     "injected_fault": "had the fault injected",
     "process_down": "went down (container not running)",
     "process_paused": "froze (container paused)",
-    "liveness_failed": "stopped answering /alive",
+    "liveness_failed": "failed its liveness check (/alive, or mongosh ping for MongoDB)",
     "readiness_failed": "kept answering /alive but failed /ready (a subsystem failed)",
     "dependency_timeout": "had requests time out waiting on {upstream}",
     "dependency_unreachable": "could not connect to {upstream}",
@@ -529,7 +529,8 @@ def attribute(
                 lag = _r(on.latest - onsets[upstream].latest)
         hops.append(CascadeHop(
             service=svc, onset_earliest_s=on.earliest, onset_latest_s=on.latest, onset_source=on.source,
-            phase="after_rollback" if on.latest > revert_rel else "during_fault",
+            # Only when it provably began after the revert: an onset interval straddling it is "during".
+            phase="after_rollback" if on.earliest >= revert_rel else "during_fault",
             mechanism=on.mechanism, mechanism_evidence=on.evidence, masked_by_health_check=on.masked,
             upstream=upstream, edge_kinds=kinds, lag_s=lag, path=path, candidate_paths=cands, path_confidence=conf,
             hops_from_origin=len(path) - 1 if path else None,

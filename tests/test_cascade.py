@@ -298,14 +298,27 @@ def test_onset_after_rollback_phase():
     def state(svc, t):
         if svc == "c" and 0 < t < 5:
             return ("paused", None, None)
-        if svc == "b" and t > 6:
+        if svc == "b" and t > 9:
             return ("running", 200, 503)
         return GREEN
     attr = run(chain_topology(), "c", health(["a", "b", "c"], state), [], revert=5.0)
     assert "process_paused at +1.1s" in attr.hops[0].mechanism_evidence
     b = hop(attr, "b")
-    assert b.phase == "after_rollback" and b.onset_latest_s == 7.1
+    assert b.phase == "after_rollback" and (b.onset_earliest_s, b.onset_latest_s) == (7.1, 10.1)
     assert "after the fault had been rolled back" in describe_hop(b, "c")
+
+
+def test_onset_interval_straddling_the_revert_is_not_called_after_rollback():
+    # Live run 841f241dfa92: mongodb's onset interval (+14.9..+21.4s) contained the revert (+21.2s).
+    def state(svc, t):
+        if svc == "c" and 0 < t < 5:
+            return ("paused", None, None)
+        if svc == "b" and t > 6:
+            return ("running", 200, 503)
+        return GREEN
+    attr = run(chain_topology(), "c", health(["a", "b", "c"], state), [], revert=5.0)
+    b = hop(attr, "b")
+    assert (b.onset_earliest_s, b.onset_latest_s) == (4.1, 7.1) and b.phase == "during_fault"
 
 
 def test_latency_degraded_against_baseline():
