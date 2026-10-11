@@ -122,7 +122,7 @@ One screen drives everything. It owns the probes, runs operations as background 
 
 Keyboard: `Esc` fires the kill switch, `E` toggles explanations, `Space` pauses live updates.
 
-There is also **Fable**, an alternative stage-by-stage front end in [`fable/`](fable/) (React, TypeScript and Vite), served at `/fable/`.
+There is also **Fable**, an alternative stage-by-stage front end in [`fable/`](fable/) (React, TypeScript and Vite), served at `/fable/`. A read-only replay of it, running on recorded data with no backend, is hosted at **[faultline-fable.vercel.app](https://faultline-fable.vercel.app)**.
 
 ## Failure catalog
 
