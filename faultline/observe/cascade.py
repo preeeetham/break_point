@@ -212,6 +212,11 @@ def _operations(api: list[Sample], injected_at: float, window_end: float, servic
             oks_before = [s for s in items if s.ok and s.ts < first_fail.ts]
             last_ok_rel = max(0.0, _r(oks_before[-1].ts - injected_at)) if oks_before else 0.0
         n, f = len(items), len(fails)
+        # Fractions are taken over the span in which this op was failing (first to last failure), not the
+        # whole window: an outage that a safety abort cut to six seconds would otherwise be diluted below
+        # the bar by the minute of healthy recovery traffic after it (live run fa94eb25fce6, things pause).
+        span = [s for s in items if fails and fails[0].ts <= s.ts <= fails[-1].ts]
+        ns = len(span) or n
         mechanism: Optional[str] = None
         evidence = ""
         if f:
@@ -221,27 +226,29 @@ def _operations(api: list[Sample], injected_at: float, window_end: float, servic
                 mech_count[m] = mech_count.get(m, 0) + c
             dominant_kind = max(kinds.items(), key=lambda kv: (kv[1], kv[0]))[0]
             top_mech, top_n = max(mech_count.items(), key=lambda kv: (kv[1], kv[0]))
-            if f / n < MINORITY_FRACTION:
+            failing = f"{f}/{ns} requests while it was failing, {n} in the window"
+            if f / ns < MINORITY_FRACTION:
                 mechanism = "elevated_error_rate"
-                evidence = f"only {f}/{n} requests failed (mostly {dominant_kind})"
+                evidence = f"only {failing} failed (mostly {dominant_kind})"
             elif top_n / f >= DOMINANT_MECHANISM_SHARE:
                 mechanism = top_mech
-                evidence = f"{f}/{n} requests failed ({_kinds_text(kinds)})"
+                evidence = f"{failing} failed ({_kinds_text(kinds)})"
             else:
                 mechanism = "elevated_error_rate"
-                evidence = f"{f}/{n} requests failed with no dominant kind ({_kinds_text(kinds)})"
+                evidence = f"{failing} failed with no dominant kind ({_kinds_text(kinds)})"
         sig = OperationSignal(
             op=op, route=route, requests=n, failures=f,
             first_failure_s=_r(first_fail.ts - injected_at) if first_fail else None,
             last_ok_before_failure_s=last_ok_rel, error_kinds=kinds, mechanism=mechanism)
-        if f >= SIGNIFICANT_MIN_FAILURES and f / n >= SIGNIFICANT_MIN_FRACTION:
+        if f >= SIGNIFICANT_MIN_FAILURES and f / ns >= SIGNIFICANT_MIN_FRACTION:
             significant[op] = _OpOnset(op, sig.first_failure_s, last_ok_rel or 0.0, mechanism, f,
                                        f"{op} {evidence}, first failure at {_s(sig.first_failure_s)}, "
                                        f"last success before it at {_s(last_ok_rel or 0.0)}")
         else:
             if f:
                 notes.append(f"{op}: {f} failure(s) out of {n} requests ({_kinds_text(kinds)}) is below the significance "
-                             f"bar (≥{SIGNIFICANT_MIN_FAILURES} failures and ≥{SIGNIFICANT_MIN_FRACTION:.0%} of requests); "
+                             f"bar (≥{SIGNIFICANT_MIN_FAILURES} failures and ≥{SIGNIFICANT_MIN_FRACTION:.0%} of the requests between the "
+                             f"first and last failure); "
                              f"treated as noise, no hop created from it.")
             lat = _latency_onset(op, items, injected_at, baseline)
             if lat is not None:

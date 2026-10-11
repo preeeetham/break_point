@@ -382,3 +382,22 @@ def test_round_trips_through_experiment_report(make_report):
     report = make_report(cascade=attr)
     loaded = ExperimentReport.model_validate(json.loads(report.model_dump_json()))
     assert loaded.cascade == attr
+
+
+def test_short_outage_is_not_diluted_by_the_recovery_window():
+    # Live run fa94eb25fce6 (things container_pause): every request timed out for ~6 s until the safety
+    # abort, then ~30 s of healthy recovery traffic followed. Over the whole window that was 3/61 failures
+    # per op, under the 10% bar, and the cascade was reported as "stayed at things".
+    aps = api(lambda op, t: TIMEOUT if 0.3 <= t < 6.5 else OK, end=45.0)
+    attr = run(ditto_topology(), "things", health(["things", "gateway", "things-search", "nginx", "policies"],
+                                                  lambda s, t: ("paused", None, None) if s == "things" and 0 < t < 7 else GREEN),
+               aps, expected=("gateway",))
+    gw = hop(attr, "gateway")
+    assert gw.mechanism == "dependency_timeout" and gw.masked_by_health_check
+    assert {"gateway", "things-search", "nginx"} <= {h.service for h in attr.hops}
+
+
+def test_two_failures_far_apart_are_still_noise():
+    aps = api(lambda op, t: TIMEOUT if op == "get_thing" and (2.0 <= t < 2.3 or 40.0 <= t < 40.3) else OK, end=45.0)
+    attr = run(ditto_topology(), "mongodb", health(["mongodb", "gateway", "things"]), aps)
+    assert [h.service for h in attr.hops] == ["mongodb"]
