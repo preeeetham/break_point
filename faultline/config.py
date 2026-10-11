@@ -46,6 +46,23 @@ class Settings:
     tc_image: str = "ghcr.io/alexei-led/pumba-alpine-nettools:latest"
     network_name: str = ""
     dashboard_port: int = 8765
+    # ---- approval gate. No defaults that could silently work: an unset ADMIN_EMAIL or an unset
+    # credential must fail loudly at the agent's startup check, never quietly approve anything.
+    admin_email: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""            # empty = smtp_user
+    smtp_starttls: bool = True
+    imap_host: str = ""            # empty = smtp_host
+    imap_port: int = 993
+    imap_user: str = ""            # empty = smtp_user
+    imap_password: str = ""        # empty = smtp_password
+    imap_mailbox: str = "INBOX"
+    imap_ssl: bool = True
+    approval_timeout_s: float = 120.0
+    approval_poll_s: float = 5.0
 
     @property
     def reports(self) -> Path:
@@ -74,6 +91,21 @@ ENV_MAP = {
     "LLM_MODEL": "llm_model",
     "LLM_BASE_URL": "llm_base_url",
     "LLM_API_KEY": "llm_api_key",
+    "ADMIN_EMAIL": "admin_email",
+    "SMTP_HOST": "smtp_host",
+    "SMTP_PORT": "smtp_port",
+    "SMTP_USER": "smtp_user",
+    "SMTP_PASSWORD": "smtp_password",
+    "SMTP_FROM": "smtp_from",
+    "SMTP_STARTTLS": "smtp_starttls",
+    "IMAP_HOST": "imap_host",
+    "IMAP_PORT": "imap_port",
+    "IMAP_USER": "imap_user",
+    "IMAP_PASSWORD": "imap_password",
+    "IMAP_MAILBOX": "imap_mailbox",
+    "IMAP_SSL": "imap_ssl",
+    "APPROVAL_TIMEOUT_SECONDS": "approval_timeout_s",
+    "APPROVAL_POLL_SECONDS": "approval_poll_s",
 }
 
 
@@ -99,6 +131,10 @@ def load_settings(path: str | None = None) -> Settings:
         else:
             val = raw
         setattr(s, attr, val)
+    s.smtp_from = s.smtp_from or s.smtp_user
+    s.imap_host = s.imap_host or s.smtp_host
+    s.imap_user = s.imap_user or s.smtp_user
+    s.imap_password = s.imap_password or s.smtp_password
     for attr in ("compose_file", "nginx_conf", "reports_dir", "thresholds_file", "knowledge_file"):
         p = Path(getattr(s, attr))
         if not p.is_absolute():

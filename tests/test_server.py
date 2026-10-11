@@ -15,8 +15,9 @@ import pytest
 import faultline.dashboard.server as server_mod
 from faultline.dashboard.control import ControlPlane
 from faultline.dashboard.server import make_handler
+from faultline.schemas import ApprovalDecision
 
-from .test_control import STATE_KEYS, block_handler, make_session_cls, wait_job  # noqa: F401
+from .test_control import STATE_KEYS, block_handler, make_approval_request, make_session_cls, wait_job  # noqa: F401
 from .test_control import sessions, settings  # noqa: F401  (fixtures)
 
 
@@ -84,6 +85,26 @@ def test_state_since_only_returns_newer_events(base):
     assert "KILL SWITCH" in st["events"][0]["text"] and st["seq"] == seq + 2
     assert call(base, "GET", f"/api/state?since={st['seq']}")[1]["events"] == []
     assert call(base, "GET", "/api/state?since=")[1]["events"][0]["seq"] == 1
+
+
+def test_approvals_endpoint_shape_and_headers(base, tmp_store):
+    status, out, hdrs = call(base, "GET", "/api/approvals")
+    assert status == 200 and set(out) == {"pending", "decided"}
+    assert out == {"pending": None, "decided": []}
+    assert hdrs["Cache-Control"] == "no-store"
+    assert hdrs["Content-Type"].startswith("application/json")
+    req = make_approval_request()
+    tmp_store.set_pending_approval(req)
+    tmp_store.write_approval(make_approval_request(approval_id="older", status="timed_out",
+                                                   decision=ApprovalDecision(answer="skip", answered=False,
+                                                                             reason="nobody replied")))
+    status, out, _ = call(base, "GET", "/api/approvals")
+    assert status == 200 and out["pending"]["token"] == req.token and out["pending"]["seconds_left"] > 0
+    assert [d["approval_id"] for d in out["decided"]] == ["older"]
+    assert out["decided"][0]["decision"]["answer"] == "skip"
+    assert call(base, "GET", "/api/state")[1]["pending_approval"]["approval_id"] == req.approval_id
+    # the decision comes back by email on purpose: there is no way to approve from the control room
+    assert call(base, "POST", "/api/approvals", {})[0] == 404
 
 
 # ---------------------------------------------------------------- jobs
