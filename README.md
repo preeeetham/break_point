@@ -9,10 +9,10 @@ Faultline points a small team of agents at [Eclipse Ditto](https://github.com/ec
 | Organisers' requirement | Faultline | Command / output |
 |---|---|---|
 | 1. Select and understand a sample app; map services and dependencies automatically | Topology agent parses compose `depends_on`, scans environment variables for hostnames, parses nginx `proxy_pass`, layers documented Pekko-cluster edges, enriches from live `docker inspect`, and computes a criticality ranking | `faultline topology` -> `reports/topology.json` (+ Mermaid/Markdown rendering) |
-| 2. Plan experiments intelligently, riskiest / most informative first | Code ranks every (service, failure) pair by criticality x untested bonus - tested penalty; the LLM picks among the top 5, tunes parameters within bounds and writes a falsifiable hypothesis | `faultline plan` (dry run) / `faultline run` -> `experiments/<id>.json` |
+| 2. Plan experiments intelligently, riskiest / most informative first | Code ranks every (service, failure) pair by criticality x untested bonus - tested penalty (plus small tie-breakers: per-failure informativeness, degrade-only and same-target-as-last-run penalties); the LLM picks among the top 5, tunes parameters within bounds and writes a falsifiable hypothesis | `faultline plan` (dry run) / `faultline run` -> `experiments/<id>.json` |
 | 3. Inject controlled failures with safety limits and auto-stop | 10 failure types; abort on error rate, p95 latency or blast radius; 90 s hard cap; independent watchdog; STOP file; Guardian process; one experiment at a time | `faultline run`, `faultline stop`, `faultline guardian` |
 | 4. Observe behaviour: errors, slowdowns, recovery time | Synthetic Things-API probe through nginx at ~4 req/s with a sequence-number canary; `/alive` + `/ready` health probe every 3 s; Prometheus + Grafana on the side | `reports/live.json`, `faultline dashboard`, Grafana :3000 |
-| 5. Analyse and report: weaknesses, fixes, ranked resilience score | Risk agent (0-10 severity), Fix agent (Ditto-specific remediations), Scorecard agent (0-100 per service, graded A-F, ranked worst first) | `faultline risk && faultline fix && faultline scorecard` -> `risk/`, `fixes/`, `scorecard.md` |
+| 5. Analyse and report: weaknesses, fixes, ranked resilience score | Risk agent (0-10 severity), Fix agent (Ditto-specific remediations), Scorecard agent (0-100 per service, graded A-F, ranked worst first) | `faultline risk && faultline fix && faultline scorecard` (or `faultline run --analyze`) -> `risk/`, `fixes/`, `scorecard.md` |
 | Day-1 minimum: running app | Ditto 3.9.8 + MongoDB + nginx + observability stack in one compose project | `scripts/up.sh` |
 | Day-1 minimum: dependency map | Automatic, with the undeclared MongoDB dependency found | `faultline topology` |
 | Day-1 minimum: one safe injection with a working kill switch | Any `faultline run`; kill switch via `faultline stop`, the dashboard STOP button, or `touch reports/STOP` | see [docs/DEMO.md](docs/DEMO.md) |
@@ -20,6 +20,18 @@ Faultline points a small team of agents at [Eclipse Ditto](https://github.com/ec
 | One agent proposes failures, one scores risk, one recommends fixes | Failure Injection, Risk/Impact and Fix Recommendation agents, plus Topology, Scorecard, Narrator and Guardian | see architecture below |
 | Open-source models | Default provider is Ollama with `phi4-mini`; OpenAI-compatible and Anthropic APIs optional | `.env` |
 | Whole app monitored by an open-source observability tool | Prometheus 2.55, cAdvisor, Blackbox exporter, Grafana 11.3 with a provisioned dashboard | http://127.0.0.1:3000 |
+
+### Day-2 verification run
+
+Run on 2026-10-11 against a live Ditto 3.9.8 stack, using only this branch's CLI pipeline (`setup` -> `topology` -> `baseline` -> `run` -> `risk` -> `fix` -> `scorecard` -> `narrate`). Full results, ranked findings and fixes: **[docs/FINDINGS.md](docs/FINDINGS.md)**. Architecture: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+| Milestone | Evidence from the run |
+|---|---|
+| AI experiment planner using the dependency map | `faultline topology` ranked `mongodb` #1 (criticality 9.5, vs 5.0 for `policies`) with the finding "mongodb: not referenced by any depends_on; 4 services reach it only via environment variables". `faultline plan` ranked MongoDB's degrade-only failures top-5 and the LLM picked one with a rationale and hypothesis; one experiment in the run (`e85e6fa18520`) was chosen entirely by the planner |
+| Three or more distinct failure types | 6 experiments, 6 types: `container_crash` (things), `network_delay` (connectivity), `container_stop` (policies), `cpu_stress` (mongodb), `traffic_spike` (gateway), `network_loss` (mongodb, planner-chosen). Errors, p95 and time-to-recover recorded for each |
+| Analysis and scoring | Risk (0-10), Fix (Ditto-specific, advisory) and Scorecard output for every experiment. Overall **87.8/100**; `things` graded **F** (API success 0% when its single instance was killed), the other tested services A |
+| Automatic stop on a threshold breach | `things` `container_crash` (`1de6fb6a0969`): `aborted_early: true`, `abort_reason: error_rate` (100% errors > 30% threshold) at +7.2 s, rolled back at +7.6 s, recovered on its own in 26.5 s, no lost write |
+| Clean run | Every Ditto service cold-restarted in dependency order (`faultline heal --restart`), then the whole pipeline re-run on an empty blackboard: every step exited 0, the planner chose and ran `network_delay` on MongoDB, and risk/fix/scorecard/narrate produced output. Volumes were deliberately not wiped |
 
 ## Architecture
 
@@ -80,7 +92,7 @@ The agents:
 - **Fix Recommendation agent** (`faultline/agents/fix.py`, `faultline/agents/knowledge.py`). A library of Ditto-specific remediation rules (MongoDB replica set, two `policies` instances, nginx upstream with retries, readiness that reflects subsystem health, autoheal sidecar, aligned timeouts, rate limiting, log rotation, split-brain resolver, and so on), matched by finding code > target > failure type > generic. The LLM may add at most two schema-validated extras, tagged `[LLM suggestion, unverified]` and capped at 0.6 confidence. Advisory only.
 - **Resilience Scorecard agent** (`faultline/agents/scorecard.py`). Score = 100 - mean penalty per service; penalty = 40 x (1 - success during) + 20 x min(TTR / 120 s, 1) + 20 if manual recovery + 10 per high/critical finding (max 3) + 5 for a cascade. Grades A >= 90, B >= 80, C >= 65, D >= 50, else F. Ranked worst first; untested services are listed last with no grade.
 - **Narrator agent**. Turns the blackboard into a plain-English play-by-play for the demo screen (`faultline narrate --watch`).
-- **Guardian agent**. A separate process that does not trust the injector. It restores any sandbox container that is down past the deadline recorded in `ACTIVE_EXPERIMENT.json`, removes leftover chaos helper containers (label `faultline.helper=1`), and obeys the `STOP` file. We do not trust a single agent with the kill switch.
+- **Guardian agent**. A separate process that does not trust the injector. It restores the experiment's target if it is still down past the deadline recorded in `ACTIVE_EXPERIMENT.json` (any other watched container after 20 s down), removes leftover chaos helper containers (label `faultline.helper=1`) once that deadline has passed, and obeys the `STOP` file by restoring everything immediately. We do not trust a single agent with the kill switch.
 
 ## The sample application
 
@@ -112,7 +124,7 @@ Compliance with the sample-app rules:
 
 ## Quickstart
 
-Prerequisites: Docker Desktop with at least 4 GB of memory for the VM (Ditto's container limits sum to about 2.6 GB), Python 3.10+, and optionally [Ollama](https://ollama.com) with `ollama pull phi4-mini`. Tested on Apple Silicon; arm64 images are available for everything in the stack.
+Prerequisites: Docker Desktop with at least 4 GB of memory for the VM (the application containers' memory limits sum to about 3.1 GB), Python 3.10+, and optionally [Ollama](https://ollama.com) with `ollama pull phi4-mini`. Tested on Apple Silicon; arm64 images are available for everything in the stack.
 
 ```bash
 git clone <this repository> && cd bosch-hackathon-2
@@ -129,7 +141,7 @@ faultline risk && faultline fix && faultline scorecard
 faultline dashboard                # http://127.0.0.1:8765 (live state, reports, STOP button)
 ```
 
-`faultline demo --experiments N` runs topology, baseline, run, risk, fix, scorecard and narrate in sequence. `make venv`, `make up`, `make demo` and friends wrap the same commands.
+`faultline demo --experiments N` (default 3) runs topology, a 45 s baseline (`--baseline`), run, risk, fix, scorecard and narrate in sequence. `make venv`, `make up`, `make demo` and friends wrap the same commands.
 
 After the stack is up: Ditto API at http://127.0.0.1:8080/api/2/things (credentials `ditto` / `ditto`), Ditto UI at http://127.0.0.1:8080/ui/, Prometheus at http://127.0.0.1:9090, Grafana at http://127.0.0.1:3000.
 
@@ -137,7 +149,7 @@ To attach Faultline to an existing Ditto compose project instead of the bundled 
 
 ### CLI
 
-`faultline <command>` after `pip install -e .`, or `python -m faultline <command>`.
+`faultline <command>` after `pip install -e .`, or `python -m faultline <command>`. A global `--config <yaml>` replaces `config/settings.yaml`.
 
 | Command | What it does |
 |---|---|
@@ -145,20 +157,22 @@ To attach Faultline to an existing Ditto compose project instead of the bundled 
 | `topology [--no-live]` | Builds the dependency map; `--no-live` skips `docker inspect` |
 | `baseline [--duration 60]` | Captures steady state and derives the safety thresholds |
 | `catalog` | Prints the failure catalog with parameters and bounds |
-| `plan [--llm/--no-llm]` | Shows the ranked candidates and the pick; runs nothing |
-| `run [--experiments N] [--target SVC --failure TYPE --param k=v ...] [--allow-protected] [--no-llm]` | Plans and executes experiments; operator flags pin a specific one |
-| `rerun <id>` | Repeats a previous experiment with the same spec |
-| `risk`, `fix`, `scorecard` | Run the downstream agents on every report that does not have output yet |
+| `plan [--no-llm] [--allow-protected]` | Shows the ranked candidates and the pick; runs nothing |
+| `run [--experiments N] [--target SVC --failure TYPE --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop]` | Plans and executes experiments; operator flags pin a specific one; `--analyze` runs risk, fix and scorecard afterwards; `--resume-stop` clears a leftover STOP first |
+| `rerun <id> [--no-llm] [--allow-protected] [--analyze] [--resume-stop]` | Repeats a previous experiment with the same target, failure and parameters |
+| `risk [ids...] [--force] [--no-llm]`, `fix [ids...] [--force] [--no-llm]` | Assess / recommend for every report that does not have output yet (`--force` redoes them) |
+| `scorecard` | Recomputes the scorecard from all completed and aborted experiments |
 | `narrate [--watch] [--llm]` | Plain-English play-by-play; `--watch` follows the blackboard |
-| `guardian` | Starts the independent Guardian process |
+| `guardian [--interval 5]` | Starts the independent Guardian process |
 | `stop` / `resume` | Writes / removes `reports/STOP` |
-| `status` | One-screen summary of the blackboard |
+| `heal [--restart]` | Operator reset: removes chaos helpers and the lock, reconnects / unpauses / starts containers, clears netem qdiscs, optionally restarts the Ditto services in dependency order, waits for `/health` = UP |
+| `status` | Container states plus STOP / lock / experiment count / Guardian liveness |
 | `dashboard [--port 8765]` | Serves the live dashboard |
-| `demo [--experiments N]` | topology, baseline, run, risk, fix, scorecard, narrate |
+| `demo [--experiments 3] [--baseline 45] [--no-llm] [--allow-protected]` | topology, baseline, run, risk, fix, scorecard, narrate |
 
 ## Failure catalog
 
-Ten failure types in `faultline/chaos/catalog.py`. Every parameter has a bound; whatever the LLM or the operator asks for is clamped into it and the clamp is recorded in the report's `planner_notes`.
+Ten failure types in `faultline/chaos/catalog.py`. Every parameter has a bound; whatever the LLM or the operator asks for is clamped into it; the clamp is noted in the plan's `planner_notes` (printed by `faultline plan`) and the report's `parameters` hold the clamped values.
 
 | Failure type | Mechanism | Parameters (default, bounds) | Organisers' example |
 |---|---|---|---|
@@ -173,7 +187,7 @@ Ten failure types in `faultline/chaos/catalog.py`. Every parameter has a bound; 
 | `db_flood` | parallel `mongosh` insert loops inside the MongoDB container; the flood collection is dropped on rollback | `duration_s` 45 [10-90], `writers` 2 [1-4] | Overloaded database |
 | `traffic_spike` | host-side request burst against nginx -> gateway on top of the probe traffic | `duration_s` 30 [10-90], `rps` 150 [20-600] | Sudden traffic spike |
 
-Role constraints: container crash/stop/pause apply to app and proxy containers; `db_flood` only to MongoDB; `traffic_spike` only to `nginx` and `gateway`; `ditto-ui` and the observability containers are never targets. Every report contains the equivalent `docker` / `pumba` shell commands under `reproduce`.
+Role constraints: the container, network, CPU and disk faults apply to app, proxy and datastore containers (MongoDB subject to the protection policy below); `db_flood` only to MongoDB; `traffic_spike` only to `nginx` and `gateway`; `ditto-ui` and the observability containers are never targets. Every report contains the equivalent `docker` / `pumba` shell commands under `reproduce`.
 
 ## Safety
 
@@ -186,17 +200,17 @@ Role constraints: container crash/stop/pause apply to app and proxy containers; 
 - any service outside the hypothesis' expected blast radius fails 3 health checks in a row, or
 - the operator requested a stop.
 
-Further limits: hard cap of 90 s per experiment; an independent watchdog timer fires at 90 + 15 s and calls the rollback even if the main loop is stuck in a blocking Docker call; one experiment at a time (`reports/ACTIVE_EXPERIMENT.json` lock); at most 10 experiments per run with a 30 s pause between them; injection is refused if the 20 s pre-experiment window shows less than 95 % success ("do not break an already sick system").
+Further limits: hard cap of 90 s per experiment; an independent watchdog timer fires 15 s after the experiment's deadline (at most 90 + 15 s) and calls the rollback even if the main loop is stuck in a blocking Docker call; one experiment at a time (`reports/ACTIVE_EXPERIMENT.json` lock); at most 10 experiments per run with a 30 s pause between them; injection is refused (report `status: skipped`) if the 20 s pre-experiment window shows less than 95 % success ("do not break an already sick system"), if a STOP file or another active experiment exists, or if the target or any other application service is not running.
 
-**Protected services.** MongoDB is the sole datastore, so the Day-1 policy is degrade-only: `network_delay`, `network_loss`, `cpu_stress`, `disk_pressure` and `db_flood` are allowed, crash/stop/pause/partition are not. `--allow-protected` overrides this explicitly, and the override is written into the report.
+**Protected services.** MongoDB is the sole datastore, so the Day-1 policy is degrade-only: `network_delay`, `network_loss`, `cpu_stress`, `disk_pressure` and `db_flood` are allowed, crash/stop/pause/partition are not. `--allow-protected` overrides this explicitly; the override is noted in the plan's `planner_notes` (shown by `faultline plan`).
 
-**Kill switch.** `faultline stop`, the STOP button on the dashboard, or `touch reports/STOP`. The safety monitor checks the file every second; the Guardian honours it too.
+**Kill switch.** `faultline stop`, the STOP button on the dashboard, or `touch reports/STOP`. The safety monitor checks the file every second and rolls back with `abort_reason: operator_stop`; the Guardian honours it too. While the file exists no new experiment starts; `faultline resume` (or the dashboard's RESUME button) clears it. The other `abort_reason` values are `error_rate`, `latency` and `blast_radius:<service>`; a watchdog rollback sets `safety.watchdog_fired`.
 
-**Guardian.** A separate process with its own Docker client. It restores any container in the compose project that is still down past the deadline recorded in `ACTIVE_EXPERIMENT.json`, removes stale Pumba helpers and `tc` qdiscs, and never injects anything.
+**Guardian.** A separate process with its own Docker client. It restores the target if it is still down (stopped or paused) past the deadline recorded in `ACTIVE_EXPERIMENT.json`, restores any other watched container after 20 s down, removes stale Pumba helpers and their `tc` qdiscs, clears a lock left 30 s past its deadline, on STOP reconnects partitioned containers, and never injects anything.
 
-**Rollback is idempotent.** Every injection returns a handle whose `revert()` can be called from the main loop, the watchdog thread, the Guardian or a `finally` block without double-acting.
+**Rollback is idempotent.** Every injection returns a handle whose `revert()` can be called from the main loop, the watchdog thread or a `finally` block without double-acting; the Guardian, being a separate process, restores state through its own Docker client instead.
 
-**Recovery.** Declared when success >= 95 % and p95 < max(300 ms, 2 x baseline p95) for 3 consecutive checks (2 s apart). The wait is bounded at 240 s because Ditto's Java services need 60-120 s to cold start and rejoin the cluster. If the target is still unhealthy at 50 % of that timeout it is restarted; at 80 % its direct dependents are restarted too. This ladder exists because of [Ditto discussion #1861](https://github.com/eclipse-ditto/ditto/discussions/1861), where Things never reconnected to MongoDB after an outage. Any such action is recorded under `recovery.remediation_actions` and counts against the score.
+**Recovery.** A candidate is declared when success >= 95 % and p95 < max(300 ms, 2 x baseline p95) and the target plus expected-affected services pass their health checks, for 3 consecutive checks (2 s apart); it is then soaked for 20 s, and a relapse during the soak resets the wait (finding `relapse_after_recovery`). The wait is bounded at 300 s (`recovery.timeout_seconds`) because Ditto's Java services need 60-120 s to cold start and rejoin the cluster. If the system has not recovered at 50 % of that timeout (150 s) the target is restarted; at 80 % (240 s) its direct dependents are restarted too. This ladder exists because of [Ditto discussion #1861](https://github.com/eclipse-ditto/ditto/discussions/1861), where Things never reconnected to MongoDB after an outage. Any such action is recorded under `recovery.remediation_actions` and counts against the score.
 
 ## What gets measured
 
@@ -209,14 +223,18 @@ Comparing what users see with what the platform claims is how the findings below
 
 | Finding | Meaning |
 |---|---|
-| `health_check_masked_failure` | a service kept answering `/ready` = 200 while the API through it was failing. Grounded in [Ditto issue #1865](https://github.com/eclipse-ditto/ditto/issues/1865) "/alive and /ready do not consider subsystem health", fixed for liveness only in 3.5.0 |
-| `no_automated_remediation` | the container sat `unhealthy`; Docker `restart: always` only reacts to process exit |
+| `api_impact` | what the synthetic client saw during the fault: success rate and p95 against the pre-experiment window |
+| `health_check_masked_failure` | API success fell below 50 % while the target container stayed up (a degrade fault or partition) and a service in the blast radius kept answering `/ready` = 200. Grounded in [Ditto issue #1865](https://github.com/eclipse-ditto/ditto/issues/1865) "/alive and /ready do not consider subsystem health", fixed for liveness only in 3.5.0 |
+| `dependency_blind_readiness` | the target was down, yet its expected-affected dependents kept answering `/ready` = 200 while API success was below 50 % (low severity) |
+| `no_automated_remediation` | API success fell below 50 % but the target container stayed `running` and never turned `unhealthy`, so nothing reacted; Docker `restart: always` only reacts to process exit |
 | `manual_restart_required` | the escalation ladder had to restart the target or its dependents |
+| `recovery_failed` | the system did not recover within the recovery timeout |
+| `relapse_after_recovery` | the API recovered and then degraded again during the 20 s soak |
 | `data_loss_suspected` | the sequence number read back after recovery is lower than the last acknowledged write |
-| `cascade_beyond_hypothesis` | a service outside `hypothesis.expected_affected` was affected |
-| `slow_recovery` | time to recover exceeded `hypothesis.expected_recovery_s` |
+| `cascade_beyond_hypothesis` | a service outside `hypothesis.expected_affected` lost health |
+| `slow_recovery` | time to recover exceeded 1.5 x `hypothesis.expected_recovery_s` |
 | `auto_recovered` | the system came back without any intervention |
-| `safety_abort` | a threshold fired and the experiment was rolled back early |
+| `safety_abort` | the kill switch fired (threshold or operator stop) and the experiment was rolled back early |
 
 Every experiment ends with hypothesis validation: expected max error rate, expected affected services and expected recovery time versus what was observed, recorded in `hypothesis_result.held`.
 
@@ -239,7 +257,7 @@ LLM_API_KEY=sk-...
 
 # Anthropic Messages API
 LLM_PROVIDER=anthropic
-LLM_MODEL=                   # empty = default in faultline/planning/llm.py
+LLM_MODEL=                   # empty = default in faultline/planning/llm.py (claude-sonnet-5)
 LLM_BASE_URL=                # default https://api.anthropic.com
 LLM_API_KEY=sk-ant-...
 
@@ -247,15 +265,16 @@ LLM_API_KEY=sk-ant-...
 FAULTLINE_LLM=false
 ```
 
-`--no-llm` on `plan`, `run` and `demo` has the same effect as `FAULTLINE_LLM=false` for one invocation.
+`--no-llm` on `plan`, `run`, `rerun`, `risk`, `fix` and `demo` has the same effect as `FAULTLINE_LLM=false` for one invocation. The narrator only calls the model with `narrate --llm`.
 
 ## Outputs
 
 ```
 reports/
-  topology.json              dependency map, criticality ranking, structural findings
-  baseline.json              steady-state API stats, health availability, derived thresholds
+  topology.json, .md         dependency map, criticality ranking, structural findings (.md includes a Mermaid graph)
+  baseline.json, .md         steady-state API stats, health availability, derived thresholds
   experiments/<id>.json      one ExperimentReport per injection
+  experiments/<id>/          report.md plus recent container logs of the target and expected-affected services
   risk/<id>.json             RiskAssessment
   fixes/<id>.json, <id>.md   FixRecommendation (JSON for machines, Markdown for people)
   scorecard.json, .md        per-service scores, ranked worst first
@@ -263,10 +282,10 @@ reports/
   ACTIVE_EXPERIMENT.json     lock + deadline while an experiment runs (read by the Guardian)
   STOP                       present = abort now
   guardian.heartbeat.json    Guardian liveness
-  logs/*.log                 per-agent logs
+  logs/guardian.log          Guardian actions
 ```
 
-An abbreviated experiment report:
+An abbreviated, illustrative experiment report (field names, finding codes and titles follow the code; the numbers are made up, not from a real run):
 
 ```json
 {
@@ -277,23 +296,25 @@ An abbreviated experiment report:
   "planned_by": "llm",
   "rationale": "policies is the authorisation dependency of every other service and has not been tested yet",
   "hypothesis": {
-    "statement": "taking away policies for 30s will push the synthetic API error rate to at most 100%, impact at most ['connectivity', 'gateway', 'things', 'things-search'], and the API will recover within 90s after rollback without manual intervention",
+    "statement": "taking away policies (graceful stop (sigterm)) for 30s will push the synthetic API error rate to at most 100%, impact at most ['connectivity', 'gateway', 'things', 'things-search'], and the API will recover within 90s after rollback without manual intervention",
     "expected_affected": ["connectivity", "gateway", "things", "things-search"],
     "expected_max_error_rate": 1.0,
     "expected_recovery_s": 90.0
   },
-  "baseline": {"sample_count": 240, "success_rate": 1.0, "p95_ms": 41.2},
-  "during":   {"sample_count": 118, "success_rate": 0.17, "p95_ms": 2210.5},
-  "after":    {"sample_count": 96,  "success_rate": 1.0,  "p95_ms": 58.0},
-  "recovery": {"recovered": true, "time_to_recover_s": 74.3, "auto_restarted_by_docker": false,
+  "baseline": {"sample_count": 80, "success_rate": 1.0, "p95_ms": 41.2},
+  "during":   {"sample_count": 14, "success_rate": 0.21, "p95_ms": 2210.5},
+  "after":    {"sample_count": 32, "success_rate": 1.0,  "p95_ms": 58.0},
+  "recovery": {"recovered": true, "time_to_recover_s": 74.3, "auto_restarted_by_docker": null,
                "remediation_actions": [], "data_integrity_ok": true,
                "data_integrity_detail": "stored seq=312, last acknowledged write seq=312"},
   "safety": {"aborted_early": true, "abort_reason": "error_rate",
-             "abort_detail": {"error_rate": 0.9, "threshold": 0.3}, "watchdog_fired": false},
-  "hypothesis_result": {"held": true, "observed_max_error_rate": 0.9, "observed_recovery_s": 74.3, "unexpected_affected": []},
+             "abort_detail": {"trailing_samples": 10, "error_rate": 0.9, "p95_ms": 2210.5, "threshold": 0.3}, "watchdog_fired": false, "operator_stop": false},
+  "hypothesis_result": {"held": true, "observed_max_error_rate": 0.79, "observed_recovery_s": 74.3, "unexpected_affected": []},
   "findings": [
-    {"code": "safety_abort", "severity": "info", "title": "Aborted by error-rate threshold", "evidence": "0.90 > 0.30 over trailing 10 requests"},
-    {"code": "health_check_masked_failure", "severity": "high", "title": "things answered /ready=200 while the API failed", "evidence": "ready_ok_fraction=1.0 during 83% API errors"}
+    {"code": "api_impact", "severity": "high", "title": "API success dropped to 21% during the fault", "evidence": "14 requests, ..."},
+    {"code": "dependency_blind_readiness", "severity": "low", "title": "Dependents stayed 'ready' while policies was down: things (100%)", "evidence": "readiness only reflects the service's own process, ..."},
+    {"code": "auto_recovered", "severity": "info", "title": "Recovered on its own in 74s", "evidence": "outage as seen by clients: ..."},
+    {"code": "safety_abort", "severity": "medium", "title": "Kill switch fired (error_rate)", "evidence": "{\"trailing_samples\": 10, \"error_rate\": 0.9, ...}"}
   ],
   "reproduce": ["docker stop faultline-policies-1", "sleep 30", "docker start faultline-policies-1"],
   "status": "aborted"
