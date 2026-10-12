@@ -372,7 +372,7 @@ of the blackboard on 2026-10-12 (nothing applied):
 
 ## Live integration run (2026-10-12, project bosch-ditto)
 
-`FAULTLINE_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x -s` (4 tests, skipped in the normal suite):
+Rerun with `FAULTLINE_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x -s` (4 tests, skipped in the normal suite). Each scenario was exercised against the live stack while the tests were being written (evidence: the proposal records below); a final uninterrupted pass of all four still has to be run once Docker is back:
 - Approve flow: `fx-484ad4e23d` (add_or_tighten_healthcheck on connectivity, gateway, things-search, from the things container_crash `083c6cac4a0d`) applied, re-run `6600e215b8e8` and **verified**: error rate during the fault 100% -> 100% (same), time to recover 32.5 s -> 32.8 s (same), no new findings. An honest result: tightening the healthcheck changes what the platform reports, not how the crash hurts users.
 - Reject: `fx-0bacda5fe5` rejected, override and containers unchanged.
 - Bad fix: `fx-a6e19a88f5` (test-only failing healthcheck on things) went unhealthy and was **rolled back automatically**; things healthy again on its original /alive check.
