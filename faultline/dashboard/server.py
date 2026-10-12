@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,7 +16,8 @@ from urllib.parse import parse_qs, urlparse
 
 from ..config import load_settings
 from ..reporting.store import ReportStore
-from .control import JOB_KINDS, ControlPlane, JobBusy
+from ..remediation.proposals import HashMismatch, IllegalTransition
+from .control import GENERIC_JOB_KINDS, ControlPlane, JobBusy
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 # The Claude frontend (claude-frontend/, built with `npm run build`) is served at /claude/ next to
@@ -28,8 +30,34 @@ MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=ut
         ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml",
         ".woff2": "font/woff2", ".woff": "font/woff", ".png": "image/png", ".ico": "image/x-icon",
         ".map": "application/json; charset=utf-8"}
-POST_JOBS = {f"/api/jobs/{k}" for k in JOB_KINDS if k != "plan"}
+# `fix` is deliberately absent: it changes the stack, so it is only reachable through
+# POST /api/proposals/<id>/approve|apply, against a proposal a human approved.
+POST_JOBS = {f"/api/jobs/{k}" for k in GENERIC_JOB_KINDS}
 MAX_BODY = 1 << 20
+PROPOSALS_PREFIX = "/api/proposals/"
+PROPOSAL_ACTIONS = ("approve", "reject", "apply")
+# proposal ids are "fx-" + hex (proposals.new_proposal_id); anything else never reaches the store
+_PROPOSAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+MAX_REASON = 500
+
+
+def _proposal_id(raw: str) -> Optional[str]:
+    pid = raw.strip("/")
+    return pid if _PROPOSAL_ID.match(pid) else None
+
+
+def _flag(value: Any) -> bool:
+    """A JSON boolean, or the strings the query-string flags already accept. Nothing else is true."""
+    return value is True or (isinstance(value, str) and value.lower() in ("1", "true", "yes"))
+
+
+def _reason(body: dict) -> str:
+    raw = body.get("reason", "")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise BadRequest("reason must be a string")
+    return " ".join(raw.split())[:MAX_REASON]
 
 
 class BadRequest(ValueError):
@@ -138,6 +166,15 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 detail = self.control.experiment_detail(eid)
                 self._json(200, detail) if detail else self._json(404, {"error": "no such experiment"})
+            elif path == "/api/proposals":
+                self._json(200, self.control.proposals())
+            elif path.startswith(PROPOSALS_PREFIX):
+                pid = _proposal_id(path[len(PROPOSALS_PREFIX):])
+                if pid is None:
+                    self._json(404, {"error": "not found"})
+                    return
+                detail = self.control.proposal_detail(pid)
+                self._json(200, detail) if detail else self._json(404, {"error": "no such proposal"})
             elif path.startswith("/api/narrative/"):
                 eid = path[len("/api/narrative/"):].strip("/")
                 if not eid or "/" in eid or ".." in eid:
@@ -175,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path in POST_JOBS:
                 kind = path.rsplit("/", 1)[-1]
                 self._json(202, {"ok": True, "job": c.submit(kind, body).as_dict()})
+            elif path.startswith(PROPOSALS_PREFIX):
+                self._proposal_action(path[len(PROPOSALS_PREFIX):], body)
             else:
                 self._json(404, {"error": "not found", "path": path})
         except BadRequest as exc:
@@ -183,6 +222,49 @@ class Handler(BaseHTTPRequestHandler):
             self._json(409, {"error": str(exc), "job": c.job.as_dict() if c.job else None})
         except Exception as exc:
             self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    # ---------------------------------------------------------------- fix proposals
+    def _proposal_action(self, rest: str, body: dict) -> None:
+        """POST /api/proposals/<id>/approve|reject|apply.
+
+        approve  {change_hash (required), reason?, allow_protected?, llm?} -> 200, with whether the apply job
+                 started; 400 without a hash; 409 when the hash is not the current change or the
+                 proposal is no longer pending (expired, already decided)
+        reject   {reason?} -> 200; 409 when it is no longer pending
+        apply    {allow_protected?, llm?} -> 202 with the job; 409 when not approved or the slot is busy
+        """
+        c = self.control
+        pid_raw, _, action = rest.strip("/").partition("/")
+        pid = _proposal_id(pid_raw)
+        if pid is None or action not in PROPOSAL_ACTIONS:
+            self._json(404, {"error": "not found"})
+            return
+        try:
+            if action == "approve":
+                shown = body.get("change_hash")
+                if not isinstance(shown, str) or not shown.strip():
+                    raise BadRequest("change_hash is required: approve by quoting the hash of the change "
+                                     "you were shown")
+                self._json(200, c.approve_proposal(pid, shown.strip(), _reason(body),
+                                                   _flag(body.get("allow_protected", False)),
+                                                   use_llm=_flag(body.get("llm", False))))
+            elif action == "reject":
+                self._json(200, c.reject_proposal(pid, _reason(body)))
+            else:
+                job = c.submit_fix(pid, _flag(body.get("allow_protected", False)), _flag(body.get("llm", False)))
+                self._json(202, {"ok": True, "job": job.as_dict()})
+        except KeyError:
+            self._json(404, {"error": "no such proposal"})
+        except HashMismatch as exc:
+            p = c.store.proposal(pid)
+            # the current hash is deliberately not echoed: the client must re-read and re-show the change
+            msg = str(exc)
+            if "not the current change" not in msg:
+                msg = f"the change you approved is not the current change: {msg}"
+            self._json(409, {"error": msg, "status": p.status if p else None})
+        except IllegalTransition as exc:
+            p = c.store.proposal(pid)
+            self._json(409, {"error": str(exc), "status": p.status if p else None})
 
 
 def make_handler(control: ControlPlane) -> type[Handler]:

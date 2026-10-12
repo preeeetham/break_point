@@ -35,7 +35,7 @@ from ..chaos.catalog import CATALOG, clamp
 from ..reporting.store import ReportStore
 from ..safety.monitor import Watchdog
 from ..schemas import (PRE_INJECTION_REPLIES, PROBLEM_REPLIES, TIMEOUT_DEFAULTS, ApprovalDecision, ApprovalRequest,
-                       ExperimentReport, ExperimentSpec, FixRecommendation, RiskAssessment)
+                       ExperimentReport, ExperimentSpec, FixProposal, FixRecommendation, RiskAssessment)
 
 Log = Callable[[str], None]
 
@@ -46,6 +46,13 @@ MAX_CLARIFICATIONS = 3
 # experiment actually carries; the catalog's own bounds then clamp the result.
 INTENSITY_PARAMS = ("duration_s", "delay_ms", "jitter_ms", "loss_percent", "workers", "writers", "size_mb", "rps")
 PROBLEM_RISK_LEVELS = ("high", "critical")
+# Scenario C, "Can I fix this?": a human-approved remediation. First line exactly one of these; for
+# either, the remaining unquoted lines are kept as the reason. There is no timeout default that acts:
+# an unanswered, unparseable or undeliverable request leaves the proposal pending until it expires.
+FIX_PROPOSAL_SCENARIO = "fix_proposal"
+FIX_PROPOSAL_REPLIES = {"APPROVE": "approve", "REJECT": "reject"}
+FIX_PROPOSAL_NO_DECISION = "no_decision"
+MAX_REPLY_REASON = 500
 
 SUBJECT_PREFIX = "[Faultline"
 # `Subject: ` plus the value must stay inside one 78-column header line. A folded subject is legal
@@ -220,6 +227,28 @@ def first_meaningful_line(body: str) -> str:
     return ""
 
 
+_QUOTE_HEADER = re.compile(r"^(on .+ wrote:|-+ ?original message ?-+|from: .+)$", re.IGNORECASE)
+
+
+def reply_reason(body: str) -> str:
+    """The free text after the answer line: every later unquoted line, up to the quoted original or a
+    signature, collapsed to one line and capped. Only ever a reason; it never changes the answer."""
+    lines = (body or "").splitlines()
+    out: list[str] = []
+    seen_answer = False
+    for raw in lines:
+        line = raw.strip()
+        if not seen_answer:
+            if line and not line.startswith(">"):
+                seen_answer = True
+            continue
+        if line.startswith(">") or line in ("--", "-- ") or raw.rstrip("\r") == "-- " or _QUOTE_HEADER.match(line):
+            break
+        if line:
+            out.append(line)
+    return " ".join(" ".join(out).split())[:MAX_REPLY_REASON]
+
+
 def _normalise(line: str) -> str:
     """Collapse whitespace, drop surrounding quotes and one trailing full stop or exclamation mark.
 
@@ -242,6 +271,9 @@ def parse_reply(line: str, scenario: str, fix_count: int = 0) -> Optional[Parsed
             if text == phrase:
                 return ParsedAnswer(PRE_INJECTION_REPLIES[phrase], raw)
         return None
+    if scenario == FIX_PROPOSAL_SCENARIO:
+        # exact match only: "APPROVE it" or "REJECT, too risky" on the first line are not answers
+        return ParsedAnswer(FIX_PROPOSAL_REPLIES[text], raw) if text in FIX_PROPOSAL_REPLIES else None
     if text in ("WAIT", "CONTINUE"):
         return ParsedAnswer(PROBLEM_REPLIES[text], raw)
     m = _FIX_RE.match(text)
@@ -255,6 +287,22 @@ def parse_reply(line: str, scenario: str, fix_count: int = 0) -> Optional[Parsed
 
 # ---------------------------------------------------------------- templates
 def _option_block(scenario: str, timeout_s: float, fix_count: int) -> list[str]:
+    if scenario == FIX_PROPOSAL_SCENARIO:
+        return [
+            "Reply with ONE of these, on the first line of your reply:",
+            "",
+            "  APPROVE            apply exactly the change shown above (the one with the change hash",
+            "                     quoted below); Faultline health-checks the stack afterwards, re-runs",
+            "                     the experiment to verify, and rolls the change back if it made things worse",
+            "  REJECT             do not apply it. Anything you write on the lines after REJECT is kept",
+            "                     as the reason",
+            "",
+            "Anything else is not an answer: you will get one short mail listing these options again,",
+            "and nothing will be decided on your behalf.",
+            f"If no reply arrives within {timeout_s:.0f} s, nothing is applied: the proposal stays pending "
+            "(it can still be",
+            "decided in the control room or the CLI) until it expires. It is never approved automatically.",
+        ]
     if scenario == "pre_injection":
         lines = [
             "Reply with ONE of these, on the first line of your reply:",
@@ -407,6 +455,8 @@ class Reply:
     uid: bytes
     message_id: str
     first_line: str
+    body: str = ""        # the text/plain body, for a fix_proposal reason
+    sender: str = ""      # bare From address, recorded as the deciding actor
 
 
 class Mailer:
@@ -492,8 +542,10 @@ class Mailbox:
                 if not raw:
                     continue
                 msg = email.message_from_bytes(raw)
+                text = _text_body(msg)
                 out.append(Reply(uid=uid, message_id=(msg.get("Message-ID") or "").strip(),
-                                 first_line=first_meaningful_line(_text_body(msg))))
+                                 first_line=first_meaningful_line(text), body=text,
+                                 sender=email.utils.parseaddr(str(msg.get("From") or ""))[1]))
             return out
         finally:
             try:
@@ -599,6 +651,166 @@ class ApprovalAgent:
                      f"`faultline resume`")
         self._record_on_report(report.experiment_id, decision)
         return decision
+
+    def request_fix_proposal(self, proposal: FixProposal) -> Optional[ApprovalDecision]:
+        """Scenario C: email one "Can I fix this?" proposal and act on APPROVE / REJECT.
+
+        Returns the decision only when it was recorded on the proposal (approved or rejected). Every
+        other ending returns None and leaves the proposal exactly as it was: pending until it expires,
+        still decidable from the control room or the CLI. Never approves anything by default.
+
+        Unlike scenarios A and B this does not take the PENDING_APPROVAL.json lock: a fix proposal can
+        wait for a long time, and it must never hold back (or be held back by) an experiment gate.
+        """
+        from ..remediation import proposals as P
+
+        current = self.store.proposal(proposal.proposal_id)
+        if current is None:
+            self.log(f"[approval] fix proposal {proposal.proposal_id} is not on the blackboard; not asking")
+            return None
+        P.expire_if_due(self.store, current)
+        if current.status != "pending":
+            self.log(f"[approval] fix proposal {proposal.proposal_id} is {current.status}; not asking")
+            return None
+        if current.change_hash != proposal.change_hash or current.change_preview != proposal.change_preview:
+            self.log(f"[approval] fix proposal {proposal.proposal_id} changed since it was handed over; "
+                     f"not asking about a change that is no longer the current one")
+            return None
+        proposal = current
+        seconds_left = (proposal.expires_at - datetime.now(timezone.utc)).total_seconds()
+        req = self._open_fix(proposal, max(1.0, min(float(self.s.approval_timeout_s), seconds_left)))
+        subject, body = render_fix_proposal(proposal, req.token, req.timeout_s)
+        req.subject = subject
+
+        if self.issues:
+            req.status, req.send_error = "failed", "; ".join(self.issues)
+            for i in self.issues:
+                self.log(f"[approval] NOT CONFIGURED: {i}")
+            self.log(f"[approval] fix proposal {proposal.proposal_id} not emailed; it stays pending until it "
+                     f"expires and can still be decided in the control room or the CLI")
+            self.store.write_approval(req)
+            return None
+        try:
+            req.message_id = self.mailer.send(req.to, req.subject, body)
+            req.sent = True
+        except Exception as exc:
+            req.status, req.send_error = "failed", f"{type(exc).__name__}: {exc}"
+            self.log(f"[approval] fix proposal {proposal.proposal_id}: send FAILED ({req.send_error}); "
+                     f"nothing decided, it stays pending")
+            self.store.write_approval(req)
+            return None
+        self.store.write_approval(req)
+        self.log(f"[approval] asked {req.to} about fix proposal {proposal.proposal_id}: {req.subject} "
+                 f"(token {req.token}, {req.timeout_s:.0f}s to answer, change {proposal.change_hash[:12]}; "
+                 f"no reply leaves it pending)")
+        self._note_fix(proposal.proposal_id, f"emailed {req.to} for approval (token {req.token}, change "
+                                             f"{proposal.change_hash[:12]})")
+
+        found = self._wait_fix(req, proposal.proposal_id)
+        if found is None:
+            req.status = "timed_out"
+            self.store.write_approval(req)
+            return None
+        parsed, reply = found
+        reason = reply_reason(reply.body)
+        actor = f"email:{reply.sender or req.to}"
+        decision = ApprovalDecision(
+            answer=parsed.answer, answered=True,
+            reason=f"the admin replied {parsed.raw_first_line.strip()!r}" + (f": {reason}" if reason else ""),
+            raw_first_line=parsed.raw_first_line, clarifications_sent=self._fix_clarifications)
+        try:
+            if parsed.answer == "approve":
+                # the hash in the email is the hash being approved: a change edited after the mail
+                # went out fails check_hash and is never applied on the strength of this reply
+                P.approve(self.store, proposal.proposal_id, proposal.change_hash, actor, reason)
+            else:
+                P.reject(self.store, proposal.proposal_id, actor, reason)
+        except (P.HashMismatch, P.IllegalTransition, KeyError) as exc:
+            req.status, req.decision = "answered", decision
+            req.send_error = f"reply not applied: {exc}"
+            self.store.write_approval(req)
+            self.log(f"[approval] {req.to} replied {parsed.answer.upper()} to fix proposal "
+                     f"{proposal.proposal_id}, but it was not recorded: {exc}")
+            return None
+        req.status, req.decision = "answered", decision
+        self.store.write_approval(req)
+        verb = {"approve": "approved", "reject": "rejected"}[parsed.answer]
+        self.log(f"[approval] fix proposal {proposal.proposal_id} {verb} by {actor}"
+                 + (f": {reason}" if reason else ""))
+        return decision
+
+    def _open_fix(self, proposal: FixProposal, timeout: float) -> ApprovalRequest:
+        now = time.time()
+        report = self.store.experiment(proposal.experiment_id)
+        return ApprovalRequest(
+            approval_id=uuid.uuid4().hex[:12], scenario=FIX_PROPOSAL_SCENARIO,
+            experiment_id=proposal.experiment_id, token=f"FL-{secrets.token_hex(4)}", to=self.s.admin_email,
+            target_service=", ".join(proposal.target_services),
+            failure_type=report.failure_type if report else "", created_at=_utc(now),
+            deadline=_utc(now + timeout), timeout_s=timeout, options=list(FIX_PROPOSAL_REPLIES),
+            default_on_timeout=FIX_PROPOSAL_NO_DECISION,
+        )
+
+    def _note_fix(self, proposal_id: str, text: str) -> None:
+        """An audit note on the proposal, written only while it is still pending (re-read first, so a
+        decision made elsewhere a moment ago is never overwritten with a stale copy)."""
+        from ..remediation import proposals as P
+
+        try:
+            p = self.store.proposal(proposal_id)
+            if p is not None and p.status == "pending":
+                P.note(p, "email", text)
+                self.store.write_proposal(p)
+        except Exception:
+            pass
+
+    def _wait_fix(self, req: ApprovalRequest, proposal_id: str) -> Optional[tuple[ParsedAnswer, Reply]]:
+        """Poll for APPROVE / REJECT until the deadline, STOP, or the proposal being decided elsewhere."""
+        self._fix_clarifications = 0
+        deadline = time.monotonic() + req.timeout_s
+        handled: set[str] = set()
+        logged_error = False
+        last_check = 0.0
+        while time.monotonic() < deadline:
+            if self.store.stop_requested():
+                self.log(f"[approval] STOP latched; stopped waiting on fix proposal {proposal_id} (still pending)")
+                return None
+            if time.monotonic() - last_check >= 0.5:
+                last_check = time.monotonic()
+                p = self.store.proposal(proposal_id)
+                if p is None or p.status != "pending":
+                    self.log(f"[approval] fix proposal {proposal_id} was decided elsewhere "
+                             f"({p.status if p else 'removed'}); stopped waiting for email")
+                    return None
+            try:
+                replies = self.mailbox.find_replies(req.token, req.message_id)
+            except Exception as exc:
+                if not logged_error:
+                    self.log(f"[approval] mailbox unreachable ({type(exc).__name__}: {exc}); "
+                             f"retrying until the deadline")
+                    logged_error = True
+                replies = []
+            for reply in replies:
+                key = reply.message_id or reply.uid.decode(errors="replace")
+                if key in handled:
+                    continue
+                handled.add(key)
+                parsed = parse_reply(reply.first_line, FIX_PROPOSAL_SCENARIO)
+                self._safe_mark_seen(reply.uid)
+                if parsed:
+                    self.log(f"[approval] {reply.sender or req.to} replied {parsed.raw_first_line!r} -> "
+                             f"{parsed.answer} (fix proposal {proposal_id})")
+                    return parsed, reply
+                if self._fix_clarifications < MAX_CLARIFICATIONS:
+                    self._fix_clarifications += 1
+                    self._clarify(req, reply.first_line, 0)
+                else:
+                    self.log(f"[approval] another unparseable reply ({reply.first_line!r}); "
+                             f"{MAX_CLARIFICATIONS} clarifications already sent, staying quiet")
+            time.sleep(max(0.05, min(float(self.s.approval_poll_s), max(0.0, deadline - time.monotonic()))))
+        self.log(f"[approval] no valid reply about fix proposal {proposal_id} within {req.timeout_s:.0f} s; "
+                 f"nothing decided, it stays pending until it expires")
+        return None
 
     def resend(self, approval_id: str) -> bool:
         """Re-send a pending decision's email, keeping the same token so an earlier reply still matches."""
@@ -847,6 +1059,66 @@ def run_post_experiment(settings, store: ReportStore, experiment_id: str, llm=No
     return agent.request_problem(report, risk, fix, narrative, reason)
 
 
+def render_fix_proposal(p: FixProposal, token: str, timeout_s: float) -> tuple[str, str]:
+    """Scenario C's email: the full proposal (the five parts, the verbatim change, the change hash), then
+    the two replies. Uses propose.render_text, the same text the CLI prints, when it is available."""
+    subject = _subject(token, f"can I fix {p.finding_code} on {', '.join(p.target_services) or 'the stack'}?")
+    try:
+        from ..remediation.propose import render_text
+        text = render_text(p)
+    except Exception:
+        text = ""
+    if not text or p.change_preview.rstrip("\n") not in text or p.change_hash not in text:
+        e = p.explanation
+        text = "\n".join([
+            f"Can I fix this?  Proposal {p.proposal_id}",
+            f"Experiment {p.experiment_id}, finding {p.finding_code}, fix '{p.catalog_fix_id}' on "
+            f"{', '.join(p.target_services)}",
+            "", "1. What is wrong", f"   {e.problem}",
+            "", "2. Exactly what I will change", f"   {e.change}",
+            "", "   ----- exact change (verbatim, generated by code) -----",
+            p.change_preview.rstrip("\n"),
+            "   ----- end of change -----",
+            "", "3. Expected improvement", f"   {e.expected_improvement}",
+            "", "4. Risks", f"   {e.risks}",
+            "", "5. Rollback", f"   {e.rollback}",
+            "", f"Change hash (sha256): {p.change_hash}",
+            f"Expires: {p.expires_at.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S} UTC; unanswered proposals "
+            "expire and are never applied.",
+        ]) + "\n"
+    # the CLI's own approve/reject hints are not the email vocabulary; keep everything before them
+    text = text.split("\nApprove:  faultline approve", 1)[0].rstrip("\n")
+    body = [
+        "Faultline found a problem and wants to fix it. Nothing has been changed, and nothing will be",
+        "unless you approve.",
+        "",
+        text,
+    ]
+    if p.requires_allow_protected:
+        body += ["", "This change touches a protected service. Approving by email records your approval; "
+                     "applying it still needs an operator to allow protected services explicitly."]
+    body += ["", f"Replying APPROVE approves exactly change {p.change_hash}.",
+             "If the change is edited after this mail was sent, your APPROVE will not match it and nothing "
+             "will be applied.",
+             "", *_option_block(FIX_PROPOSAL_SCENARIO, timeout_s, 0), "",
+             f"-- Faultline approval {token}. Keep it in the subject line so your reply is matched to "
+             f"this request and not to another one."]
+    return subject, "\n".join(body)
+
+
+def request_fix_approval(settings, store: ReportStore, proposal: FixProposal, log: Log = print,
+                         agent: Optional[ApprovalAgent] = None) -> Optional[ApprovalDecision]:
+    """Email one FixProposal and wait (min of APPROVAL_TIMEOUT_SECONDS and the proposal's own expiry).
+
+    APPROVE -> proposals.approve(..., proposal.change_hash, actor="email:<sender>"); REJECT ->
+    proposals.reject(...). Returns that decision, or None when nothing was decided (not configured,
+    send failure, timeout, only unparseable replies, STOP, decided elsewhere, expired): the proposal is
+    then left pending until it expires. Never approves by default. Applying is a separate, explicit step.
+    """
+    agent = agent or ApprovalAgent(settings, store, log=log)
+    return agent.request_fix_proposal(proposal)
+
+
 def describe_pending(req: Optional[ApprovalRequest]) -> list[str]:
     """`faultline approvals` output. One block, the same shape as `faultline status`."""
     if req is None:
@@ -869,5 +1141,5 @@ def describe_pending(req: Optional[ApprovalRequest]) -> list[str]:
 
 __all__ = ["ApprovalAgent", "Mailbox", "Mailer", "ParsedAnswer", "Reply", "describe_pending", "first_meaningful_line",
            "gate", "gate_available", "halve", "needs_pre_injection_approval", "parse_reply", "preflight", "problem_occurred",
-           "render_clarification", "render_pre_injection", "render_problem", "run_post_experiment",
-           "scout_predicted_severity"]
+           "render_clarification", "render_fix_proposal", "render_pre_injection", "render_problem", "reply_reason",
+           "request_fix_approval", "run_post_experiment", "scout_predicted_severity"]

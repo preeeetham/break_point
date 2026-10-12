@@ -114,6 +114,8 @@ function setExplainAll(on) {
     if (body) toggleExplain(b, body, on);
   });
   renderHeaderRight(app.state);
+  // modules that own their own panel chrome (launcher, onboarding, fix approvals) listen for this
+  document.dispatchEvent(new CustomEvent("fl-explain", { detail: { open: on } }));
   announce(on ? "Explanations shown on every panel" : "Explanations hidden");
 }
 
@@ -910,6 +912,7 @@ function render(s) {
   if (app.mods.chart) { try { app.mods.chart.update(s.telemetry, s.run, s.baseline); } catch (e) { console.warn("chart", e); } }
   if (app.mods.launcher) { try { app.mods.launcher.update(s, app.catalog, app.plan); } catch (e) { console.warn("launcher", e); } }
   if (app.mods.onboard) { try { app.mods.onboard.update(s, app.knowledge); } catch (e) { console.warn("onboard", e); } }
+  if (app.mods.fixApprovals) { try { app.mods.fixApprovals.update(s); } catch (e) { console.warn("fix approvals", e); } }
 }
 
 function announceTransitions(s) {
@@ -983,11 +986,12 @@ async function boot() {
   panelHead("head-scorecard", "trend", "Resilience scorecard", "scorecard");
   panelHead("head-fixes", "wrench", "Recommended fixes", "fixes");
 
-  const [charts, topology, launcher, onboard] = await Promise.all([
+  const [charts, topology, launcher, onboard, fixApprovals] = await Promise.all([
     loadModule("./charts.js", "Telemetry charts"),
     loadModule("./topology.js", "Application map"),
     loadModule("./launcher.js", "Injection console"),
     loadModule("./onboard.js", "Repo onboarding"),
+    loadModule("./fixes.js", "Fix approvals"),
   ]);
 
   app.mods.charts = charts;
@@ -1015,6 +1019,18 @@ async function boot() {
     app.mods.onboard = onboard.createOnboard(onboardHost, {
       onJob: (kind, body) => act(kind, body),
     });
+  }
+
+  const fixHost = document.getElementById("fixapprovals-host");
+  if (fixApprovals && fixApprovals.createFixApprovals && fixHost) {
+    try {
+      app.mods.fixApprovals = fixApprovals.createFixApprovals(fixHost, {
+        toast, onChanged: () => { window.setTimeout(() => poll(true), 50); },
+      });
+    } catch (err) {
+      console.warn("fix approvals", err);
+      toast("Fix approvals unavailable", "The rest of the control room still works", "warn", 9000);
+    }
   }
 
   await Promise.all([refreshCatalog(), refreshKnowledge()]);

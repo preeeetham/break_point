@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import os
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -30,7 +32,9 @@ class ReportStore:
     # ---------------------------------------------------------- generic
     def _write(self, path: Path, model: BaseModel | dict) -> Path:
         data = model.model_dump(mode="json") if isinstance(model, BaseModel) else model
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        # unique per writer: two threads saving the same file (e.g. an email wait and an approval) must not
+        # share one temp file, or the second rename finds it gone
+        tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
         tmp.replace(path)
         return path

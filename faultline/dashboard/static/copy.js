@@ -49,6 +49,10 @@ export const EXPLAIN = {
     title: "What to fix, and how",
     body: "One card per recommendation, pulled from every experiment's report and sorted by the risk it addresses. Each card names the problem, says why it happened, and lists concrete steps plus a way to verify the fix worked. This is advice only: Faultline never changes the target system, so every step here is something a person still has to do.",
   },
+  fixApprovals: {
+    title: "Human-approved fixes",
+    body: "After an experiment finds a problem, Faultline can propose one fix from a fixed, code-defined catalog and asks before touching anything. Each card says what is wrong (with the evidence), shows the exact change verbatim, what should improve, the risks, and how it is rolled back. Approving quotes the change's hash, so a change edited after you read it is refused rather than applied. Once applied, the same experiment is re-run and the before/after numbers decide whether the fix stays. Unanswered proposals expire and are never approved automatically.",
+  },
   cascade: {
     title: "How the failure travelled",
     body: "When one service breaks, the services that depend on it fail too. This reconstructs the order from timestamps and the dependency map, not from a model: who failed first, who failed next, through which dependency, and how (a timeout, a refused connection, a server error). Where the timing cannot prove the direction it says so, and 'masked' marks a service whose own health check stayed green while real requests through it were failing.",

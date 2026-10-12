@@ -43,7 +43,36 @@ from .conftest import PROJECT, ROOT
 
 STATE_KEYS = {"now", "seq", "events", "session", "job", "run", "telemetry", "stop_requested",
               "pending_approval", "guardian", "agents", "llm", "topology", "baseline", "experiments",
-              "scorecard", "weaknesses", "reconciliation", "target"}
+              "scorecard", "weaknesses", "reconciliation", "target", "proposals"}
+PROPOSAL_SUMMARY_KEYS = {"id", "experiment_id", "finding_code", "catalog_fix_id", "target_services", "status",
+                         "created_at", "expires_at", "seconds_left", "requires_allow_protected", "explanation",
+                         "change_preview", "change_hash", "verification", "decided_by", "decided_at", "reason"}
+PREVIEW = ("--- deploy/docker-compose.override.yml\n+++ deploy/docker-compose.override.yml\n@@ services @@\n"
+           " services:\n   things:\n-    healthcheck: {test: [CMD, curl, -f, /alive]}\n"
+           "+    healthcheck: {test: [CMD, curl, -f, /ready]}\n")
+
+
+def make_proposal(proposal_id: str = "fx-0123456789", experiment_id: str = "exp-fix", preview: str = PREVIEW,
+                  expires_in: float = 600.0, created_ago: float = 0.0, **kw):
+    """A real FixProposal, hashed with proposals.change_hash, as the remediation engine would write it."""
+    from faultline.remediation import proposals as P
+    from faultline.schemas import FixProposal, ProposalExplanation
+
+    fields = dict(
+        proposal_id=proposal_id, experiment_id=experiment_id, finding_code="health_check_masked_failure",
+        catalog_fix_id="deep_readiness_check", target_services=["things"], change_preview=preview,
+        change_hash=P.change_hash(preview),
+        explanation=ProposalExplanation(
+            problem="things answered /ready 200 while 92% of real requests through it failed (evidence: probe).",
+            change="Point the things health check at /ready instead of /alive.",
+            expected_improvement="Docker marks things unhealthy while its dependency is down.",
+            risks="A slow dependency now marks things unhealthy too.",
+            rollback="The previous override is restored byte-for-byte and things is recreated."),
+        created_at=utcnow() - timedelta(seconds=created_ago),
+        expires_at=utcnow() + timedelta(seconds=expires_in),
+    )
+    fields.update(kw)
+    return FixProposal(**fields)
 
 
 def wait_for(pred, timeout: float = 5.0) -> bool:
@@ -1091,3 +1120,209 @@ def test_sampler_only_samples_once_armed(settings, tmp_store, sessions, monkeypa
         assert wait_for(lambda: len(c.state(0)["telemetry"]["points"]) >= 3, 2.0)
     finally:
         c.shutdown()
+
+
+# ---------------------------------------------------------------- fix proposals ("Can I fix this?")
+@pytest.fixture
+def fake_apply(monkeypatch):
+    """Stands in for remediation.apply.apply_and_verify: approved -> applying -> applied -> verified."""
+    import faultline.remediation.apply as apply_mod
+    from faultline.remediation import proposals as P
+    from faultline.schemas import FixVerification, MetricComparison
+
+    calls: list[dict] = []
+    # the room's Deps builder arms the session and may warm the probes up; that is its own test below
+    monkeypatch.setattr(control_mod.ControlPlane, "_fix_deps",
+                        lambda self, allow_protected, use_llm: ("deps", allow_protected, use_llm))
+
+    def _apply(settings, store, proposal_id, allow_protected=False, log=print, deps=None, **kw):
+        assert deps is not None and deps[0] == "deps"     # never live_deps: no second Session
+        calls.append({"id": proposal_id, "allow_protected": allow_protected})
+        p = store.proposal(proposal_id)
+        if p.status != "approved":
+            P.note(p, "faultline", f"apply refused: proposal is {p.status}, not approved")
+            store.write_proposal(p)
+            return p
+        for to in ("applying", "applied", "verified"):
+            P.transition(p, to, "faultline")
+        p.verification = FixVerification(rerun_experiment_id="exp-rerun", targeted_metric="time_to_recover_s",
+                                         outcome="verified", reason="recovered faster",
+                                         comparisons=[MetricComparison(metric="time_to_recover_s", before=40.0,
+                                                                       after=12.0, better_is="lower",
+                                                                       verdict="better")])
+        store.write_proposal(p)
+        log("applied and verified")
+        return p
+
+    monkeypatch.setattr(apply_mod, "apply_and_verify", _apply)
+    return calls
+
+
+def test_state_carries_proposals_summary_and_degrades(control, tmp_store):
+    assert control.state(0)["proposals"] == {"open": 0, "pending": 0, "total": 0, "latest": []}
+    tmp_store.write_proposal(make_proposal("fx-old", created_ago=60, status="rejected", decided_by="dashboard"))
+    tmp_store.write_proposal(make_proposal("fx-new"))
+    tmp_store.write_proposal(make_proposal("fx-overdue", expires_in=-5, created_ago=30))
+    st = control.state(0)["proposals"]
+    assert st["open"] == 1 and st["pending"] == 1 and st["total"] == 3   # overdue is not "open"
+    assert [p["id"] for p in st["latest"]] == ["fx-new", "fx-overdue", "fx-old"]
+    assert set(st["latest"][0]) == PROPOSAL_SUMMARY_KEYS
+    assert st["latest"][0]["change_preview"] == PREVIEW and st["latest"][0]["seconds_left"] > 500
+    assert st["latest"][1]["seconds_left"] < 0
+    # the poll path never writes: the overdue record is still pending on disk
+    assert tmp_store.proposal("fx-overdue").status == "pending"
+    (tmp_store.root / "proposals" / "fx-bad.json").write_text('{"proposal_id": "fx-bad"}')
+    assert control.state(0)["proposals"]["latest"] == []          # unreadable record: degrades, never 500s
+
+
+def test_fix_job_is_not_a_generic_job_and_needs_an_approved_proposal(control, tmp_store, fake_apply):
+    from faultline.remediation import proposals as P
+
+    assert "fix" in control_mod.JOB_KINDS and "fix" not in control_mod.GENERIC_JOB_KINDS
+    tmp_store.write_proposal(make_proposal())
+    with pytest.raises(P.IllegalTransition, match="only an approved proposal"):
+        control.submit_fix("fx-0123456789")
+    with pytest.raises(KeyError):
+        control.submit_fix("fx-nope")
+    assert control.job is None and fake_apply == []
+    P.approve(tmp_store, "fx-0123456789", P.change_hash(PREVIEW), "test")
+    control.submit_fix("fx-0123456789", allow_protected=True)
+    job = wait_job(control)
+    assert job["kind"] == "fix" and job["status"] == "done" and "fx-0123456789" in job["label"]
+    assert job["result"]["status"] == "verified" and job["result"]["verification"]["outcome"] == "verified"
+    assert fake_apply == [{"id": "fx-0123456789", "allow_protected": True}]
+    assert tmp_store.proposal("fx-0123456789").status == "verified"
+    assert control.state(0)["agents"]["fix"]["state"] == "done"
+
+
+def test_fix_job_surfaces_an_apply_refusal_as_a_failed_job(control, tmp_store, monkeypatch):
+    import faultline.remediation.apply as apply_mod
+    from faultline.remediation import proposals as P
+
+    def refuse(settings, store, proposal_id, allow_protected=False, log=print, **kw):
+        p = store.proposal(proposal_id)
+        P.note(p, "faultline", "apply refused: this fix touches protected service(s) mongodb")
+        store.write_proposal(p)
+        return p
+
+    monkeypatch.setattr(apply_mod, "apply_and_verify", refuse)
+    monkeypatch.setattr(control, "_fix_deps", lambda allow_protected, use_llm: None)
+    tmp_store.write_proposal(make_proposal(requires_allow_protected=True))
+    P.approve(tmp_store, "fx-0123456789", P.change_hash(PREVIEW), "test")
+    control.submit_fix("fx-0123456789")
+    job = wait_job(control)
+    assert job["status"] == "failed" and "protected service(s) mongodb" in job["error"]
+    assert tmp_store.proposal("fx-0123456789").status == "approved"   # a refusal never changes status
+
+
+def test_fix_job_refuses_while_stop_is_latched(control, tmp_store, fake_apply):
+    from faultline.remediation import proposals as P
+
+    tmp_store.write_proposal(make_proposal())
+    P.approve(tmp_store, "fx-0123456789", P.change_hash(PREVIEW), "test")
+    tmp_store.request_stop("test")
+    control.submit_fix("fx-0123456789")
+    job = wait_job(control)
+    assert job["status"] == "failed" and "STOP" in job["error"] and fake_apply == []
+
+
+def test_approve_starts_the_apply_or_says_the_slot_is_busy(control, tmp_store, fake_apply, monkeypatch):
+    from faultline.remediation import proposals as P
+
+    tmp_store.write_proposal(make_proposal("fx-a"))
+    tmp_store.write_proposal(make_proposal("fx-b"))
+    release = block_handler(control, "_job_topology", monkeypatch)
+    control.submit("topology", {})
+    try:
+        out = control.approve_proposal("fx-a", P.change_hash(PREVIEW), "looks right")
+        assert out["proposal"]["status"] == "approved" and out["proposal"]["decided_by"] == "dashboard"
+        assert out["apply"]["started"] is False and "already running" in out["apply"]["reason"]
+        assert "/api/proposals/fx-a/apply" in out["apply"]["reason"]
+    finally:
+        release.set()
+    wait_job(control)
+    assert tmp_store.proposal("fx-a").status == "approved" and fake_apply == []
+    out = control.approve_proposal("fx-b", P.change_hash(PREVIEW))
+    assert out["apply"]["started"] is True and out["apply"]["job"]["kind"] == "fix"
+    assert wait_job(control)["status"] == "done" and tmp_store.proposal("fx-b").status == "verified"
+    with pytest.raises(P.IllegalTransition):
+        control.reject_proposal("fx-b")
+    assert any("approved by dashboard" in e["text"] for e in control.state(0)["events"])
+
+
+def test_analyze_builds_proposals_for_findings_above_info_and_never_fails(control, tmp_store, make_report,
+                                                                          topology, monkeypatch):
+    import faultline.remediation.propose as propose_mod
+    from faultline.schemas import Finding
+
+    tmp_store.write_topology(topology)
+    tmp_store.write_experiment(make_report(experiment_id="exp-high", service="things",
+                                           finding_codes=["health_check_masked_failure"]))
+    info_only = make_report(experiment_id="exp-info", service="things")
+    info_only.findings = [Finding(code="auto_recovered", severity="info", title="ok", evidence="-")]
+    tmp_store.write_experiment(info_only)
+    tmp_store.write_experiment(make_report(experiment_id="exp-done", service="things",
+                                           finding_codes=["slow_recovery"]))
+    tmp_store.write_proposal(make_proposal("fx-existing", experiment_id="exp-done"))
+    calls: list[tuple] = []
+
+    def build(settings, store, experiment_id, llm=None, **kw):
+        calls.append((experiment_id, llm))
+        p = make_proposal(f"fx-{experiment_id}", experiment_id=experiment_id)
+        store.write_proposal(p)
+        return [p]
+
+    monkeypatch.setattr(propose_mod, "build_proposals", build)
+    control.submit("analyze", {"llm": False})
+    job = wait_job(control)
+    assert job["status"] == "done" and job["result"]["proposals"] == 1
+    assert calls == [("exp-high", None)]         # info-only and already-proposed experiments skipped
+    assert tmp_store.proposal("fx-exp-high").status == "pending"   # proposed, never approved
+
+    def boom(*a, **kw):
+        raise RuntimeError("catalog exploded")
+
+    monkeypatch.setattr(propose_mod, "build_proposals", boom)
+    tmp_store.write_experiment(make_report(experiment_id="exp-new", service="things",
+                                           finding_codes=["slow_recovery"]))
+    control.submit("analyze", {"llm": False})
+    assert wait_job(control)["status"] == "done"
+    assert any("Fix proposals skipped for exp-new" in e["text"] and e["level"] == "warn"
+               for e in control.state(0)["events"])
+
+
+def test_analyze_passes_the_llm_only_when_asked(control, tmp_store, make_report, topology, monkeypatch):
+    import faultline.remediation.propose as propose_mod
+
+    tmp_store.write_topology(topology)
+    tmp_store.write_experiment(make_report(experiment_id="exp-llm", service="things",
+                                           finding_codes=["health_check_masked_failure"]))
+    seen: list = []
+    monkeypatch.setattr(propose_mod, "build_proposals",
+                        lambda settings, store, eid, llm=None, **kw: seen.append(llm) or [])
+    control._analyze(True, only=["exp-llm"])
+    assert len(seen) == 1 and seen[0] is not None
+    control._analyze(False, only=["exp-llm"])
+    assert seen[1] is None
+
+
+def test_fix_deps_reuse_the_rooms_armed_session(control, sessions, monkeypatch, tmp_store, make_report, topology):
+    import faultline.remediation.apply as apply_mod
+
+    waits: list = []
+    monkeypatch.setattr(control._cancel, "wait", lambda t=None: waits.append(t) or False)
+    deps = control._fix_deps(allow_protected=True, use_llm=False)
+    assert isinstance(deps, apply_mod.Deps)
+    assert len(sessions) == 1 and control.session is sessions[0]          # armed once, like _job_run
+    s = sessions[0]
+    assert deps.docker is s.docker and deps.window is s.window and deps.topology is s.topology
+    assert deps.policy is s.policy and callable(deps.inject) and hasattr(deps.planner, "plan_operator")
+    assert deps.planner.allow_protected is True
+    assert waits and waits[0] >= 15                                         # empty window: probes warmed up
+    deps.close()
+    assert s.closed is False                                                # the session is the room's
+    assert control._fix_deps(False, False) and len(sessions) == 1           # still one session
+    tmp_store.write_topology(topology)
+    tmp_store.write_experiment(make_report(experiment_id="exp-rerun", service="things"))
+    deps.analyze()                                                          # risk + scorecard, no LLM
+    assert tmp_store.risk("exp-rerun") is not None and tmp_store.scorecard() is not None

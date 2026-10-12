@@ -25,7 +25,13 @@ from ..reporting.store import ReportStore
 # pipeline order; the UI strip and docs/UI_CONTRACT.md §4 follow this sequence
 AGENTS = ("onboarding", "topology", "scout", "baseline", "planner", "injector", "guardian", "risk", "fix",
           "scorecard", "reconcile")
-JOB_KINDS = ("topology", "scout", "baseline", "run", "analyze", "heal", "plan", "onboard", "reconcile")
+JOB_KINDS = ("topology", "scout", "baseline", "run", "analyze", "heal", "plan", "onboard", "reconcile", "fix")
+# Kinds a bare POST /api/jobs/<kind> may start. `plan` is GET-only; `fix` applies a change to the stack
+# and is only ever started through POST /api/proposals/<id>/approve|apply, against a proposal a human
+# approved (ControlPlane.submit_fix). apply.preflight re-checks the status regardless.
+GENERIC_JOB_KINDS = tuple(k for k in JOB_KINDS if k not in ("plan", "fix"))
+# how many decided (final) proposals state() carries next to every open one
+PROPOSALS_DECIDED_IN_STATE = 6
 ONBOARD_CACHE_DIR = ".cache/onboarding"   # same default as `faultline onboard --cache-dir`
 KNOWLEDGE_SUFFIX = "_knowledge.yaml"
 # keys the safety monitor's verdict detail spreads flat into live.json (injector._live)
@@ -268,6 +274,8 @@ class ControlPlane:
         if kind == "onboard":
             repo = str(body.get("repo") or "").strip()
             return f"Onboard {repo[:60]}" if repo else "Onboard a repository"
+        if kind == "fix":
+            return f"Apply approved fix {str(body.get('proposal_id') or '')[:24]}".rstrip()
         return {"topology": "Rebuild application map", "baseline": "Capture steady-state baseline",
                 "analyze": "Run analysis agents", "heal": "Heal sandbox",
                 "scout": "Scout for predicted weaknesses",
@@ -288,7 +296,8 @@ class ControlPlane:
             handler = {"topology": self._job_topology, "scout": self._job_scout,
                        "baseline": self._job_baseline, "run": self._job_run,
                        "analyze": self._job_analyze, "heal": self._job_heal,
-                       "onboard": self._job_onboard, "reconcile": self._job_reconcile}[job.kind]
+                       "onboard": self._job_onboard, "reconcile": self._job_reconcile,
+                       "fix": self._job_fix}[job.kind]
             job.result = handler(body) or {}
             job.status = "cancelled" if self._cancel.is_set() and job.kind != "run" else "done"
             self.log("system", f"Job finished: {job.label}", "success")
@@ -676,7 +685,9 @@ class ControlPlane:
                 self._reconcile()
             except Exception as exc:
                 self.log("reconcile", f"Reconcile skipped: {type(exc).__name__}: {exc}", "warn")
-        return {"risks": len(risks), "fixes": len(fixes)}
+        # "Can I fix this?" requests for what was just analysed; guarded the same way
+        proposed = self._propose(llm if use_llm else None, only)
+        return {"risks": len(risks), "fixes": len(fixes), "proposals": proposed}
 
     def _job_analyze(self, body: dict) -> dict:
         return self._analyze(bool(body.get("llm", True)))
@@ -708,6 +719,238 @@ class ControlPlane:
             raise RuntimeError(msg)
         return {"predicted": rec.predicted_total, "confirmed": rec.confirmed, "cleared": rec.cleared,
                 "untested": rec.untested, "experiments_considered": rec.experiments_considered}
+
+    # ------------------------------------------------------------------ fix proposals
+    def _propose(self, llm, only: list[str] | None = None) -> int:
+        """Build FixProposals for analysed experiments whose findings go above `info`.
+
+        Never fails the analysis that called it: a missing remediation module, a catalog with nothing
+        that matches, or a proposal builder error is one warn line in the feed. An experiment that
+        already has proposals is skipped, so re-running analysis never duplicates a pending request.
+        Nothing here approves or applies anything; proposals start `pending` and wait for a human.
+        """
+        try:
+            from ..remediation import propose
+        except ImportError:
+            return 0
+        made = 0
+        try:
+            already = {p.experiment_id for p in self.store.proposals()}
+            ids = list(only) if only else self.store.experiment_ids()
+        except Exception as exc:
+            self.log("fix", f"Fix proposals skipped: {type(exc).__name__}: {exc}", "warn")
+            return 0
+        for eid in ids:
+            if eid in already:
+                continue
+            try:
+                report = self.store.experiment(eid)
+                if report is None or not any(f.severity != "info" for f in report.findings):
+                    continue
+                out = list(propose.build_proposals(self.s, self.store, eid, llm=llm,
+                                                   log=self._logger("fix")) or [])
+            except Exception as exc:
+                self.log("fix", f"Fix proposals skipped for {eid[:8]}: {type(exc).__name__}: {exc}", "warn")
+                continue
+            made += len(out)
+            if out:
+                self.log("fix", f"Can I fix this? {len(out)} proposal(s) for experiment {eid[:8]} are waiting "
+                                f"for a human ({', '.join(p.catalog_fix_id for p in out)}). Nothing is applied "
+                                f"until someone approves the exact change shown.", "info")
+        return made
+
+    @staticmethod
+    def _proposal_summary(p) -> dict:
+        left = (p.expires_at - datetime.now(timezone.utc)).total_seconds()
+        return {
+            "id": p.proposal_id, "experiment_id": p.experiment_id, "finding_code": p.finding_code,
+            "catalog_fix_id": p.catalog_fix_id, "target_services": list(p.target_services),
+            "status": p.status, "created_at": p.created_at.isoformat(), "expires_at": p.expires_at.isoformat(),
+            "seconds_left": round(left, 1),
+            "requires_allow_protected": p.requires_allow_protected,
+            "explanation": p.explanation.model_dump(mode="json"),
+            "change_preview": p.change_preview, "change_hash": p.change_hash,
+            "verification": p.verification.model_dump(mode="json") if p.verification else None,
+            "decided_by": p.decided_by, "decided_at": p.decided_at.isoformat() if p.decided_at else None,
+            "reason": p.reason,
+        }
+
+    def _fix_running(self) -> bool:
+        job = self._job
+        return bool(job and job.kind == "fix" and job.status == "running")
+
+    def _sweep_proposals(self) -> list:
+        """Expire overdue proposals, newest first. Not while a fix job runs: the apply engine is then
+        the only writer of the proposal it holds, and a sweep holding a stale copy could overwrite it."""
+        from ..remediation import proposals as P
+
+        return self.store.proposals() if self._fix_running() else P.sweep_expired(self.store)
+
+    def proposals(self) -> dict:
+        """GET /api/proposals: every proposal, newest first, after expiring the overdue ones."""
+        return {"proposals": [self._proposal_summary(p) for p in self._sweep_proposals()]}
+
+    def proposal_detail(self, proposal_id: str) -> Optional[dict]:
+        from ..remediation import proposals as P
+
+        p = self.store.proposal(proposal_id)
+        if p is None:
+            return None
+        if not self._fix_running():
+            P.expire_if_due(self.store, p)
+        out = p.model_dump(mode="json")
+        out["seconds_left"] = round((p.expires_at - datetime.now(timezone.utc)).total_seconds(), 1)
+        return out
+
+    def approve_proposal(self, proposal_id: str, change_hash: str, reason: str = "",
+                         allow_protected: bool = False, actor: str = "dashboard", use_llm: bool = False) -> dict:
+        """Record a human approval of exactly the change they were shown, then try to start the apply.
+
+        Raises KeyError (unknown), proposals.HashMismatch (the hash quoted is not the current change)
+        or proposals.IllegalTransition (expired, already decided). The approval stands even when the
+        job slot is busy: the response says so and POST /api/proposals/<id>/apply retries it.
+        """
+        from ..remediation import proposals as P
+
+        p = P.approve(self.store, proposal_id, change_hash, actor, reason)
+        self.log("approval", f"Fix proposal {p.proposal_id} ({p.catalog_fix_id} on "
+                             f"{', '.join(p.target_services) or 'the stack'}) approved by {actor} for change "
+                             f"{p.change_hash[:12]}" + (f": {reason}" if reason else ""), "success")
+        return {"ok": True, "proposal": self._proposal_summary(p),
+                "apply": self._start_fix(p.proposal_id, allow_protected, use_llm)}
+
+    def reject_proposal(self, proposal_id: str, reason: str = "", actor: str = "dashboard") -> dict:
+        from ..remediation import proposals as P
+
+        p = P.reject(self.store, proposal_id, actor, reason)
+        self.log("approval", f"Fix proposal {p.proposal_id} rejected by {actor}"
+                             + (f": {reason}" if reason else "") + ". Nothing will be applied.", "warn")
+        return {"ok": True, "proposal": self._proposal_summary(p)}
+
+    def _start_fix(self, proposal_id: str, allow_protected: bool, use_llm: bool = False) -> dict:
+        import importlib.util
+
+        if importlib.util.find_spec("faultline.remediation.apply") is None:
+            return {"started": False, "job": None,
+                    "reason": "the apply engine (faultline.remediation.apply) is not installed; "
+                              "the approval is recorded and nothing was applied"}
+        try:
+            job = self.submit_fix(proposal_id, allow_protected, use_llm)
+        except JobBusy as exc:
+            return {"started": False, "job": self._job.as_dict() if self._job else None,
+                    "reason": f"{exc}; the approval stands, start the apply with "
+                              f"POST /api/proposals/{proposal_id}/apply once the slot is free"}
+        return {"started": True, "job": job.as_dict(), "reason": ""}
+
+    def submit_fix(self, proposal_id: str, allow_protected: bool = False, use_llm: bool = False) -> Job:
+        """Start the `fix` job for an APPROVED proposal. The only way that job kind is ever submitted."""
+        from ..remediation import proposals as P
+
+        p = self.store.proposal(proposal_id)
+        if p is None:
+            raise KeyError(f"no proposal {proposal_id}")
+        if not self._fix_running():
+            P.expire_if_due(self.store, p)
+        if p.status != "approved":
+            raise P.IllegalTransition(f"proposal {proposal_id} is {p.status}; only an approved proposal "
+                                      f"can be applied")
+        return self.submit("fix", {"proposal_id": proposal_id, "allow_protected": bool(allow_protected),
+                                   "llm": bool(use_llm)})
+
+    def _job_fix(self, body: dict) -> dict:
+        """Apply one approved catalog fix and verify it by re-running the experiment (apply.py).
+
+        Every refusal (not approved, expired, hash drift, protected service without allow_protected,
+        STOP latched) surfaces as the job's error and in the proposal's own audit trail.
+        """
+        from ..remediation import apply
+
+        pid = str(body.get("proposal_id") or "").strip()
+        if not pid:
+            raise ValueError("a fix job needs the id of an approved proposal")
+        if self.store.stop_requested():
+            raise RuntimeError("STOP is latched; resume before applying a fix")
+        allow_protected = bool(body.get("allow_protected", False))
+        self._agent("fix", "working", f"applying approved fix {pid}")
+        self.log("fix", f"Applying approved fix proposal {pid}; the stack is health-checked afterwards "
+                        f"and rolled back if it does not come back.", "warn")
+        try:
+            deps = self._fix_deps(allow_protected, bool(body.get("llm", False)))
+            p = apply.apply_and_verify(self.s, self.store, pid, allow_protected=allow_protected,
+                                       log=self._logger("fix"), deps=deps)
+        except Exception as exc:
+            self._agent("fix", "error", f"{pid}: {type(exc).__name__}: {exc}")
+            raise
+        if p.status == "approved":
+            # apply.py returns a refusal instead of raising: status unchanged, reason in the audit trail
+            note = next((a.note for a in reversed(p.audit) if a.note.startswith("apply refused")),
+                        "apply refused; see the proposal's audit trail")
+            self._agent("fix", "error", f"{pid}: refused")
+            raise RuntimeError(note)
+        v = p.verification
+        level = {"verified": "success", "applied": "success"}.get(p.status, "warn")
+        self._agent("fix", "done" if level == "success" else "error", f"{pid}: {p.status}")
+        self.log("fix", f"Fix proposal {pid} ended {p.status}"
+                        + (f": {v.reason}" if v and v.reason else ""), level)
+        return {"proposal_id": pid, "status": p.status,
+                "verification": v.model_dump(mode="json") if v else None}
+
+    def _fix_deps(self, allow_protected: bool, use_llm: bool):
+        """apply.Deps built from the room's own armed session, mirroring apply.live_deps.
+
+        live_deps would open a second cli.Session (a second docker client and a second pair of probes
+        next to the dashboard's); this reuses the session the room already armed, the same way _job_run
+        does. `close` stays the Deps no-op: the session belongs to the room, not to this job.
+        """
+        from ..agents import risk, scorecard
+        from ..agents.injector import Injector
+        from ..cli import llm_client
+        from ..remediation import apply
+
+        session = self._require_session()
+        # live_deps warms the probes up before preflight reads the window; only wait when the room's
+        # probes have not been running long enough, and let cancel/STOP cut the wait short
+        need = max(float(getattr(session.policy, "pre_window_s", 20.0)), 15.0)
+        try:
+            have = session.window.stats_since(time.time() - need).sample_count
+        except Exception:
+            have = 0
+        if have < 5:
+            self.log("fix", f"Warming up the probes for {need:.0f}s so the stack's steady state is measured "
+                            f"before anything changes ...")
+            self._cancel.wait(need)
+        planner = self._planner(False, allow_protected)   # operator planner: same clamping and policy
+        injector = Injector(self.s, self.store, session.topology, session.docker, session.window, session.api,
+                            session.health, session.thresholds, session.policy, log=self._logger("injector"))
+
+        def analyze() -> None:
+            topo = session.topology
+            self._agent("risk", "working", "scoring the verification re-run")
+            risk.run(self.store, llm_client(self.s, use_llm), topo, log=self._logger("risk"))
+            self._agent("risk", "done", "verification re-run scored")
+            self._agent("scorecard", "working", "ranking services")
+            sc = scorecard.run(self.store, topo, self.s.compose_project, log=self._logger("scorecard"))
+            self._agent("scorecard", "done", f"overall {sc.overall_score}"
+                        if sc and sc.overall_score is not None else "no data")
+
+        return apply.Deps(docker=session.docker, window=session.window, planner=planner, inject=injector.run,
+                          analyze=analyze, topology=session.topology, policy=session.policy)
+
+    def _proposals_state(self) -> dict:
+        """Read-only for state(): no sweep and no write on the poll path. `seconds_left` <= 0 on a still
+        pending record means it is overdue and will be expired by the next list call or decision."""
+        from ..remediation.proposals import OPEN
+
+        everything = self.store.proposals()
+        in_flight = OPEN | {"applying", "applied"}
+        live = [p for p in everything if p.status in in_flight]
+        done = [p for p in everything if p.status not in in_flight][:PROPOSALS_DECIDED_IN_STATE]
+        now = datetime.now(timezone.utc)
+        pending = [p for p in everything if p.status == "pending" and p.expires_at > now]
+        return {"open": len([p for p in live if p.status in OPEN and p.expires_at > now]), "pending": len(pending),
+                "total": len(everything),
+                "latest": [self._proposal_summary(p) for p in sorted(live + done, key=lambda p: p.created_at,
+                                                                     reverse=True)]}
 
     # ------------------------------------------------------------------ narrator
     def _narration(self, report, use_llm: bool = False) -> tuple:
@@ -1052,6 +1295,7 @@ class ControlPlane:
             "scorecard": safe(self._scorecard_state),
             "weaknesses": safe(self._weaknesses_state),
             "reconciliation": safe(self._reconciliation_state),
+            "proposals": safe(self._proposals_state, {"open": 0, "pending": 0, "total": 0, "latest": []}),
             "onboarding": self._onboarding,
             "target": self._target_state(),
         }

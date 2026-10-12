@@ -424,7 +424,32 @@ def cmd_propose(s, store, a):
         say("\n" + "=" * 100)
         say(render_text(p).rstrip())
     say(f"\n{len(made)} proposal(s) written to {store.root / 'proposals'}; nothing is applied until a human approves one")
+    if getattr(a, "email", False):
+        return _email_proposals(s, store, made, apply_after=not a.no_apply, allow_protected=a.allow_protected)
     return 0
+
+
+def _email_proposals(s, store, made, apply_after: bool, allow_protected: bool) -> int:
+    """Send each proposal to ADMIN_EMAIL (APPROVE / REJECT, first line only) and wait for the answer.
+    Silence or an unreadable reply leaves it pending; nothing is ever approved by default."""
+    from .agents import approval
+
+    issues = approval.preflight(s)
+    if issues:
+        say(f"email approval is not configured ({issues[0]}); proposals stay pending for the CLI or the control room")
+        return 1
+    rc = 0
+    for p in made:
+        say(f"emailing {p.proposal_id} to the admin and waiting for APPROVE or REJECT ...")
+        approval.request_fix_approval(s, store, p, log=say)
+        got = store.proposal(p.proposal_id)
+        say(f"{p.proposal_id}: {got.status if got else 'missing'}")
+        if got and got.status == "approved" and apply_after:
+            from .remediation.apply import apply_and_verify
+            done = apply_and_verify(s, store, p.proposal_id, allow_protected=allow_protected, log=say)
+            say(f"{p.proposal_id}: {done.status}")
+            rc = rc or (0 if done.status in ("verified", "applied") else 1)
+    return rc
 
 
 def cmd_proposals(s, store, a):
@@ -863,6 +888,9 @@ def main(argv=None) -> int:
     pr.add_argument("experiment_id")
     pr.add_argument("--no-llm", action="store_true", help="templates only, no ranking or rewording by the LLM")
     pr.add_argument("--include-test", action="store_true", help="also consider test-only catalog fixes")
+    pr.add_argument("--email", action="store_true", help="also ask ADMIN_EMAIL (reply APPROVE or REJECT) and wait")
+    pr.add_argument("--no-apply", action="store_true", help="with --email: record the decision but do not apply")
+    pr.add_argument("--allow-protected", action="store_true", help="with --email: allow an approved fix to touch a protected service")
     pr.set_defaults(fn=cmd_propose)
     ps = sub.add_parser("proposals", help="list open fix proposals (expired ones are swept first) or show one")
     ps.add_argument("--all", action="store_true", help="include decided and final proposals")

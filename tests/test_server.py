@@ -18,7 +18,8 @@ from faultline.dashboard.server import make_handler
 from faultline.schemas import ApprovalDecision
 
 from .test_control import STATE_KEYS, block_handler, make_approval_request, make_session_cls, wait_job  # noqa: F401
-from .test_control import sessions, settings  # noqa: F401  (fixtures)
+from .test_control import PREVIEW, PROPOSAL_SUMMARY_KEYS, make_proposal
+from .test_control import fake_apply, sessions, settings  # noqa: F401  (fixtures)
 
 
 @pytest.fixture
@@ -304,3 +305,133 @@ def test_static_guard_rejects_sibling_prefix_dirs(base, tmp_path, monkeypatch):
     body = r.read()
     conn.close()
     assert r.status == 404 and b"top secret" not in body
+
+
+# ---------------------------------------------------------------- fix proposals
+def _hash(preview: str = PREVIEW) -> str:
+    from faultline.remediation.proposals import change_hash
+
+    return change_hash(preview)
+
+
+def test_proposals_list_is_newest_first_and_sweeps_expired(base, tmp_store):
+    assert call(base, "GET", "/api/proposals")[1] == {"proposals": []}
+    tmp_store.write_proposal(make_proposal("fx-old", created_ago=120))
+    tmp_store.write_proposal(make_proposal("fx-new"))
+    tmp_store.write_proposal(make_proposal("fx-late", created_ago=60, expires_in=-1))
+    status, out, hdrs = call(base, "GET", "/api/proposals")
+    assert status == 200 and hdrs["Cache-Control"] == "no-store"
+    assert [p["id"] for p in out["proposals"]] == ["fx-new", "fx-late", "fx-old"]
+    assert set(out["proposals"][0]) == PROPOSAL_SUMMARY_KEYS
+    assert out["proposals"][0]["change_preview"] == PREVIEW and out["proposals"][0]["change_hash"] == _hash()
+    assert out["proposals"][1]["status"] == "expired"                 # swept, never approved
+    assert tmp_store.proposal("fx-late").status == "expired"
+    assert call(base, "GET", "/api/state")[1]["proposals"]["pending"] == 2
+
+
+def test_proposal_detail_and_404(base, tmp_store):
+    tmp_store.write_proposal(make_proposal())
+    status, out, _ = call(base, "GET", "/api/proposals/fx-0123456789")
+    assert status == 200 and out["proposal_id"] == "fx-0123456789" and out["change_preview"] == PREVIEW
+    assert out["explanation"]["rollback"] and out["audit"] == [] and out["seconds_left"] > 0
+    assert call(base, "GET", "/api/proposals/fx-nope")[0] == 404
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/proposals/../experiments/x"),
+    ("GET", "/api/proposals/..%2F..%2Fsecret"),
+    ("GET", "/api/proposals/a/b"),
+    ("GET", "/api/proposals/"),
+    ("GET", "/api/proposals/.hidden"),
+    ("POST", "/api/proposals/../x/approve"),
+    ("POST", "/api/proposals/fx-0123456789/explode"),
+    ("POST", "/api/proposals/fx-0123456789"),
+    ("POST", "/api/proposals/fx-0123456789/approve/again"),
+    ("POST", "/api/jobs/fix"),                    # never reachable as a bare job
+])
+def test_proposal_routes_guard_paths(base, control, tmp_store, tmp_path, method, path):
+    tmp_store.write_proposal(make_proposal())
+    (tmp_path / "secret.json").write_text('{"proposal_id": "leak"}')
+    conn = http.client.HTTPConnection(base.split("//")[1], timeout=5)
+    body = json.dumps({"change_hash": _hash()}) if method == "POST" else None
+    conn.request(method, path, body=body, headers={"Content-Type": "application/json"})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    assert r.status == 404 and b"leak" not in raw
+    assert control.job is None and tmp_store.proposal("fx-0123456789").status == "pending"
+
+
+def test_approve_with_a_stale_hash_is_409_and_changes_nothing(base, tmp_store, fake_apply):
+    tmp_store.write_proposal(make_proposal())
+    stale = _hash(PREVIEW + "+    extra: line\n")
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve", {"change_hash": stale})
+    assert status == 409 and "the change you approved is not the current change" in out["error"]
+    assert out["status"] == "pending" and "current_change_hash" not in out
+    assert tmp_store.proposal("fx-0123456789").status == "pending" and fake_apply == []
+
+
+@pytest.mark.parametrize("body", [{}, {"change_hash": ""}, {"change_hash": "   "}, {"change_hash": 123},
+                                  {"change_hash": None}])
+def test_approve_without_a_hash_is_400(base, tmp_store, body):
+    tmp_store.write_proposal(make_proposal())
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve", body)
+    assert status == 400 and "change_hash is required" in out["error"]
+    assert tmp_store.proposal("fx-0123456789").status == "pending"
+
+
+def test_approve_ok_records_the_dashboard_and_starts_the_apply(base, control, tmp_store, fake_apply):
+    tmp_store.write_proposal(make_proposal(requires_allow_protected=True))
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve",
+                          {"change_hash": _hash().upper(), "reason": "  ship   it ", "allow_protected": True})
+    assert status == 200 and out["ok"] is True
+    assert out["proposal"]["status"] == "approved" and out["proposal"]["decided_by"] == "dashboard"
+    assert out["proposal"]["reason"] == "ship it"
+    assert out["apply"]["started"] is True and out["apply"]["job"]["kind"] == "fix"
+    assert wait_job(control)["status"] == "done"
+    assert fake_apply == [{"id": "fx-0123456789", "allow_protected": True}]
+    p = tmp_store.proposal("fx-0123456789")
+    assert p.status == "verified" and [a.actor for a in p.audit][0] == "dashboard"
+    # a second approval of a decided proposal is refused
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve", {"change_hash": _hash()})
+    assert status == 409 and out["status"] == "verified"
+
+
+def test_reject_ok_and_then_nothing_else(base, tmp_store, fake_apply):
+    tmp_store.write_proposal(make_proposal())
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/reject", {"reason": "not during the demo"})
+    assert status == 200 and out["proposal"]["status"] == "rejected" and out["proposal"]["reason"] == "not during the demo"
+    assert call(base, "POST", "/api/proposals/fx-0123456789/approve", {"change_hash": _hash()})[0] == 409
+    assert call(base, "POST", "/api/proposals/fx-0123456789/apply", {})[0] == 409
+    assert call(base, "POST", "/api/proposals/fx-0123456789/reject", {})[0] == 409
+    assert call(base, "POST", "/api/proposals/fx-nope/reject", {})[0] == 404
+    assert call(base, "POST", "/api/proposals/fx-0123456789/reject", {"reason": 5})[0] == 400
+    assert fake_apply == []
+
+
+def test_expired_proposal_cannot_be_approved_or_rejected(base, tmp_store, fake_apply):
+    tmp_store.write_proposal(make_proposal(expires_in=-1))
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve", {"change_hash": _hash()})
+    assert status == 409 and "expired" in out["error"] and out["status"] == "expired"
+    assert call(base, "POST", "/api/proposals/fx-0123456789/reject", {})[0] == 409
+    assert tmp_store.proposal("fx-0123456789").status == "expired" and fake_apply == []
+
+
+def test_apply_endpoint_needs_approval_and_a_free_slot(base, control, tmp_store, fake_apply, monkeypatch):
+    from faultline.remediation import proposals as P
+
+    tmp_store.write_proposal(make_proposal())
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/apply", {})
+    assert status == 409 and "only an approved proposal" in out["error"] and control.job is None
+    P.approve(tmp_store, "fx-0123456789", _hash(), "test")
+    release = block_handler(control, "_job_topology", monkeypatch)
+    call(base, "POST", "/api/jobs/topology", {})
+    try:
+        status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/apply", {})
+        assert status == 409 and "already running" in out["error"]
+    finally:
+        release.set()
+    wait_job(control)
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/apply", {"allow_protected": "yes"})
+    assert status == 202 and out["job"]["kind"] == "fix"
+    assert wait_job(control)["status"] == "done" and fake_apply[-1]["allow_protected"] is True

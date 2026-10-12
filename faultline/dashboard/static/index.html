@@ -89,6 +89,10 @@
     <div class="panel__body panel__body--tight" id="fixes-host"></div>
   </section>
 
+  <!-- Fix approvals: "Can I fix this?" proposals waiting on a human. fixes.js owns this element's
+       whole subtree (panel chrome included), like onboard.js, in its own full-width row. -->
+  <div id="fixapprovals-host" data-panel="fixapprovals" style="grid-column: 1 / -1"></div>
+
   <!-- Repo onboarding: what lets Faultline be pointed at any compose app, not only Ditto.
        onboard.js owns this element's whole subtree (panel chrome included), the same way
        launcher.js owns #launcher-host. It closes the page in its own full-width row, so it
