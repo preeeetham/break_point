@@ -581,7 +581,7 @@ TIMEOUT_DEFAULTS = {"pre_injection": "skip", "problem_occurred": "continue"}
 
 class ApprovalDecision(BaseModel):
     """How one pending decision ended. `answered` separates a human's answer from a timeout default."""
-    answer: Literal["approve", "approve_reduced", "skip", "stop_run", "fix", "wait", "continue"]
+    answer: Literal["approve", "approve_reduced", "skip", "stop_run", "fix", "wait", "continue", "reject"]
     answered: bool
     reason: str
     decided_at: datetime = Field(default_factory=utcnow)
@@ -603,7 +603,7 @@ class ApprovalRequest(BaseModel):
     carries the SMTP or IMAP credentials used to send it.
     """
     approval_id: str
-    scenario: Literal["pre_injection", "problem_occurred"]
+    scenario: Literal["pre_injection", "problem_occurred", "fix_proposal"]
     experiment_id: str
     token: str                               # correlation token, carried in the subject line
     message_id: str = ""                     # Message-ID of the email we sent, matched by In-Reply-To

@@ -67,6 +67,7 @@ class Settings:
     fix_proposal_timeout_s: float = 1800.0
     remediation_override_file: str = "deploy/docker-compose.override.yml"
     fix_health_timeout_s: float = 180.0
+    compose_env: str = ""          # "K=V,K2=V2" passed to `docker compose` when recreating fixed services
     approval_poll_s: float = 5.0
 
     @property
@@ -113,6 +114,7 @@ ENV_MAP = {
     "FIX_PROPOSAL_TIMEOUT_SECONDS": "fix_proposal_timeout_s",
     "FAULTLINE_OVERRIDE_FILE": "remediation_override_file",
     "FIX_HEALTH_TIMEOUT_SECONDS": "fix_health_timeout_s",
+    "FAULTLINE_COMPOSE_ENV": "compose_env",
     "APPROVAL_POLL_SECONDS": "approval_poll_s",
 }
 
