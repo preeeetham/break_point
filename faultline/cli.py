@@ -306,6 +306,7 @@ def cmd_run(s, store, a):
         sess.warmup(max(sess.policy.pre_window_s, 15))
         inj = Injector(s, store, sess.topology, sess.docker, sess.window, sess.api, sess.health, sess.thresholds, sess.policy, log=say)
         n = 1 if a.target else min(a.experiments, sess.policy.max_experiments)
+        ran: list[str] = []
         for i in range(n):
             if store.stop_requested():
                 say("STOP requested; not starting another experiment")
@@ -348,6 +349,7 @@ def cmd_run(s, store, a):
                 f"hypothesis {'held' if r.hypothesis_result.held else 'violated' if r.hypothesis_result.held is False else '-'}, "
                 f"findings {[f.code for f in r.findings]}")
             planner.history.append(r)
+            ran.append(r.experiment_id)
             if gate_on and r.status != "skipped":
                 from .agents.approval import run_post_experiment
                 run_post_experiment(s, store, r.experiment_id, llm_client(s, not a.no_llm), not a.no_llm, log=say)
@@ -355,19 +357,206 @@ def cmd_run(s, store, a):
                 say(f"pause {sess.policy.pause_between_s:.0f}s so the system settles before the next experiment")
                 time.sleep(sess.policy.pause_between_s)
         if a.analyze:
-            _post_analysis(s, store, sess.topology, not a.no_llm)
+            _post_analysis(s, store, sess.topology, not a.no_llm, ids=ran)
     finally:
         sess.close()
     return 0
 
 
-def _post_analysis(s, store, topology, use_llm: bool):
+def _post_analysis(s, store, topology, use_llm: bool, ids: list[str] | None = None):
     from .agents import fix, risk, scorecard
 
     llm = llm_client(s, use_llm)
     risk.run(store, llm, topology, log=say)
     fix.run(store, llm, log=say)
     scorecard.run(store, topology, s.compose_project, log=say)
+    if ids:
+        _propose_after_analysis(s, store, ids, use_llm)
+
+
+def _propose_after_analysis(s, store, ids: list[str], use_llm: bool) -> list:
+    """After the analysis agents: ask "Can I fix this?" for each new experiment with a finding above info.
+    Only proposes (status pending); never approves or applies. Never breaks the run."""
+    out: list = []
+    try:
+        from .remediation.propose import build_proposals
+    except Exception as exc:
+        say(f"[propose] fix proposals unavailable ({type(exc).__name__}: {exc})")
+        return out
+    llm = None
+    for eid in ids:
+        try:
+            r = store.experiment(eid)
+            if r is None or r.status == "skipped" or not any(f.severity != "info" for f in r.findings):
+                continue
+            if llm is None:
+                llm = llm_client(s, use_llm)
+            made = build_proposals(s, store, eid, llm=llm, log=say)
+            out += made
+            for p in made:
+                say(f"[propose] Can I fix this? {p.proposal_id}: {p.catalog_fix_id} on {', '.join(p.target_services)} "
+                    f"-> `faultline proposals --id {p.proposal_id}`")
+        except Exception as exc:
+            say(f"[propose] {eid}: could not build fix proposals ({type(exc).__name__}: {exc}); the run is unaffected")
+    return out
+
+
+# ---------------------------------------------------------------------- human-approved fixes
+OPEN_PROPOSAL_STATUSES = ("pending", "approved", "applying", "applied")
+
+
+def cmd_propose(s, store, a):
+    from .remediation.propose import build_proposals, render_text
+
+    if store.experiment(a.experiment_id) is None:
+        say(f"no experiment {a.experiment_id}")
+        return 1
+    try:
+        made = build_proposals(s, store, a.experiment_id, llm=None if a.no_llm else llm_client(s, True),
+                               include_test=a.include_test, log=say)
+    except ImportError as exc:
+        say(f"fix catalog not available ({exc})")
+        return 1
+    if not made:
+        say("nothing to propose for this experiment")
+        return 0
+    for p in made:
+        say("\n" + "=" * 100)
+        say(render_text(p).rstrip())
+    say(f"\n{len(made)} proposal(s) written to {store.root / 'proposals'}; nothing is applied until a human approves one")
+    return 0
+
+
+def cmd_proposals(s, store, a):
+    from .remediation import proposals as P
+    from .remediation.propose import render_text
+
+    all_ = P.sweep_expired(store)
+    if a.id:
+        p = store.proposal(a.id)
+        if p is None:
+            say(f"no proposal {a.id}")
+            return 1
+        say(render_text(p).rstrip())
+        if a.all or p.audit:
+            say("\naudit:")
+            for e in p.audit:
+                say(f"  {e.at:%Y-%m-%d %H:%M:%S}  {e.actor:<22} {e.from_status or '-'} -> {e.to_status}  {e.note}")
+        return 0
+    shown = all_ if a.all else [p for p in all_ if p.status in OPEN_PROPOSAL_STATUSES]
+    if not shown:
+        say("no open fix proposals" + ("" if a.all else " (use --all for decided ones)"))
+        return 0
+    now = P.utcnow()
+    rows = []
+    for p in shown:
+        left = (p.expires_at - now).total_seconds()
+        exp = "-" if p.status not in P.OPEN else ("expired" if left <= 0 else f"{int(left // 60)} min")
+        rows.append((p.proposal_id, p.status, str(p.rank), p.experiment_id, p.catalog_fix_id,
+                     ", ".join(p.target_services), p.change_hash[:12], exp, "yes" if p.requires_allow_protected else ""))
+    say("\n".join(_table(("id", "status", "rank", "experiment", "fix", "services", "hash", "expires in", "protected"),
+                         rows)))
+    say("\nshow one in full: faultline proposals --id <id>")
+    return 0
+
+
+def _resolve_shown_hash(p, given: str) -> str | None:
+    """A --hash is the full sha256, or a prefix of at least 8 chars of the hash shown. None = does not match."""
+    g = (given or "").strip().lower()
+    if len(g) >= 8 and p.change_hash.startswith(g):
+        return p.change_hash
+    return None if len(g) < 64 else g
+
+
+def cmd_approve(s, store, a):
+    import getpass
+
+    from .remediation import proposals as P
+    from .remediation.propose import render_text
+
+    p = store.proposal(a.id)
+    if p is None:
+        say(f"no proposal {a.id}")
+        return 1
+    P.expire_if_due(store, p)
+    say(render_text(p).rstrip())
+    if p.status != "pending":
+        say(f"\nrefused: proposal {p.proposal_id} is {p.status}, not pending; nothing was approved or applied")
+        return 1
+    if p.requires_allow_protected and not a.allow_protected and not a.no_apply:
+        say(f"\nrefused: this fix touches a protected service; re-run with --allow-protected if you mean it")
+        return 1
+    if a.hash:
+        shown = _resolve_shown_hash(p, a.hash)
+        if shown is None:
+            say(f"\nrefused: --hash {a.hash} does not match the change shown above ({p.change_hash[:12]}...); "
+                "nothing was approved")
+            return 1
+    elif a.yes:
+        shown = p.change_hash          # the hash just displayed, which is the one stored now
+    else:
+        try:
+            typed = input(f"\nType the first 8 characters of the change hash ({p.change_hash[:8]}) to approve: ")
+        except EOFError:
+            typed = ""
+        if typed.strip().lower() != p.change_hash[:8]:
+            say("refused: the hash was not confirmed; nothing was approved")
+            return 1
+        shown = p.change_hash
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "unknown"
+    try:
+        p = P.approve(store, p.proposal_id, shown, actor=f"cli:{user}", reason=a.reason or "")
+    except (P.HashMismatch, P.IllegalTransition, KeyError) as exc:
+        say(f"refused: {exc}")
+        return 1
+    say(f"\napproved {p.proposal_id} as cli:{user} (hash {p.change_hash[:12]})")
+    if a.no_apply:
+        say(f"not applied (--no-apply). It must be applied before {p.expires_at:%Y-%m-%d %H:%M:%S} UTC or it expires.")
+        return 0
+    try:
+        from .remediation.apply import apply_and_verify
+    except ImportError as exc:
+        say(f"the apply engine is not available ({exc}); the proposal stays approved and expires unapplied at "
+            f"{p.expires_at:%Y-%m-%d %H:%M:%S} UTC")
+        return 1
+    try:
+        result = apply_and_verify(s, store, p.proposal_id, allow_protected=a.allow_protected, log=say)
+    except Exception as exc:
+        say(f"apply failed: {type(exc).__name__}: {exc}")
+        return 1
+    status = getattr(result, "status", None)
+    say(f"\nproposal {p.proposal_id}: {status}")
+    v = getattr(result, "verification", None)
+    if v is not None:
+        for c in v.comparisons:
+            say(f"  {c.metric}: {c.before} -> {c.after} ({c.verdict}, {c.better_is} is better)")
+        if v.reason:
+            say(f"  {v.reason}")
+    return 0 if status in ("verified", "applied") else 1
+
+
+def cmd_reject(s, store, a):
+    import getpass
+
+    from .remediation import proposals as P
+
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "unknown"
+    try:
+        p = P.reject(store, a.id, actor=f"cli:{user}", reason=a.reason or "")
+    except KeyError:
+        say(f"no proposal {a.id}")
+        return 1
+    except P.IllegalTransition as exc:
+        say(f"refused: {exc}")
+        return 1
+    say(f"rejected {p.proposal_id} as cli:{user}; nothing was applied")
+    return 0
 
 
 def cmd_rerun(s, store, a):
@@ -670,6 +859,27 @@ def main(argv=None) -> int:
     ap.add_argument("--resend", metavar="ID", help="re-send a pending decision's email, same token")
     ap.add_argument("--limit", type=int, default=5, help="how many past decisions to list (0 = none)")
     ap.set_defaults(fn=cmd_approvals)
+    pr = sub.add_parser("propose", help='ask "Can I fix this?": build catalog fix proposals for an experiment (nothing is applied)')
+    pr.add_argument("experiment_id")
+    pr.add_argument("--no-llm", action="store_true", help="templates only, no ranking or rewording by the LLM")
+    pr.add_argument("--include-test", action="store_true", help="also consider test-only catalog fixes")
+    pr.set_defaults(fn=cmd_propose)
+    ps = sub.add_parser("proposals", help="list open fix proposals (expired ones are swept first) or show one")
+    ps.add_argument("--all", action="store_true", help="include decided and final proposals")
+    ps.add_argument("--id", help="show one proposal in full, with its audit trail")
+    ps.set_defaults(fn=cmd_proposals)
+    apv = sub.add_parser("approve", help="approve a fix proposal by its change hash, then apply and verify it")
+    apv.add_argument("id")
+    apv.add_argument("--hash", help="the change hash shown (full sha256 or its first 8+ characters)")
+    apv.add_argument("--yes", action="store_true", help="approve the hash just displayed without typing it")
+    apv.add_argument("--allow-protected", action="store_true", help="required for fixes that touch MongoDB")
+    apv.add_argument("--no-apply", action="store_true", help="record the approval only; do not apply now")
+    apv.add_argument("--reason", default="", help="why, for the audit trail")
+    apv.set_defaults(fn=cmd_approve)
+    rj = sub.add_parser("reject", help="reject a fix proposal (it is never applied)")
+    rj.add_argument("id")
+    rj.add_argument("--reason", default="", help="why, for the audit trail")
+    rj.set_defaults(fn=cmd_reject)
     sub.add_parser("resume", help="clear the STOP flag").set_defaults(fn=cmd_resume)
     sub.add_parser("status", help="containers, locks, agents").set_defaults(fn=cmd_status)
     d = sub.add_parser("dashboard", help="live web dashboard"); d.add_argument("--port", type=int); d.set_defaults(fn=cmd_dashboard)
