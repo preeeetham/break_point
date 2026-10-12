@@ -812,6 +812,11 @@ class ControlPlane:
         """
         from ..remediation import proposals as P
 
+        current = self.store.proposal(proposal_id)
+        if current is not None and current.requires_allow_protected and not allow_protected:
+            # same rule as the CLI: a fix touching a protected service is not even approved without the override
+            raise P.IllegalTransition(f"proposal {proposal_id} changes a protected service "
+                                      f"({', '.join(current.target_services)}); tick 'allow protected' to approve it")
         p = P.approve(self.store, proposal_id, change_hash, actor, reason)
         self.log("approval", f"Fix proposal {p.proposal_id} ({p.catalog_fix_id} on "
                              f"{', '.join(p.target_services) or 'the stack'}) approved by {actor} for change "

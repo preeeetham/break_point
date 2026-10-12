@@ -317,7 +317,7 @@ approved by default. Lifecycle: `pending → approved | rejected | expired`, `ap
 `ProposalSummary` (what `state.proposals.latest` and `GET /api/proposals` carry):
 ```jsonc
 {"id":"fx-1a2b3c4d5e", "experiment_id":"ab12...", "finding_code":"health_check_masked_failure",
- "catalog_fix_id":"deep_readiness_check", "target_services":["things"],
+ "catalog_fix_id":"add_or_tighten_healthcheck", "target_services":["things"],
  "status":"pending|approved|rejected|expired|applying|applied|verified|verification_failed|rolled_back",
  "created_at":"ISO", "expires_at":"ISO",
  "seconds_left":1712.4,               // computed per request; <= 0 on an open record means overdue

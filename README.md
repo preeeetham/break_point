@@ -8,7 +8,7 @@
 ![Docker Compose](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![Target: Eclipse Ditto 3.9.8](https://img.shields.io/badge/target-Eclipse%20Ditto%203.9.8-1c2b33)
 ![Open-weights models](https://img.shields.io/badge/models-open--weights-4fd1c5)
-![Advisory only](https://img.shields.io/badge/fixes-advisory%20only-ff6b4a)
+![Fixes: human-approved only](https://img.shields.io/badge/fixes-human--approved%20only-ff6b4a)
 
 **[Live replay](https://faultline-fable.vercel.app)** · **[Demo](#demo)** · **[Quickstart](#quickstart)** · **[How it works](#how-it-works)** · **[Control room](#the-control-room)** · **[Safety](#safety-first)** · **[Docs](#documentation)**
 
@@ -22,7 +22,7 @@ It points a small team of agents at [Eclipse Ditto](https://github.com/eclipse-d
 
 Built for the Bosch hackathon problem statement *"AI-Driven Chaos Engineering for Cloud-Native Resilience"*.
 
-> **The LLM proposes, the code disposes.** A model can pick from a code-ranked shortlist and write a hypothesis. It cannot raise a safety threshold, skip the kill switch or apply a fix. Nothing Faultline recommends is ever applied to the application.
+> **The LLM proposes, the code disposes.** A model can pick from a code-ranked shortlist and write a hypothesis. It cannot raise a safety threshold, skip the kill switch or apply a fix. Nothing is changed in the application unless a person approves the exact change shown.
 
 ## Demo
 
@@ -46,6 +46,7 @@ The video walks the whole loop, from the dependency map to the scorecard. The li
 | **4. Inject** | Ten failure types with a 90 s hard cap, abort thresholds, an independent watchdog and a Guardian process | `faultline run` |
 | **5. Observe** | A synthetic Things-API probe at about 4 req/s plus a health probe every 3 s, with Prometheus and Grafana alongside | live telemetry |
 | **6. Report** | Risk score (0 to 10), advisory fixes and a scorecard graded A to F per service, worst first | `faultline risk && faultline fix && faultline scorecard` |
+| **7. Fix, if you say so** | Asks "Can I fix this?" with five parts: what is wrong, the exact change, the expected improvement, the risks and the rollback. Only a code-defined catalog fix can be offered, and only the exact change a person approves by its hash is applied. Faultline then re-runs the same experiment, reports before and after, and rolls a configuration change back if it does not hold. Unanswered proposals expire | `faultline proposals` · `faultline approve <id>` · Fix approvals panel |
 
 **A result worth knowing about:** compose's `depends_on` never mentions MongoDB, so a naive map would call it a leaf. Scanning environment variables finds `MONGO_DB_HOSTNAME=mongodb` on four services, and Faultline ranks MongoDB the number one single point of failure. The Day-2 verification run is written up in [docs/FINDINGS.md](docs/FINDINGS.md).
 
@@ -157,6 +158,7 @@ Parameters, bounds and mechanisms are in [docs/REFERENCE.md](docs/REFERENCE.md#f
 | **Protected services** | MongoDB is degrade-only unless explicitly overridden |
 | **Scoped** | Every container operation is filtered by the compose project label and never reaches outside it |
 | **Advisory fixes** | `FixRecommendation.advisory_only` is always true; no agent has a code path that edits the stack |
+| **Human-approved fixes** | The only change path: six catalog fixes, each approved by its hash. Configuration changes go into a Faultline-owned compose override, never the stack's own files; every fix is verified by a re-run, and the override is restored byte for byte if the stack is unhealthy or the re-run is worse. Details in [docs/REFERENCE.md](docs/REFERENCE.md#human-approved-fixes) |
 
 Details, including the approval gate and the recovery and soak rules, are in [docs/REFERENCE.md](docs/REFERENCE.md#safety).
 

@@ -2,7 +2,7 @@
 
 AI-driven chaos engineering for a cloud-native sample application, built for the Bosch hackathon problem statement *"AI-Driven Chaos Engineering for Cloud-Native Resilience"*.
 
-Faultline points a small team of agents at [Eclipse Ditto](https://github.com/eclipse-ditto/ditto), an open-source IoT digital-twin platform running under Docker Compose. It maps the service dependency graph automatically (including the dependencies the compose file does not declare), ranks the services by how much would break if they failed, lets an LLM pick the most informative next failure experiment from a code-ranked shortlist, injects that failure with hard safety limits enforced by code, observes what real API clients would see, and writes a risk assessment, Ditto-specific fix recommendations and a per-service resilience scorecard. The LLM proposes; the code disposes. Nothing is ever applied to the application: every recommendation is advisory.
+Faultline points a small team of agents at [Eclipse Ditto](https://github.com/eclipse-ditto/ditto), an open-source IoT digital-twin platform running under Docker Compose. It maps the service dependency graph automatically (including the dependencies the compose file does not declare), ranks the services by how much would break if they failed, lets an LLM pick the most informative next failure experiment from a code-ranked shortlist, injects that failure with hard safety limits enforced by code, observes what real API clients would see, and writes a risk assessment, Ditto-specific fix recommendations and a per-service resilience scorecard. The LLM proposes; the code disposes. The Fix agent's recommendations are advisory and never applied. The only changes Faultline can make to the application are the six code-defined [human-approved fixes](#human-approved-fixes), each applied only after a person approves the exact change shown, then verified by re-running the experiment; a configuration change that does not hold is rolled back.
 
 The whole system is driven from one screen: the **control room** (`faultline dashboard`). It owns the probes, submits the work as background jobs, streams what every agent is doing, and has a kill switch in the header. Every command the control room runs is also a CLI subcommand, so nothing on the screen is a view-only mock-up.
 
@@ -18,7 +18,7 @@ The whole system is driven from one screen: the **control room** (`faultline das
 | Day-1 minimum: running app | Ditto 3.9.8 + MongoDB + nginx + observability stack in one compose project | `scripts/up.sh` |
 | Day-1 minimum: dependency map | Automatic, with the undeclared MongoDB dependency found | `faultline topology`, or **Rebuild map** in the control room |
 | Day-1 minimum: one safe injection with a working kill switch | Any experiment; kill switch via the STOP button in the control-room header (or `Esc`), `faultline stop`, or `touch reports/STOP` | see [docs/DEMO.md](DEMO.md) |
-| Agents recommend fixes, never apply them | `FixRecommendation.advisory_only` is always `true`; no agent has a code path that edits the stack | `reports/fixes/<id>.md`, and the "advisory only, nothing is applied" label above every recommendation in the UI |
+| Agents recommend fixes, never apply them | `FixRecommendation.advisory_only` is always `true`; no agent has a code path that edits the stack. The one path that does change it is [human-approved fixes](#human-approved-fixes): a fixed catalog of six changes, each applied only after a person approves its exact diff by hash, then verified and rolled back if worse | `reports/fixes/<id>.md`, and the "advisory only, nothing is applied" label above every recommendation in the UI; the **Fix approvals** panel and `faultline proposals` for the human-approved path |
 | One agent proposes failures, one scores risk, one recommends fixes | Failure Injection, Risk/Impact and Fix Recommendation agents, plus Topology, Scorecard, Narrator and Guardian | **Agent pipeline** strip at the top of the stage, live per-agent state. See architecture below |
 | Open-source models | Open-weights models only: Ollama with `phi4-mini` locally (default), or Llama 3.3 70B through Groq's OpenAI-compatible endpoint on the demo machine. Any OpenAI-compatible or Anthropic endpoint also works | `.env`, and the model pill in the control-room header |
 | Whole app monitored by an open-source observability tool | Prometheus 2.55, cAdvisor, Blackbox exporter, Grafana 11.3 with a provisioned dashboard | http://127.0.0.1:3000 |
@@ -112,7 +112,7 @@ The agents:
 - **Resilience Scorecard agent** (`faultline/agents/scorecard.py`). Score = 100 - mean penalty per service; penalty = 40 x (1 - success during) + 20 x min(TTR / 120 s, 1) + 20 if manual recovery + 10 per high/critical finding (max 3) + 5 for a cascade. Grades A >= 90, B >= 80, C >= 65, D >= 50, else F. Ranked worst first; untested services are listed last with no grade.
 - **Narrator agent**. Turns the blackboard into a plain-English play-by-play for the demo screen (`faultline narrate --watch`).
 - **Guardian agent**. A separate process that does not trust the injector. It restores the experiment's target if it is still down past the deadline recorded in `ACTIVE_EXPERIMENT.json` (any other watched container after 20 s down), removes leftover chaos helper containers (label `faultline.helper=1`) once that deadline has passed, and obeys the `STOP` file by restoring everything immediately. We do not trust a single agent with the kill switch.
-- **Approval agent** (`faultline/agents/approval.py`). The human in the loop, by email. It holds an operator-chosen experiment the protected-services policy would otherwise have refused, and asks again once an experiment the Risk agent scored high or critical has finished. The admin replies with one word from a closed list; no valid reply within `APPROVAL_TIMEOUT_SECONDS` (120 s) applies the safe default — `SKIP` before injection, `CONTINUE` after. No LLM, and it applies nothing.
+- **Approval agent** (`faultline/agents/approval.py`). The human in the loop, by email. It holds an operator-chosen experiment the protected-services policy would otherwise have refused, and asks again once an experiment the Risk agent scored high or critical has finished. The admin replies with one word from a closed list; no valid reply within `APPROVAL_TIMEOUT_SECONDS` (120 s) applies the safe default — `SKIP` before injection, `CONTINUE` after. No LLM, and it applies nothing. The same mail channel can also carry a [fix proposal](#human-approved-fixes) (`faultline propose <id> --email`, reply `APPROVE` or `REJECT`); there silence decides nothing and the proposal simply expires.
 - **Control room** (`faultline/dashboard/`), not an agent but the thing that drives them. A long-lived session that owns the two probes, a single-slot job queue for operator actions, an in-memory event log that every agent writes its narration into, and a 1 Hz telemetry buffer. See [Control room](#control-room) below.
 
 ## The sample application
@@ -200,18 +200,22 @@ To attach Faultline to an existing Ditto compose project instead of the bundled 
 | `baseline [--duration 60]` | Captures steady state and derives the safety thresholds |
 | `catalog` | Prints the failure catalog with parameters and bounds |
 | `plan [--no-llm] [--allow-protected]` | Shows the ranked candidates and the pick; runs nothing |
-| `run [--experiments N] [--target SVC --failure TYPE --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop] [--no-approvals]` | Plans and executes experiments; operator flags pin a specific one; `--analyze` runs risk, fix and scorecard afterwards; `--resume-stop` clears a leftover STOP first. Note that `--analyze` is opt-in here, whereas the control room always runs the analysis agents after each experiment |
+| `run [--experiments N] [--target SVC --failure TYPE --param k=v ...] [--duration S] [--allow-protected] [--no-llm] [--analyze] [--resume-stop] [--no-approvals]` | Plans and executes experiments; operator flags pin a specific one; `--analyze` runs risk, fix and scorecard afterwards, then builds [fix proposals](#human-approved-fixes) (pending, never applied) for each experiment of the run with a finding above `info`; `--resume-stop` clears a leftover STOP first. Note that `--analyze` is opt-in here, whereas the control room always runs the analysis agents after each experiment |
 | `rerun <id> [--no-llm] [--allow-protected] [--analyze] [--resume-stop]` | Repeats a previous experiment with the same target, failure and parameters |
 | `risk [ids...] [--force] [--no-llm]`, `fix [ids...] [--force] [--no-llm]` | Assess / recommend for every report that does not have output yet (`--force` redoes them) |
 | `scorecard` | Recomputes the scorecard from all completed and aborted experiments |
 | `narrate [--watch] [--llm]` | Plain-English play-by-play; `--watch` follows the blackboard |
 | `guardian [--interval 5]` | Starts the independent Guardian process |
-| `approvals [--resend <id>] [--limit 5]` | Prints the pending approval decision and the last `--limit` decided ones (`0` = none); `--resend` re-sends that decision's email with the same correlation token. There is deliberately no way to answer from the CLI: the answer comes back by email on purpose, and a CLI bypass would defeat the gate. `stop` / `resume` already cover an operator who is at the laptop |
+| `approvals [--resend <id>] [--limit 5]` | Prints the pending approval decision and the last `--limit` decided ones (`0` = none); `--resend` re-sends that decision's email with the same correlation token. There is deliberately no way to answer from the CLI: the answer comes back by email on purpose, and a CLI bypass would defeat the gate. `stop` / `resume` already cover an operator who is at the laptop. Fix proposals are a different decision with their own commands below |
+| `propose <experiment-id> [--no-llm] [--include-test] [--email] [--no-apply] [--allow-protected]` | Asks "Can I fix this?": builds catalog fix proposals for one experiment, prints each in full and writes them as `pending`. Applies nothing. `--email` also asks `ADMIN_EMAIL` (reply `APPROVE` or `REJECT`). See [Human-approved fixes](#human-approved-fixes) |
+| `proposals [--all] [--id <id>]` | Lists open fix proposals after expiring overdue ones; `--all` includes decided ones; `--id` shows one in full with its audit trail |
+| `approve <id> [--hash <h>] [--yes] [--allow-protected] [--no-apply] [--reason <text>]` | Approves a pending proposal by its change hash (full sha256 or 8+ character prefix, `--yes` for the one displayed, or typed at the prompt), then applies it, re-runs the experiment and keeps or rolls back the change. `--allow-protected` is required for a fix that touches MongoDB |
+| `reject <id> [--reason <text>]` | Rejects a pending proposal; it is never applied |
 | `stop` / `resume` | Writes / removes `reports/STOP` |
 | `heal [--restart]` | Operator reset between runs: clears the active-experiment lock, removes chaos helper containers and leftover `tc` qdiscs, unpauses and reconnects containers, starts anything stopped, optionally restarts the Ditto services in dependency order, then waits up to 10 minutes for `/health` = UP |
 | `status` | Container states plus STOP / lock / experiment count / Guardian liveness |
 | `dashboard [--port N]` | Serves the control room; the port defaults to `dashboard_port` in `config/settings.yaml` (8765) |
-| `demo [--experiments 3] [--baseline 45] [--no-llm] [--allow-protected] [--no-approvals]` | topology, scout, baseline, run, risk, fix, scorecard, `scout --reconcile`, narrate — the headless path, no browser |
+| `demo [--experiments 3] [--baseline 45] [--no-llm] [--allow-protected] [--no-approvals]` | topology, scout, baseline, run, risk, fix, scorecard, fix proposals, `scout --reconcile`, narrate — the headless path, no browser. Proposals are only written, never approved |
 
 ## Control room
 
@@ -266,11 +270,16 @@ All JSON, `Cache-Control: no-store`, errors as `{"error": "..."}`. The full spec
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/state?since=<seq>` | The single polled snapshot: event-log delta since `<seq>`, session, current job, live run (phase, elapsed, deadline, health, blast radius, abort reason), telemetry points and phase bands, STOP flag, `pending_approval` (the decision an admin is being waited on for, with `seconds_left`, or `null`), Guardian heartbeat, per-agent states, LLM status, topology, baseline, every experiment summary, scorecard. Polled every 1000 ms when idle, 400 ms while an experiment is live |
+| `GET /api/state?since=<seq>` | The single polled snapshot: event-log delta since `<seq>`, session, current job, live run (phase, elapsed, deadline, health, blast radius, abort reason), telemetry points and phase bands, STOP flag, `pending_approval` (the decision an admin is being waited on for, with `seconds_left`, or `null`), Guardian heartbeat, per-agent states, LLM status, topology, baseline, every experiment summary, scorecard, `proposals` (open and recently decided fix proposals). Polled every 1000 ms when idle, 400 ms while an experiment is live |
 | `GET /api/catalog` | The ten failure types with their parameter bounds, which services each applies to, which are blocked by policy, which are unavailable and why, the protected-service rules and the thresholds in force |
 | `GET /api/plan?llm=0\|1&allow_protected=0\|1` | Ranked candidates plus the planner's pick, rationale and hypothesis. Runs no experiment. Note that it will arm the session (build the topology and start the probes) if that has not happened yet |
 | `GET /api/experiment/<id>` | The full report for one experiment, plus its risk, fix and rendered Markdown |
 | `GET /api/approvals` | `{"pending": ..., "decided": [...]}`: the open decision from `reports/PENDING_APPROVAL.json`, if any, and the last 20 decided records from `reports/approvals/`, newest first. Read-only: there is deliberately no endpoint that answers a decision, because the answer arrives by email |
+| `GET /api/proposals` | Every [fix proposal](#human-approved-fixes), newest first, after expiring overdue ones |
+| `GET /api/proposals/<id>` | One full `FixProposal`, with its expected metrics, audit trail and verification, plus `seconds_left` |
+| `POST /api/proposals/<id>/approve` | `{"change_hash":"<sha256>","reason":"...","allow_protected":false}`; approves exactly the change with that hash and starts the `fix` job (apply, re-run, verify). `200`; `400` without a hash; `409` if the hash is not the current change, the proposal is no longer pending, or it touches a protected service without `allow_protected` |
+| `POST /api/proposals/<id>/reject` | `{"reason":"..."}`; `200`, or `409` when no longer pending |
+| `POST /api/proposals/<id>/apply` | `{"allow_protected":false}`; starts the `fix` job for an approved proposal. `202`; `409` when not approved, expired, or another job is running |
 | `POST /api/jobs/topology` | Rebuild the application map from compose + env + nginx + live Docker |
 | `POST /api/jobs/baseline` | `{"duration": 60}`, clamped to 20–300 s |
 | `POST /api/jobs/run` | `{"mode":"auto"\|"manual","target":...,"failure":...,"params":{...},"experiments":1,"llm":true,"allow_protected":false,"analyze":true}`; `auto` lets the planner pick |
@@ -320,6 +329,8 @@ Further limits: hard cap of 90 s per experiment; an independent watchdog timer f
 **Kill switch.** The STOP button in the control-room header (or the `Esc` key — one press, no confirmation dialog), `faultline stop`, or `touch reports/STOP`. All three write the same file. The safety monitor checks it every second and rolls back with `abort_reason: operator_stop`; the Guardian honours it too. While the file exists no new experiment starts. The button then reads RESUME, which clears the flag (as does `faultline resume`). The other `abort_reason` values are `error_rate`, `latency` and `blast_radius:<service>`; a watchdog rollback sets `safety.watchdog_fired`.
 
 **Approval gate.** An operator-chosen experiment the protected-services policy would otherwise have refused is held before injection while the Approval agent emails `ADMIN_EMAIL` and waits for `APPROVE`, `APPROVE REDUCED`, `SKIP` or `STOP RUN`; after an experiment the Risk agent scored high or critical the choices are `FIX <n>`, `WAIT` or `CONTINUE` and nothing is held. Anything outside that vocabulary is not an answer and decides nothing. A timeout, an unreachable mail host or an unset credential all apply the safe default and record why: `SKIP` before an injection, `CONTINUE` after one. A gate that cannot reach the admin never becomes a no-op that approves everything. `WAIT` and `STOP RUN` write the same `reports/STOP` file as the kill switch; there is no second one. `--allow-protected` still bypasses the gate outright. Full detail in [docs/PROJECT_GUIDE.md](PROJECT_GUIDE.md) section 8.4.
+
+**Human-approved fixes.** The only path that changes the application's configuration. Only the six code-defined catalog fixes can be applied, only after a person approves the exact change by its hash, never by default (an unanswered proposal expires), only into the Faultline-owned override file, and only while the same preflight as an experiment passes (no STOP, no other experiment or fix in flight, every service running, API success at least 95 %). A fix that touches MongoDB needs `--allow-protected`. A stack that is unhealthy afterwards, or a re-run that is worse, rolls the override back byte for byte. See [Human-approved fixes](#human-approved-fixes).
 
 **Guardian.** A separate process with its own Docker client. It restores the target if it is still down (stopped or paused) past the deadline recorded in `ACTIVE_EXPERIMENT.json`, restores any other watched container after 20 s down, removes stale Pumba helpers and their `tc` qdiscs, clears a lock left 30 s past its deadline, on STOP reconnects partitioned containers, and never injects anything.
 
@@ -402,6 +413,232 @@ With `reports/weaknesses.json` on disk the planner adds a bounded bonus on top o
 
 The model's role here is the narrowest it has anywhere in Faultline: the deterministic list is final and it cannot add to, remove from, re-rank or re-score it. It writes the one-sentence "why this matters" per finding, and at most two systemic-pattern narratives over findings the checks already made, each tagged `[LLM suggestion, unverified]` and required to cite at least two existing weakness ids. Verified against a real provider (`openai/gpt-oss-120b` through Groq): 21/21 explanations and 2 patterns, one of them the genuinely useful observation that six core services share one unbounded-cgroup gap and one traffic-spike exposure rather than being six separate line items. Prose is requested in chunks of seven and the patterns in one small call of their own, so a failure costs only its own piece; a real 429 and a real `json_validate_failed` were both exercised, and both left all 21 deterministic findings intact with templated prose and a note saying which batches failed.
 
+## Human-approved fixes
+
+Everything above ends in advice: the Fix agent writes recommendations and applies none of them. Human-approved fixes add one narrow, optional step after that. When an experiment raises a finding that an entry in a small, code-defined catalog can address, Faultline asks **"Can I fix this?"**, and only a person can say yes. Every request has the same five parts:
+
+1. **What is wrong.** The finding in plain words, with the experiment's own numbers (API success and p95 during the fault against the baseline, time to recover, affected services) and, when there is one, the Fix agent recommendation that led to it.
+2. **Exactly what I will change.** One sentence, then the change itself, verbatim and generated by code: a unified diff of the Faultline-owned compose override, or, for the one runtime-only fix, the exact `docker restart` command.
+3. **Expected improvement.** The "before" value of each metric the re-run will compare, with the bound the fix is expected to meet (for example `<= 30.5 (no worse)`), and the finding it should remove.
+4. **Risks.** Written per catalog entry, from what was checked against Ditto 3.9.8.
+5. **Rollback.** How the change is undone.
+
+If a person approves the exact change shown, Faultline applies it, health-checks the stack, re-runs the same experiment, compares before with after, and keeps the change only if the comparison holds. Otherwise it restores the override byte for byte (the one runtime-only fix, a restart, has nothing to undo). Nothing is ever approved by default: an unanswered proposal expires and is never applied.
+
+The code is in `faultline/remediation/`: `proposals.py` (lifecycle, change hash, expiry), `catalog.py` (the only changes that can ever be applied), `override.py` (the override file), `propose.py` (findings to proposals, plus the optional LLM step) and `apply.py` (apply, verify, roll back). The contract is `FixProposal`, `FixVerification`, `MetricComparison` and `FixState` in `faultline/schemas.py`.
+
+### Where proposals come from
+
+- **`faultline run --analyze`**, and therefore `faultline demo`, builds proposals after the risk, fix and scorecard agents, for every experiment of that run that was not skipped and has a finding above `info`. A failure here is one log line; it never fails the run.
+- **The control room** does the same at the end of every analysis (the `analyze` job, and the analysis that follows each control-room run), for analysed experiments with a finding above `info` that have no proposal yet.
+- **`faultline propose <experiment-id>`** builds them on demand for one experiment.
+
+For each finding above `info`, every catalog entry that addresses its code picks its target services by fixed rules and builds its change against the stack's base compose config and the current override. An entry with nothing to change is skipped and logged (`nothing to change (already in place or not applicable)`). A proposal for the same experiment, fix and services that is still pending, approved, applying, applied or verified blocks a duplicate; a rejected, expired, rolled-back or failed one does not.
+
+### The fix catalog
+
+`faultline/remediation/catalog.py` holds six entries, in priority order. No other change can be proposed or applied, by a person or by a model.
+
+| Catalog id | Addresses findings | Roles it may touch | What it changes |
+|---|---|---|---|
+| `add_or_tighten_healthcheck` | `health_check_masked_failure`, `dependency_blind_readiness` | app | Points the Docker healthcheck at `/ready` instead of `/alive` on the same port, keeping the base interval, timeout, retries and start period. Only for a service whose base healthcheck calls `/alive` |
+| `add_dependency_healthcheck` | `cascade_beyond_hypothesis`, `dependency_blind_readiness` | datastore | Gives a MongoDB service that has no healthcheck the `mongosh` ping check that `deploy/docker-compose.yml` ships. MongoDB images only; it invents no check for anything else |
+| `add_healthy_dependency` | `cascade_beyond_hypothesis`, `dependency_blind_readiness` | app | Declares a service's hidden environment-variable dependency on a datastore as `depends_on` with `condition: service_healthy`, keeping its existing dependencies. Needs the datastore to have a healthcheck |
+| `set_restart_policy` | `manual_restart_required`, `no_automated_remediation` | app, datastore, proxy | `restart: unless-stopped`, only on a service with no restart policy (or `no`) |
+| `restart_service_now` | `manual_restart_required`, `recovery_failed`, `relapse_after_recovery` | app, datastore, proxy | Runtime only: `docker restart <container>`. Writes no configuration |
+| `set_resource_limits` | `slow_recovery`, `relapse_after_recovery` | app, datastore | A CPU limit matched to the JVM's `-XX:ActiveProcessorCount` (2 on Ditto), otherwise 1.0, clamped to 0.5-2.0. Memory limits are never lowered |
+
+A seventh entry, `break_healthcheck_for_test`, replaces a healthcheck with one that always fails. It exists only to exercise the rollback path: it is offered only with `faultline propose --include-test` or `FAULTLINE_TEST_CATALOG=1`, and the apply engine refuses it when neither is set.
+
+Targets come from the experiment report: the target plus the observed collateral, or, for `health_check_masked_failure` and `dependency_blind_readiness`, the services the finding names. They are then filtered to services that exist in the base config and in the topology and whose role the entry may touch. The model never chooses a target.
+
+What the entries do on Ditto, checked against the live `bosch-ditto` project (which runs Ditto's upstream compose file) and the bundled `deploy/docker-compose.yml`:
+
+- **`add_or_tighten_healthcheck`** is a real change on the five Java services, whose healthcheck is ``curl --fail `hostname`:7626/alive``. Its risks text says plainly that `/ready` is not known to reflect MongoDB health either (Ditto issue #1865 was fixed in the liveness checks only), so the masked-failure finding may survive it; the re-run decides.
+- **`set_restart_policy`** yields nothing on Ditto, because every service already has `restart: always`. That is correct rather than a gap: restart policies act on a process exit, never on `unhealthy`, so no restart policy could have fixed a service that stayed up while failing.
+- **`add_healthy_dependency`** yields nothing on the live stack, because its MongoDB has no healthcheck and compose refuses `condition: service_healthy` on a service without one. That is why **`add_dependency_healthcheck`** exists: it adds the check first. MongoDB is a protected service, so that fix needs `--allow-protected`, and applying it recreates the MongoDB container, a database outage of a few seconds. On the bundled `deploy/docker-compose.yml` it is the other way round: MongoDB already has the `mongosh` check, so `add_dependency_healthcheck` has nothing to do there.
+- **`set_resource_limits`** sizes the CPU limit to the 2 processors the Ditto JVMs are told they have. Its risks text warns that a quota can slow JVM start-up and cluster rejoin, so time to recover may rise; the re-run decides.
+
+Run with `--no-llm` against a copy of the blackboard and the live stack's config on 2026-10-12 (nothing applied): experiment `fd1b18f67001` (`container_crash` on `things`, `health_check_masked_failure` on `things-search`, `connectivity` and `gateway`) produced three `add_or_tighten_healthcheck` proposals, one per service; `5b21bb133620` (`dependency_blind_readiness`) produced `add_or_tighten_healthcheck` on the three services it names plus a protected `add_dependency_healthcheck` on `mongodb`, and logged `add_healthy_dependency on connectivity, things-search: nothing to change`; `7ec64f7a1498` (`slow_recovery` after `db_flood`) produced a protected `set_resource_limits` on `mongodb`.
+
+### The Faultline-owned override
+
+- Every configuration change goes into one file, `deploy/docker-compose.override.yml` by default (`FAULTLINE_OVERRIDE_FILE`). It is git-ignored. **The stack's own compose files are never edited.**
+- The file is rendered deterministically (sorted keys, block style, a fixed header) and lists the fixes applied to it, in order, under `x-faultline.applied_fixes`, a top-level `x-` key that compose ignores.
+- Before a fix writes it, the current file is copied byte for byte to `reports/remediation/backups/<proposal-id>.yml`. If there was no override yet, the backup is a marker, and restoring it deletes the file. Restoring writes back the exact bytes (atomically, through a temporary file and a rename) and refuses to guess when the backup is missing.
+- Faultline uses the live project's own compose files. It reads them from the running containers' compose labels (`com.docker.compose.project.config_files`, plus the working directory and environment file), because the project may have been started from different files than `FAULTLINE_COMPOSE_FILE`; that setting is only the fallback when Docker or the labels are unavailable. The override is always layered last.
+- The base config each fix is built against comes from a read-only `docker compose ... config --format json` over those files, retried with `--no-interpolate` if a variable is missing. `FAULTLINE_COMPOSE_ENV` (`K=V,K2=V2`) supplies variables the stack's own launcher exports, such as `DITTO_LOCAL_DIR`.
+- Applying recreates only the services the fix touches: `docker compose -p <project> [--project-directory <dir>] [--env-file <file>] -f <each live file> -f <override> up -d --no-deps --force-recreate <services>`.
+
+### Proposal lifecycle
+
+```
+pending   -> approved | rejected | expired
+approved  -> applying | expired        (expired: approved, never applied before the deadline)
+applying  -> applied | rolled_back     (rolled_back: the stack was unhealthy after applying)
+applied   -> verified | verification_failed | rolled_back
+verification_failed -> rolled_back
+rejected, expired, verified, rolled_back are final
+```
+
+Every status change goes through one function that refuses anything not in that table and appends an audit entry naming the actor (`faultline`, `cli:<user>`, `dashboard` or `email:<sender>`). Events that change no status (an email sent, an apply refusal, the override backup) are audit notes. So a rejected or expired proposal can never become applied, whichever channel asks.
+
+A proposal expires `FIX_PROPOSAL_TIMEOUT_SECONDS` (1800 s) after it was created, whether it is still pending or approved but not yet applied. Expiry is applied when proposals are read or decided: `faultline proposals`, `faultline approve` / `reject`, `GET /api/proposals`, `GET /api/proposals/<id>` and the approve and apply endpoints. The control room's state poll only reports `seconds_left`. **Nothing is ever auto-approved**: expiry, silence, an unparseable email reply, a send failure or missing mail configuration all leave a proposal undecided or end it unapplied.
+
+### What the LLM may do
+
+Code builds the candidate list, the targets, the change, the verbatim preview, its hash, the expected metrics and the rollback text. One optional LLM call may then:
+
+- **rank** the code-built shortlist (ids not on it are discarded, with a note on the proposal), and
+- **reword** three prose fields per candidate: `problem`, `expected_improvement` and `risks`. Each must be a non-empty string of at most 600 characters with no line that looks like a diff or YAML (`+`, `-`, `@@`, `services:`, a code fence); anything else is dropped and the template kept.
+
+It never writes the `change` or `rollback` text or the diff; an attempt to is discarded. `ranked_by` (`code` / `llm`) and `explanation.generated_by` (`template` / `llm`) record what happened. With `FAULTLINE_LLM=false`, `--no-llm`, or no reachable model, the feature works exactly the same from templates. The model plays no part in applying or verifying: the re-run's risk scoring runs with the LLM off from the CLI.
+
+### The approval hash
+
+`change_hash` is the sha256 of `change_preview`, the exact text shown. An approval must quote it:
+
+- **CLI:** `--hash` takes the full sha256 or a prefix of at least 8 characters of the hash displayed; `--yes` approves the hash just displayed; with neither, `faultline approve` asks you to type the first 8 characters.
+- **Control room:** the Approve button sends the full `change_hash` the card rendered. If that is no longer the current change the server answers 409 and deliberately does not echo the new hash, so the change has to be re-read and re-shown.
+- **Email:** `APPROVE` approves the hash printed in that email. If the stored proposal changed after the mail went out, the reply is not recorded.
+
+The hash is checked a second time when applying: the change is rebuilt from the catalog against the override as it is now and must hash to the approved value. If the override or the compose files changed in between, the apply is refused with "ask for a fresh proposal".
+
+### From the CLI
+
+```bash
+faultline propose 5b21bb133620                  # "Can I fix this?" for one experiment; prints each request in full
+faultline propose 5b21bb133620 --no-llm         # templates only, no ranking or rewording
+faultline proposals                             # open proposals (expired ones are swept first)
+faultline proposals --all                       # include decided and final ones
+faultline proposals --id fx-00fc525ea5          # one in full, with its audit trail
+faultline approve fx-00fc525ea5 --hash 2035430c23da --reason "masked readiness on things-search"
+faultline approve fx-f2b16683c8 --yes --allow-protected   # touches MongoDB
+faultline approve fx-00fc525ea5 --hash 2035430c --no-apply  # record the approval only
+faultline reject fx-cc6809b5a2 --reason "not during the demo"
+```
+
+| Command | Flags | What it does |
+|---|---|---|
+| `propose <experiment-id>` | `--no-llm`, `--include-test`, `--email`, `--no-apply`, `--allow-protected` | Builds and prints the proposals, writes them as `pending`, applies nothing. `--include-test` also considers the test-only entry. `--email` also asks `ADMIN_EMAIL` and waits (see below); with it, `--no-apply` records the decision without applying and `--allow-protected` lets an approved protected fix apply |
+| `proposals` | `--all`, `--id <id>` | Lists open proposals (pending, approved, applying, applied) with rank, fix, services, the first 12 characters of the hash, time left and whether it is protected; `--all` adds the decided ones; `--id` prints one in full plus its audit trail |
+| `approve <id>` | `--hash <h>`, `--yes`, `--allow-protected`, `--no-apply`, `--reason <text>` | Prints the proposal, approves it by hash, then applies and verifies it in the same command and prints the before/after comparison. Refused unless the proposal is pending; refused for a protected fix without `--allow-protected` (unless `--no-apply`). With `--no-apply` the approval must still be applied before the proposal's deadline, from the control room (Apply now), or it expires; there is no CLI command that applies an already-approved proposal. When it applies, the exit code is 0 only for `verified` or `applied` |
+| `reject <id>` | `--reason <text>` | Rejects a pending proposal; it is never applied |
+
+### From the control room
+
+The **Fix approvals** panel is a full-width row below Recommended fixes. It groups proposals as "Waiting for a decision", "Approved and in progress" and "Recently decided" (collapsed). Each card shows the status as text and icon, the five parts under their headings, the verbatim change with a legend for `+` and `-` lines and a Copy button, the expected metrics, the first 12 characters of the hash (full value on hover), an expiry countdown, a protected-service warning with an "Allow changing a protected service" checkbox, an optional reason field, and **Approve change `<hash>`** / **Reject** buttons. After a decision it shows who decided and why, the apply job's state, an **Apply now** button for an approved proposal whose apply did not start, and once verified a "Verification: before and after" table with each metric's verdict. A panel header `?` explains it in plain words.
+
+Approving starts a `fix` job in the single job slot, built from the room's own armed session (its probes, Docker client and topology) rather than a second one. The `fix` job is never in the generic `POST /api/jobs/<kind>` set; only an approved proposal can start it. As in the CLI, a fix that touches a protected service is not approved at all unless its "allow protected" checkbox is ticked (409, the proposal stays pending).
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /api/proposals` | | `200 {"proposals":[...]}`, newest first, after expiring overdue ones (not while a `fix` job runs) |
+| `GET /api/proposals/<id>` | | `200` the full `FixProposal` (with `expected_metrics`, `audit`, `rank`, `ranked_by`, `applied_at`, `override_backup`) plus `seconds_left`; `404` unknown |
+| `POST /api/proposals/<id>/approve` | `{"change_hash": "<sha256>", "reason"?, "allow_protected"?, "llm"?}` | `200 {"ok":true,"proposal":{...},"apply":{"started":true,"job":{...},"reason":""}}`; `apply.started` is `false`, with a reason, when the job slot is busy (the approval stands; retry with `/apply`). `400` without a hash; `409` when the hash is not the current change or the proposal is no longer pending; `404` unknown |
+| `POST /api/proposals/<id>/reject` | `{"reason"?}` | `200 {"ok":true,"proposal":{...}}`; `409` when no longer pending; `404` unknown |
+| `POST /api/proposals/<id>/apply` | `{"allow_protected"?, "llm"?}` | `202 {"ok":true,"job":{...}}`; `409` when the proposal is not approved (or has expired) or another job is running; `404` unknown |
+
+`GET /api/state` also carries `proposals: {"open","pending","total","latest":[...]}` (every in-flight proposal plus the six newest decided ones), read-only on the poll path. A reason is collapsed to one line and capped at 500 characters. The full contract is [UI_CONTRACT.md §2.5](UI_CONTRACT.md).
+
+### By email
+
+`faultline propose <experiment-id> --email` sends each new proposal to `ADMIN_EMAIL` over the same SMTP and IMAP settings as the [approval gate](#safety) and waits for the reply. The body is the same text the CLI prints (the five parts, the verbatim change, the full hash), and the subject carries the `FL-xxxxxxxx` correlation token. The first line of the reply must be exactly `APPROVE` or `REJECT`: case, surrounding whitespace and quotes and one trailing full stop or exclamation mark are ignored, but `APPROVE it` is not an answer. Lines after the first are kept as the reason. An unparseable reply gets the options mailed back, at most three times.
+
+The wait is the shorter of `APPROVAL_TIMEOUT_SECONDS` and the time the proposal has left. Silence, STOP, a decision made elsewhere, a send failure or missing configuration decide nothing: the proposal stays pending, still decidable from the CLI or the control room, until it expires. On `APPROVE` the CLI goes on to apply it unless `--no-apply` is given. The exchange is recorded in `reports/approvals/<approval-id>.json` (`scenario: "fix_proposal"`, `default_on_timeout: "no_decision"`); it does not take the experiment gate's `PENDING_APPROVAL.json`. The actor on the proposal is `email:<sender>`. The approval gate's mailbox caveat in [Known limitations](#known-limitations) applies here too.
+
+### Preflight: when an approved fix is not applied
+
+Before anything changes, `apply.preflight` collects every reason not to apply. A refusal adds an audit note (`apply refused: ...`) and changes nothing else: the status stays `approved` and the override is not touched. It refuses when:
+
+- `reports/STOP` exists (the kill switch is on);
+- an experiment or another fix holds `ACTIVE_EXPERIMENT.json`;
+- another fix holds `FIX_IN_FLIGHT.json` (a lock older than 3 hours, or whose process is gone, is ignored);
+- the proposal is not `approved`, or has expired;
+- the stored preview no longer matches its own hash;
+- it touches a protected service and `--allow-protected` was not given (checked against both the proposal's flag and the policy's protected list);
+- the original experiment cannot be found, or the policy would not allow re-running it without `--allow-protected`;
+- the catalog id is unknown, the entry is test-only and the test catalog is off, the entry no longer produces a change, or the rebuilt change hashes differently from the approved one;
+- any watched service, or any service the fix touches, is not running or is paused;
+- the probe has fewer than 5 samples in the 20 s pre-experiment window, or API success in it is below 95 %.
+
+### Apply, verify, roll back
+
+1. File-level preflight, then the stack: from the CLI a fresh session warms the probes up for 20 s; the control room reuses its armed session and waits only if it has too few samples. Then the full preflight above.
+2. Take `FIX_IN_FLIGHT.json`, created exclusively, so two applies can never race.
+3. Rebuild the change under the lock; it must still hash to the approved value.
+4. Write `ACTIVE_EXPERIMENT.json` with `kind: "fix_apply"`, the services being changed and a deadline of `FIX_HEALTH_TIMEOUT_SECONDS` + 300 s. The Guardian leaves those services alone while they are recreated, until that deadline or a STOP.
+5. `approved -> applying`. Back up the override, write the new one and recreate the services (for `restart_service_now`, restart the containers instead).
+6. Wait for health, bounded by `FIX_HEALTH_TIMEOUT_SECONDS` (180 s): every touched service running and not paused, its Docker healthcheck `healthy` or absent, and API success at least 95 % over the last 10 s, for two checks in a row 3 s apart. STOP ends the wait as unhealthy.
+7. Unhealthy, or the recreate failed: roll back, `applying -> rolled_back`. Healthy: `applying -> applied`, and release the experiment lock.
+8. Re-run the same experiment, same target, failure type and parameters, through the operator planner (the same clamping and protected-service policy) and the real Injector with every safety limit. If the plan needs an admin decision it is not injected.
+9. Score the re-run (risk, then scorecard), compare (next section), then `applied -> verified`, or `applied -> verification_failed -> rolled_back`.
+10. Release both locks, whatever happened.
+
+Rolling back restores the override from its backup byte for byte, recreates the same services and waits for health again; the result goes into the proposal's reason. Any unexpected error after the change started also rolls back. If the rollback itself fails, the reason says so and names the backup to restore by hand. `restart_service_now` changes no file, so there is nothing to roll back: if the stack is unhealthy afterwards the proposal still ends `rolled_back` with the note "runtime action, nothing to roll back", and a failed verification leaves it at `verification_failed`. Every step is logged to `reports/logs/remediation.log` and to the console or the control-room feed.
+
+### Comparing before and after
+
+The original experiment report and the re-run are compared on four metrics and on the finding the fix was proposed for. Inside the tolerance a difference counts as `same`, so one slow request or one second of polling granularity never decides a verdict.
+
+| Metric | Taken from | Better | Counts as `same` within |
+|---|---|---|---|
+| `time_to_recover_s` | `recovery.time_to_recover_s`, only if the run recovered | lower | max(2 s, 10 % of before) |
+| `error_rate` | 1 - API success rate during the fault | lower | 0.02 (2 percentage points) |
+| `p95_ms` | p95 latency during the fault | lower | max(50 ms, 10 % of before) |
+| `service_score` | before: the experiment target's scorecard score when the proposal was made; after: the lowest score among the fix's target services after the re-run | higher | 1 point |
+| `finding:<code>` | the worst severity of the targeted finding (0 = gone, 1 = info ... 5 = critical) | lower | exact |
+
+If one run recovered and the other never did, "never" is the worse value. A value missing on either side otherwise gives `unknown`.
+
+**Verdict.** The fix is `verified` only if all three hold: its targeted metric is `better` or `same` (`error_rate` for the two healthcheck entries, which change visibility rather than recovery, and `time_to_recover_s` for every other entry; `unknown` does not pass); the re-run raised no finding above `info` whose code the original did not have; and the targeted finding did not get worse. Otherwise it is `verification_failed`, with every reason listed, and is rolled back. The other metrics are recorded with their verdicts but do not decide.
+
+**A re-run aborted by the same safety limit as the original is still compared.** If the original was cut short early and the re-run is aborted with the same `abort_reason` (and not by an operator stop), the two are like for like and their numbers are compared. Any other abort, a re-run skipped by the injector's preflight, or a failed re-run is `verification_failed` with that reason.
+
+### Fix states on the scorecard and in the narrative
+
+Every scorecard row (`ServiceScore.fixes`) lists a `FixState` for each proposal: proposal id, experiment, finding, catalog fix, and a state that is `proposed` for a pending proposal and the proposal's status otherwise (`approved`, `applying`, `applied`, `verified`, `verification_failed`, `rejected`, `rolled_back`, `expired`). It appears on the experiment's target and on every service the fix changes, with the verification reason, or else the decision reason, attached. `reports/scorecard.md` adds a **Fix states** table (service, finding, fix, state, link to `proposals/<id>.md`), showing the reason for rolled-back, failed and rejected ones. Fix states never change a score.
+
+`faultline narrate` adds one line under each experiment that has a verified or rolled-back fix:
+
+```
+  Fix verified: add_or_tighten_healthcheck on things-search, approved by cli:alice (time to recover 30.5 s -> 28.1 s)
+  Fix rolled back: set_resource_limits on mongodb (time to recover went from 121 s to 140 s (worse))
+```
+
+(The two lines show the format; the numbers in them are illustrative.)
+
+### Files and settings
+
+```
+deploy/docker-compose.override.yml   the Faultline-owned override (FAULTLINE_OVERRIDE_FILE), git-ignored
+reports/
+  proposals/<id>.json                one FixProposal: the request, its hash, status, audit trail and verification
+  proposals/<id>.md                  the request for people, as written when it was proposed
+  remediation/backups/<id>.yml       exact bytes of the override before that proposal changed it
+  FIX_IN_FLIGHT.json                 present = a fix is being applied (proposal id, start time, pid)
+  logs/remediation.log               every apply, health-wait, re-run, comparison and rollback step
+  approvals/<approval-id>.json       the email exchange for a proposal, when --email was used
+```
+
+| Setting | Default | What it does |
+|---|---|---|
+| `FIX_PROPOSAL_TIMEOUT_SECONDS` | `1800` | How long a proposal stays open, pending or approved, before it expires unapplied |
+| `FAULTLINE_OVERRIDE_FILE` | `deploy/docker-compose.override.yml` | The only file a fix writes |
+| `FIX_HEALTH_TIMEOUT_SECONDS` | `180` | How long to wait for the stack to be healthy after applying, and again after a rollback |
+| `FAULTLINE_COMPOSE_ENV` | empty | `K=V,K2=V2` added to the environment of every `docker compose` call, for variables the stack's own launcher exports |
+| `FAULTLINE_TEST_CATALOG` | off | `1` enables the test-only `break_healthcheck_for_test` entry |
+
+### Limits
+
+- Six catalog entries, all Docker Compose configuration or a restart, all checked against Ditto. A Fix agent recommendation outside the catalog (a MongoDB replica set, a second `policies` instance) stays advisory and cannot be applied.
+- One re-run per fix. Probe noise is absorbed by the tolerances, not by repeated runs, so a verdict on a borderline change is one sample.
+- Crash-type re-runs of Ditto's Java services take minutes (JVM cold start), and so does the health wait after a recreate; one apply plus verification is not a quick action.
+- The before value of `service_score` is the experiment target's score, while the after value is the lowest score among the fix's target services, which can be a different service. It is reported but never decides a verdict.
+- The scorecard the apply engine writes after the re-run is computed while the proposal is still `applied`, so it shows that state until the next `faultline scorecard` or analysis. `proposals/<id>.md` is written once, when the proposal is made; the `.json` is the current record.
+- The control room's scorecard panel does not draw fix states yet (they are in `scorecard.json` and `scorecard.md`), and the narrator's JSON (`GET /api/narrative/<id>`) does not include the fix lines.
+- On the bundled stack the override sits next to `deploy/docker-compose.yml`, so compose loads it automatically when `scripts/up.sh` runs `docker compose up` in `deploy/`. A stack started from elsewhere by its own launcher does not load it, so recreating that stack outside Faultline drops the applied fixes until Faultline recreates them.
+
 ## LLM providers
 
 The planner, risk and fix agents talk to one `LLMClient` (`faultline/planning/llm.py`). Every call returns `None` on timeout, bad JSON or a missing key, so the deterministic path always has the final say. Four settings select the provider, in `.env` or the environment: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`.
@@ -448,12 +685,18 @@ reports/
   fixes/<id>.json, <id>.md   FixRecommendation (JSON for machines, Markdown for people)
   scorecard.json, .md        per-service scores, ranked worst first
   approvals/<id>.json        ApprovalRequest plus its decision, one file per decision, kept for good
+  proposals/<id>.json        FixProposal: one "Can I fix this?" request, its change hash, status,
+                             audit trail and before/after verification
+  proposals/<id>.md          the same request for people, as written when it was proposed
+  remediation/backups/<id>.yml  exact bytes of the Faultline override before that fix changed it
+  FIX_IN_FLIGHT.json         present = an approved fix is being applied (one at a time)
   live.json                  what the injector is doing right now (dashboard feed)
   ACTIVE_EXPERIMENT.json     lock + deadline while an experiment runs (read by the Guardian)
   PENDING_APPROVAL.json      present = an admin is being waited on for a decision
   STOP                       present = abort now
   guardian.heartbeat.json    Guardian liveness
   logs/guardian.log          Guardian actions
+  logs/remediation.log       every apply, health wait, re-run, comparison and rollback step
 ```
 
 An abbreviated, illustrative experiment report (field names, finding codes and titles follow the code; the numbers are made up, not from a real run):
@@ -587,6 +830,7 @@ independently reproduced all four observability role overrides (`prometheus`, `g
 - `port_beyond_ingress` on a service outside the system under test can never be confirmed, because Faultline will not inject into `grafana` or `prometheus`. Those predictions say so in their policy note rather than sitting in the untested column as if an experiment were pending.
 - The approval gate trusts the mailbox it polls. A reply is matched by the correlation token (`FL-xxxxxxxx`) in the subject line or by `In-Reply-To` pointing at the `Message-ID` Faultline sent — never by "the newest unread mail", because two decisions can be open at once — but there is no signature check and no sender check, so anyone who can write into the `IMAP_MAILBOX` can answer for the admin. The gate is exactly as strong as that mailbox. `ADMIN_EMAIL` is also still a placeholder: the project owner has not supplied the real address, and it is deliberately not hardcoded anywhere.
 - The approval gate only ever fires for an operator-chosen experiment. `Planner.plan_operator` sets `requires_approval` when the policy refuses the pair and the gate is on; `Planner.candidates` (weakness-aware or not) still drops a protected pair from the ranked list rather than marking it for a decision, so an AI-planned run never reaches the gate — and neither does the LangGraph planner in `faultline_langgraph/`, which ranks through the same `Planner.candidates` and only plans, never runs. The Weakness Scout trigger that would widen it is a documented hook, not wired: `scout_predicted_severity()` reads the Scout's real `reports/weaknesses.json` (target and failure type of each `suggested_experiment`, its `predicted_level`), and `needs_pre_injection_approval()` documents where to call it, but nothing calls it yet. In the control room the run job is wired end to end — `POST /api/jobs/run` with `mode: "manual"` on a protected pair and `allow_protected: false` is held, not refused, once the gate is configured — but neither the control room launcher nor Fable sends that request today: both lock a protected card unless the override is ticked, and the override bypasses the gate.
+- Human-approved fixes are limited to six catalog entries and verify each with one re-run; the full list of their limits is in [Human-approved fixes](#limits).
 - The control room is single-operator and unauthenticated. It binds loopback only, has no login and no CSRF protection, and its state lives in one process: two browser tabs share one session, and restarting the server disarms the probes and empties the event log (the experiment reports on disk survive, the narration does not). Do not expose the port.
 - The control room's telemetry starts when you arm it, not when the stack started. Close the server and the chart's history is gone.
 - `pyproject.toml` declares only `static/*.html` as package data, so a non-editable `pip install` would ship the page without its CSS and JS. Install with `pip install -e .`, as the quickstart does.
@@ -596,7 +840,7 @@ independently reproduced all four observability role overrides (`prometheus`, `g
 - Kubernetes backend (Chaos Mesh or LitmusChaos as the injector; the topology from Services, Deployments and NetworkPolicies).
 - OpenTelemetry traces from the probe through gateway to MongoDB. Cascade attribution already orders hops from probe timing and the topology graph; traces would attribute each individual request, removing the 3 s timing resolution and the `ambiguous` cases.
 - Grafana annotations at injection start, rollback and recovery, so the chaos window is visible on every panel.
-- Regression mode: run the same experiment before and after a recommended fix and report the delta in the scorecard.
+- Regression mode, the rest of it. [Human-approved fixes](#human-approved-fixes) deliver part: for an approved catalog fix, Faultline re-runs the same experiment (same target, failure type and parameters) after applying it, records before, after and a verdict for time to recover, error rate, p95, service score and the targeted finding in the proposal's `verification`, and puts the fix state on the scorecard. Still to do: report the per-service score delta in the scorecard itself (today it carries the state and reason, and the numbers live in the proposal); run the comparison for any change, including Fix agent recommendations outside the catalog, not only an applied catalog fix; repeat each run more than once so a verdict is not a single sample; and show it all in the control room's scorecard panel.
 - Bandit-style experiment selection that trades exploration of untested pairs against re-testing weak services, instead of the fixed priority formula.
 - Multi-LLM consensus for the planner: two models propose, the code accepts only when they agree on target and failure type.
 

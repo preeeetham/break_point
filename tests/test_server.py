@@ -435,3 +435,13 @@ def test_apply_endpoint_needs_approval_and_a_free_slot(base, control, tmp_store,
     status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/apply", {"allow_protected": "yes"})
     assert status == 202 and out["job"]["kind"] == "fix"
     assert wait_job(control)["status"] == "done" and fake_apply[-1]["allow_protected"] is True
+
+
+def test_protected_fix_is_not_approved_without_allow_protected(base, tmp_store, fake_apply):
+    tmp_store.write_proposal(make_proposal(target_services=["mongodb"], requires_allow_protected=True))
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve", {"change_hash": _hash(PREVIEW)})
+    assert status == 409 and "protected service" in out["error"]
+    assert tmp_store.proposal("fx-0123456789").status == "pending" and fake_apply == []
+    status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve",
+                          {"change_hash": _hash(PREVIEW), "allow_protected": True})
+    assert status == 200 and tmp_store.proposal("fx-0123456789").status == "approved"

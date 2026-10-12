@@ -288,3 +288,84 @@ reported as "the failure stayed at policies", consistent with its unchanged p95.
   `narrator._cascade()` when it lands, and `dashboard/control.py`'s live `blast` line will need a
   trivial merge with that tree's edits.
 - `OP_ROUTES` is Ditto-specific, like the probe itself; another target needs its own routes.
+
+---
+
+# Progress: Human-approved fixes (2026-10-12)
+
+Branch `feature/hitl-fix`. Until now every Faultline fix was advice. This feature adds one narrow
+path that can change the application, and only with a person's say-so: after an experiment finds a
+problem, Faultline asks "Can I fix this?" (what is wrong, the exact change, the expected improvement,
+the risks, the rollback), applies only the exact change a human approved by its hash, re-runs the same
+experiment, and keeps the change only if the before/after comparison holds. The feature is described
+for readers in [docs/REFERENCE.md](docs/REFERENCE.md#human-approved-fixes); the 60-second demo script
+is [docs/demo/HITL_FIX_DEMO.md](docs/demo/HITL_FIX_DEMO.md).
+
+## The rules it was built around
+
+- **Only code-defined changes.** Six catalog entries (`faultline/remediation/catalog.py`) build every
+  change deterministically from the live stack's merged compose config. A model may rank the shortlist
+  and reword three prose fields; it never writes the change, the rollback text or the diff, and an id
+  it invents is discarded. With `FAULTLINE_LLM=false` the feature works the same from templates.
+- **Nothing is approved by default.** Proposals expire (`FIX_PROPOSAL_TIMEOUT_SECONDS`, 1800 s); an
+  unanswered email, a send failure or missing mail settings decide nothing.
+- **The approval pins the change.** `change_hash` is the sha256 of the verbatim preview. CLI, control
+  room and email all approve a hash, and the apply engine rebuilds the change and refuses if it no
+  longer hashes the same.
+- **The stack's own compose files are never edited.** Changes go into a Faultline-owned, git-ignored
+  override (`deploy/docker-compose.override.yml`), backed up byte for byte under
+  `reports/remediation/backups/` and restored exactly on rollback.
+- **Every status change is a legal transition with an audit entry**
+  (`faultline/remediation/proposals.py`), so a rejected or expired proposal can never become applied.
+
+## Build order and commits
+
+| Commit | What |
+|---|---|
+| `d6eb237` | 1/5: the contract (`FixProposal`, `FixVerification`, `MetricComparison`, `FixState`) and the lifecycle: legal transitions, change hash, expiry |
+| `276fec9` | 2/5: the code-defined fix catalog and the Faultline-owned override (deterministic render, diff, exact-bytes backup and restore, live compose files from container labels, recreate) |
+| `197a795` | 3/5: "Can I fix this?" proposals (candidates, templates, optional validated LLM step) and the CLI (`propose`, `proposals`, `approve`, `reject`; `run --analyze` proposes) |
+| `a47d943` | 4/5: apply, re-run, verify and roll back automatically, with preflight refusals, the two locks and the metric tolerances |
+| `3ee3f13` | Fix states on the scorecard (`ServiceScore.fixes`, the Fix states table in `scorecard.md`) and verified or rolled-back fixes in the narrative |
+| _(uncommitted, in progress)_ | 5/5: the control room's Fix approvals panel (`static/fixes.js`), the `/api/proposals` endpoints and the `fix` job (`dashboard/server.py`, `dashboard/control.py`), the email channel (`agents/approval.py`, `propose --email`), `docs/UI_CONTRACT.md` §2.5 and their tests |
+
+## What it does on Ditto
+
+Checked against the live `bosch-ditto` project, with `faultline propose --no-llm` run against a copy
+of the blackboard on 2026-10-12 (nothing applied):
+
+- `fd1b18f67001` (`container_crash` on `things`; `health_check_masked_failure` on `things-search`,
+  `connectivity` and `gateway`) produced three `add_or_tighten_healthcheck` proposals, each a diff
+  that moves one service's healthcheck from `/alive` to `/ready` and keeps its 30 s interval, 15 s
+  timeout, 4 retries and 2 min start period.
+- `5b21bb133620` (`dependency_blind_readiness`) produced `add_or_tighten_healthcheck` on the three
+  services it names and a protected `add_dependency_healthcheck` on `mongodb`, and logged
+  `add_healthy_dependency ... nothing to change`, because the live MongoDB has no healthcheck for
+  `condition: service_healthy` to wait on.
+- `7ec64f7a1498` (`slow_recovery` after `db_flood`) produced a protected `set_resource_limits` on
+  `mongodb`.
+- `set_restart_policy` produces nothing anywhere on Ditto: every service already has
+  `restart: always`. As with the Scout's silent `weak_restart_policy` check, that is the right answer.
+
+## Verified, and how
+
+- `pytest` on the seven remediation test files (`test_apply.py`, `test_fix_approval_email.py`,
+  `test_fix_states.py`, `test_override.py`, `test_proposals.py`, `test_propose.py`,
+  `test_remediation_catalog.py`): 146 passed. The proposal and fix tests in `test_control.py` and
+  `test_server.py`: 22 passed. All offline; Docker is injected through `apply.Deps`.
+- The proposal step against the live stack's real merged config, as above.
+
+## What is left
+
+- **No live apply-and-verify run is recorded yet.** `reports/proposals/` on this machine is empty, so
+  there is no real before/after table to quote. The first real run should be written up here, the
+  way the Cascade Attribution section records its live experiments.
+- The 5/5 work above is still being finished and is not committed.
+- There is no CLI command that applies an already-approved proposal (`approve --no-apply` leaves it to
+  the control room's Apply now button or `POST /api/proposals/<id>/apply`).
+- The control room's scorecard panel does not draw fix states, and `narrate_sections()` (the
+  control room's narrative JSON) has no fix lines; both are in the CLI output and `scorecard.md` only.
+- The scorecard written right after a verification re-run still shows the fix as `applied`, because it
+  is computed before the final transition; the next `faultline scorecard` or analysis corrects it.
+- Regression mode is only partly delivered: see the roadmap in
+  [docs/REFERENCE.md](docs/REFERENCE.md#roadmap).

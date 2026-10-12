@@ -60,7 +60,7 @@ def make_proposal(proposal_id: str = "fx-0123456789", experiment_id: str = "exp-
 
     fields = dict(
         proposal_id=proposal_id, experiment_id=experiment_id, finding_code="health_check_masked_failure",
-        catalog_fix_id="deep_readiness_check", target_services=["things"], change_preview=preview,
+        catalog_fix_id="add_or_tighten_healthcheck", target_services=["things"], change_preview=preview,
         change_hash=P.change_hash(preview),
         explanation=ProposalExplanation(
             problem="things answered /ready 200 while 92% of real requests through it failed (evidence: probe).",
