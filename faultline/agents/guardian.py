@@ -40,7 +40,9 @@ def run(settings, store: ReportStore, docker: DockerController, interval_s: floa
                     down_since.pop(svc, None)
                     continue
                 down_since.setdefault(svc, now)
-                expected = (svc == lock_target and now < lock_deadline and not stop)
+                # a fix being applied recreates several services at once (lock kind "fix_apply", "services")
+                expected = ((svc == lock_target or svc in (lock.get("services") or [])) and now < lock_deadline
+                            and not stop)
                 if expected:
                     continue
                 if stop or now - down_since[svc] > DOWN_GRACE_S:
