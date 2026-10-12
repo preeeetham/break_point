@@ -138,8 +138,13 @@ const replayRefusal = (): ActionResult => ({
   error: "Replay mode: the Faultline server is not reachable, so nothing can run. Start it with faultline dashboard --port 8777.",
 });
 
+// In replay the poll only retries every 15 s, so an action first checks whether the server is back
+// (one immediate poll) and runs if it is; it is refused only when the server really is unreachable.
 function guarded<A extends unknown[], R>(fn: (...a: A) => Promise<ActionResult<R>>) {
-  return (...a: A): Promise<ActionResult<R>> => (snap.connection === "live" ? fn(...a) : Promise.resolve(replayRefusal() as ActionResult<R>));
+  return async (...a: A): Promise<ActionResult<R>> => {
+    if (snap.connection !== "live") await tick();
+    return snap.connection === "live" ? fn(...a) : (replayRefusal() as ActionResult<R>);
+  };
 }
 
 function kick<R>(p: Promise<ActionResult<R>>) {
