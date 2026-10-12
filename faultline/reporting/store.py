@@ -24,7 +24,7 @@ from ..schemas import (
 class ReportStore:
     def __init__(self, root: Path | str):
         self.root = Path(root)
-        for sub in ("experiments", "risk", "fixes", "logs", "approvals"):
+        for sub in ("experiments", "risk", "fixes", "logs", "approvals", "proposals"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
     # ---------------------------------------------------------- generic
@@ -50,6 +50,32 @@ class ReportStore:
     def topology(self) -> Optional[Topology]:
         d = self._read(self.root / "topology.json")
         return Topology.model_validate(d) if d else None
+
+    # ---------------------------------------------------------- fix proposals (remediation)
+    def write_proposal(self, p: "FixProposal") -> Path:
+        from faultline.schemas import FixProposal
+        return self._write(self.root / "proposals" / f"{p.proposal_id}.json", FixProposal.model_validate(p.model_dump()))
+
+    def proposal(self, proposal_id: str) -> Optional["FixProposal"]:
+        from faultline.schemas import FixProposal
+        if not proposal_id or "/" in proposal_id or ".." in proposal_id:
+            return None
+        d = self._read(self.root / "proposals" / f"{proposal_id}.json")
+        return FixProposal.model_validate(d) if d else None
+
+    def proposals(self) -> list["FixProposal"]:
+        """Every proposal, newest first."""
+        from faultline.schemas import FixProposal
+        out = []
+        for f in (self.root / "proposals").glob("*.json"):
+            d = self._read(f)
+            if d:
+                out.append(FixProposal.model_validate(d))
+        return sorted(out, key=lambda p: p.created_at, reverse=True)
+
+    @property
+    def fix_lock_file(self) -> Path:
+        return self.root / "FIX_IN_FLIGHT.json"
 
     def write_baseline(self, b: Baseline) -> Path:
         return self._write(self.root / "baseline.json", b)

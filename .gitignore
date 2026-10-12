@@ -28,3 +28,6 @@ reports/*
 
 # Claude frontend (claude-frontend/)
 node_modules/
+
+# Faultline-owned remediation override (runtime state, backed up under reports/remediation/)
+deploy/docker-compose.override.yml

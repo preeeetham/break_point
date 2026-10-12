@@ -62,6 +62,11 @@ class Settings:
     imap_mailbox: str = "INBOX"
     imap_ssl: bool = True
     approval_timeout_s: float = 120.0
+    # ---- human-approved fixes. Proposals expire unanswered (never auto-approved); config changes go
+    # into a Faultline-owned compose override next to the base compose file, never into it.
+    fix_proposal_timeout_s: float = 1800.0
+    remediation_override_file: str = "deploy/docker-compose.override.yml"
+    fix_health_timeout_s: float = 180.0
     approval_poll_s: float = 5.0
 
     @property
@@ -105,6 +110,9 @@ ENV_MAP = {
     "IMAP_MAILBOX": "imap_mailbox",
     "IMAP_SSL": "imap_ssl",
     "APPROVAL_TIMEOUT_SECONDS": "approval_timeout_s",
+    "FIX_PROPOSAL_TIMEOUT_SECONDS": "fix_proposal_timeout_s",
+    "FAULTLINE_OVERRIDE_FILE": "remediation_override_file",
+    "FIX_HEALTH_TIMEOUT_SECONDS": "fix_health_timeout_s",
     "APPROVAL_POLL_SECONDS": "approval_poll_s",
 }
 
@@ -135,7 +143,7 @@ def load_settings(path: str | None = None) -> Settings:
     s.imap_host = s.imap_host or s.smtp_host
     s.imap_user = s.imap_user or s.smtp_user
     s.imap_password = s.imap_password or s.smtp_password
-    for attr in ("compose_file", "nginx_conf", "reports_dir", "thresholds_file", "knowledge_file"):
+    for attr in ("compose_file", "nginx_conf", "reports_dir", "thresholds_file", "knowledge_file", "remediation_override_file"):
         p = Path(getattr(s, attr))
         if not p.is_absolute():
             setattr(s, attr, str(ROOT / p))
