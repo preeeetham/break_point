@@ -210,6 +210,7 @@ To attach Faultline to an existing Ditto compose project instead of the bundled 
 | `propose <experiment-id> [--no-llm] [--include-test] [--email] [--no-apply] [--allow-protected]` | Asks "Can I fix this?": builds catalog fix proposals for one experiment, prints each in full and writes them as `pending`. Applies nothing. `--email` also asks `ADMIN_EMAIL` (reply `APPROVE` or `REJECT`). See [Human-approved fixes](#human-approved-fixes) |
 | `proposals [--all] [--id <id>]` | Lists open fix proposals after expiring overdue ones; `--all` includes decided ones; `--id` shows one in full with its audit trail |
 | `approve <id> [--hash <h>] [--yes] [--allow-protected] [--no-apply] [--reason <text>]` | Approves a pending proposal by its change hash (full sha256 or 8+ character prefix, `--yes` for the one displayed, or typed at the prompt), then applies it, re-runs the experiment and keeps or rolls back the change. `--allow-protected` is required for a fix that touches MongoDB |
+| `apply <id> [--allow-protected]` | Applies an already-approved proposal (after `approve --no-apply`): the same preflight, apply, re-run, verify and rollback as `approve` |
 | `reject <id> [--reason <text>]` | Rejects a pending proposal; it is never applied |
 | `stop` / `resume` | Writes / removes `reports/STOP` |
 | `heal [--restart]` | Operator reset between runs: clears the active-experiment lock, removes chaos helper containers and leftover `tc` qdiscs, unpauses and reconnects containers, starts anything stopped, optionally restarts the Ditto services in dependency order, then waits up to 10 minutes for `/health` = UP |
@@ -522,7 +523,7 @@ faultline reject fx-cc6809b5a2 --reason "not during the demo"
 |---|---|---|
 | `propose <experiment-id>` | `--no-llm`, `--include-test`, `--email`, `--no-apply`, `--allow-protected` | Builds and prints the proposals, writes them as `pending`, applies nothing. `--include-test` also considers the test-only entry. `--email` also asks `ADMIN_EMAIL` and waits (see below); with it, `--no-apply` records the decision without applying and `--allow-protected` lets an approved protected fix apply |
 | `proposals` | `--all`, `--id <id>` | Lists open proposals (pending, approved, applying, applied) with rank, fix, services, the first 12 characters of the hash, time left and whether it is protected; `--all` adds the decided ones; `--id` prints one in full plus its audit trail |
-| `approve <id>` | `--hash <h>`, `--yes`, `--allow-protected`, `--no-apply`, `--reason <text>` | Prints the proposal, approves it by hash, then applies and verifies it in the same command and prints the before/after comparison. Refused unless the proposal is pending; refused for a protected fix without `--allow-protected` (unless `--no-apply`). With `--no-apply` the approval must still be applied before the proposal's deadline, from the control room (Apply now), or it expires; there is no CLI command that applies an already-approved proposal. When it applies, the exit code is 0 only for `verified` or `applied` |
+| `approve <id>` | `--hash <h>`, `--yes`, `--allow-protected`, `--no-apply`, `--reason <text>` | Prints the proposal, approves it by hash, then applies and verifies it in the same command and prints the before/after comparison. Refused unless the proposal is pending; refused for a protected fix without `--allow-protected` (unless `--no-apply`). With `--no-apply` the approval must still be applied before the proposal's deadline, with `faultline apply <id>` or the control room's Apply now, or it expires. When it applies, the exit code is 0 only for `verified` or `applied` |
 | `reject <id>` | `--reason <text>` | Rejects a pending proposal; it is never applied |
 
 ### From the control room
@@ -568,11 +569,11 @@ Before anything changes, `apply.preflight` collects every reason not to apply. A
 2. Take `FIX_IN_FLIGHT.json`, created exclusively, so two applies can never race.
 3. Rebuild the change under the lock; it must still hash to the approved value.
 4. Write `ACTIVE_EXPERIMENT.json` with `kind: "fix_apply"`, the services being changed and a deadline of `FIX_HEALTH_TIMEOUT_SECONDS` + 300 s. The Guardian leaves those services alone while they are recreated, until that deadline or a STOP.
-5. `approved -> applying`. Back up the override, write the new one and recreate the services (for `restart_service_now`, restart the containers instead).
-6. Wait for health, bounded by `FIX_HEALTH_TIMEOUT_SECONDS` (180 s): every touched service running and not paused, its Docker healthcheck `healthy` or absent, and API success at least 95 % over the last 10 s, for two checks in a row 3 s apart. STOP ends the wait as unhealthy.
+5. `approved -> applying`. Back up the override, write the new one and recreate the services (for `restart_service_now`, restart the containers instead). A recreated container gets a new IP and nginx resolves `proxy_pass` hosts only when its config loads, so after recreating a service nginx proxies to, Faultline runs `nginx -s reload` in the proxy (config unchanged); without it the API stayed at 0% on the live stack.
+6. Wait for health, bounded by `FIX_HEALTH_TIMEOUT_SECONDS` (180 s): every touched service running and not paused, its Docker healthcheck `healthy` or absent, and API success at least 95 % over the same pre-experiment window the Injector's preflight measures (20 s), so the re-run is not refused as "not steady", for two checks in a row 3 s apart. STOP ends the wait as unhealthy.
 7. Unhealthy, or the recreate failed: roll back, `applying -> rolled_back`. Healthy: `applying -> applied`, and release the experiment lock.
 8. Re-run the same experiment, same target, failure type and parameters, through the operator planner (the same clamping and protected-service policy) and the real Injector with every safety limit. If the plan needs an admin decision it is not injected.
-9. Score the re-run (risk, then scorecard), compare (next section), then `applied -> verified`, or `applied -> verification_failed -> rolled_back`.
+9. Score the re-run (risk, then scorecard), compare (next section), then `applied -> verified`, or `applied -> verification_failed -> rolled_back`. The scorecard is rebuilt once more afterwards so its fix state shows the final outcome; `proposals/<id>.md` is rewritten on every status change.
 10. Release both locks, whatever happened.
 
 Rolling back restores the override from its backup byte for byte, recreates the same services and waits for health again; the result goes into the proposal's reason. Any unexpected error after the change started also rolls back. If the rollback itself fails, the reason says so and names the backup to restore by hand. `restart_service_now` changes no file, so there is nothing to roll back: if the stack is unhealthy afterwards the proposal still ends `rolled_back` with the note "runtime action, nothing to roll back", and a failed verification leaves it at `verification_failed`. Every step is logged to `reports/logs/remediation.log` and to the console or the control-room feed.
@@ -586,7 +587,7 @@ The original experiment report and the re-run are compared on four metrics and o
 | `time_to_recover_s` | `recovery.time_to_recover_s`, only if the run recovered | lower | max(2 s, 10 % of before) |
 | `error_rate` | 1 - API success rate during the fault | lower | 0.02 (2 percentage points) |
 | `p95_ms` | p95 latency during the fault | lower | max(50 ms, 10 % of before) |
-| `service_score` | before: the experiment target's scorecard score when the proposal was made; after: the lowest score among the fix's target services after the re-run | higher | 1 point |
+| `service_score` | the experiment target's scorecard score, when the proposal was made and after the re-run | higher | 1 point |
 | `finding:<code>` | the worst severity of the targeted finding (0 = gone, 1 = info ... 5 = critical) | lower | exact |
 
 If one run recovered and the other never did, "never" is the worse value. A value missing on either side otherwise gives `unknown`.
@@ -634,8 +635,7 @@ reports/
 - Six catalog entries, all Docker Compose configuration or a restart, all checked against Ditto. A Fix agent recommendation outside the catalog (a MongoDB replica set, a second `policies` instance) stays advisory and cannot be applied.
 - One re-run per fix. Probe noise is absorbed by the tolerances, not by repeated runs, so a verdict on a borderline change is one sample.
 - Crash-type re-runs of Ditto's Java services take minutes (JVM cold start), and so does the health wait after a recreate; one apply plus verification is not a quick action.
-- The before value of `service_score` is the experiment target's score, while the after value is the lowest score among the fix's target services, which can be a different service. It is reported but never decides a verdict.
-- The scorecard the apply engine writes after the re-run is computed while the proposal is still `applied`, so it shows that state until the next `faultline scorecard` or analysis. `proposals/<id>.md` is written once, when the proposal is made; the `.json` is the current record.
+- `service_score` is reported but never decides a verdict.
 - The control room's scorecard panel does not draw fix states yet (they are in `scorecard.json` and `scorecard.md`), and the narrator's JSON (`GET /api/narrative/<id>`) does not include the fix lines.
 - On the bundled stack the override sits next to `deploy/docker-compose.yml`, so compose loads it automatically when `scripts/up.sh` runs `docker compose up` in `deploy/`. A stack started from elsewhere by its own launcher does not load it, so recreating that stack outside Faultline drops the applied fixes until Faultline recreates them.
 

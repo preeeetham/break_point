@@ -58,7 +58,16 @@ class ReportStore:
     # ---------------------------------------------------------- fix proposals (remediation)
     def write_proposal(self, p: "FixProposal") -> Path:
         from faultline.schemas import FixProposal
-        return self._write(self.root / "proposals" / f"{p.proposal_id}.json", FixProposal.model_validate(p.model_dump()))
+        path = self._write(self.root / "proposals" / f"{p.proposal_id}.json", FixProposal.model_validate(p.model_dump()))
+        try:  # keep the human-readable copy (linked from scorecard.md) in step with every status change
+            from faultline.remediation.propose import render_markdown
+            md = self.root / "proposals" / f"{p.proposal_id}.md"
+            tmp = md.with_suffix(f".md.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(render_markdown(p))
+            tmp.replace(md)
+        except Exception:
+            pass
+        return path
 
     def proposal(self, proposal_id: str) -> Optional["FixProposal"]:
         from faultline.schemas import FixProposal

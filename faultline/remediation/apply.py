@@ -348,7 +348,11 @@ def _service_ok(st: dict) -> tuple[bool, str]:
 def _wait_healthy(settings, store: ReportStore, deps: Deps, services: list[str], log: Log) -> tuple[bool, str]:
     """Bounded by settings.fix_health_timeout_s. Healthy = every service running and (if it has one) its
     Docker healthcheck healthy, AND, when a probe window exists, API success back over the 95% gate,
-    for `deps.healthy_checks` checks in a row. STOP ends the wait as unhealthy."""
+    for `deps.healthy_checks` checks in a row. STOP ends the wait as unhealthy.
+
+    The API window is the policy's full pre-experiment window, the same one the Injector's steady-state
+    preflight measures: with a shorter one, "healthy" came while the last pre_window_s still held the
+    recreate outage, and the re-run was refused at once ("system is not steady", found on the live stack)."""
     pol = _policy(settings, deps.policy)
     deadline = deps.clock() + float(settings.fix_health_timeout_s)
     good, last = 0, "not checked"
@@ -357,11 +361,19 @@ def _wait_healthy(settings, store: ReportStore, deps: Deps, services: list[str],
             return False, "STOP requested during the health wait"
         problems = []
         for svc in services:
-            ok, what = _service_ok((deps.docker.state(svc) or {}) if deps.docker else {"status": "running"})
+            try:
+                st = (deps.docker.state(svc) or {}) if deps.docker else {"status": "running"}
+            except Exception as exc:
+                # docker.errors.NotFound: the container was listed, then replaced by a recreate before it could be
+                # inspected. Transient while compose swaps containers, so it is "not healthy yet", not an error.
+                if type(exc).__name__ != "NotFound":
+                    raise
+                st = {"status": "being replaced"}
+            ok, what = _service_ok(st)
             if not ok:
                 problems.append(f"{svc} {what}")
         if deps.window is not None:
-            st = deps.window.stats_since(deps.clock() - min(pol.pre_window_s, 10.0))
+            st = deps.window.stats_since(deps.clock() - pol.pre_window_s)
             if st.sample_count < 3:
                 problems.append(f"only {st.sample_count} probe samples")
             elif (st.success_rate or 0) < pol.min_pre_success:
@@ -376,6 +388,55 @@ def _wait_healthy(settings, store: ReportStore, deps: Deps, services: list[str],
 
 
 # ---------------------------------------------------------------------- apply / rollback
+def _proxies_in_front(topology, services: list[str]) -> list[str]:
+    """Proxy services (role "proxy") with a `proxy` edge to one of `services`, excluding the services themselves."""
+    if topology is None:
+        return []
+    nodes = getattr(topology, "services", None) or {}
+    out: list[str] = []
+    for e in getattr(topology, "edges", None) or []:
+        node = nodes.get(e.src)
+        if (e.kind == "proxy" and e.dst in services and e.src not in services and e.src not in out
+                and node is not None and node.role == "proxy"):
+            out.append(e.src)
+    return out
+
+
+def _refresh_proxies(deps: Deps, services: list[str], log: Log) -> list[str]:
+    """After recreating `services`, make the proxies in front of them resolve the new container IPs.
+
+    A recreated container gets a new IP, but nginx resolves a static `proxy_pass http://gateway:8080` once, at
+    config load, so without this it keeps sending traffic to the old address (another container may hold it now)
+    and the API stays down until nginx is reloaded. `nginx -s reload` re-reads the unchanged config and re-resolves
+    the names without dropping in-flight requests; nothing about the proxy container changes. Never raises."""
+    done: list[str] = []
+    topo = deps.topology
+    for proxy in _proxies_in_front(topo, services):
+        image = str(getattr(topo.services[proxy], "image", "") or "")
+        if "nginx" not in image or not hasattr(deps.docker, "exec"):
+            log(f"{proxy} proxies to {', '.join(services)} but is not nginx; not reloaded, it may route to stale IPs")
+            continue
+        try:
+            code, out = deps.docker.exec(proxy, ["nginx", "-s", "reload"])
+        except Exception as exc:  # noqa: BLE001 - a failed reload is reported, the health wait decides
+            log(f"could not reload {proxy}: {type(exc).__name__}: {exc}")
+            continue
+        if code == 0:
+            log(f"reloaded {proxy} so it resolves the recreated {', '.join(services)}")
+            done.append(proxy)
+        else:
+            log(f"reloading {proxy} failed (exit {code}): {_tail(out)}")
+    return done
+
+
+def _recreate(settings, deps: Deps, services: list[str], log: Log) -> tuple[bool, str]:
+    from faultline.remediation import override
+    ok, out = override.recreate(settings, services, runner=deps.runner, docker=deps.docker)
+    if ok:
+        _refresh_proxies(deps, services, log)
+    return ok, out
+
+
 def _apply_change(settings, deps: Deps, rb: Rebuilt, log: Log) -> tuple[bool, str]:
     from faultline.remediation import override
     services = list(rb.change.services)
@@ -386,7 +447,7 @@ def _apply_change(settings, deps: Deps, rb: Rebuilt, log: Log) -> tuple[bool, st
         return True, f"restarted {', '.join(services)}"
     override.write_atomic(settings.remediation_override_file, override.render(rb.change.override_after))
     log(f"wrote {settings.remediation_override_file}; recreating {', '.join(services)}")
-    return override.recreate(settings, services, runner=deps.runner, docker=deps.docker)
+    return _recreate(settings, deps, services, log)
 
 
 def _rollback(settings, store: ReportStore, p: FixProposal, deps: Deps, services: list[str], log: Log) -> str:
@@ -398,7 +459,7 @@ def _rollback(settings, store: ReportStore, p: FixProposal, deps: Deps, services
     try:
         override.restore(settings.remediation_override_file, p.override_backup)
         log(f"restored {settings.remediation_override_file} from {p.override_backup}")
-        ok, out = override.recreate(settings, services, runner=deps.runner, docker=deps.docker)
+        ok, out = _recreate(settings, deps, services, log)
         if not ok:
             return f"override restored, but recreating {', '.join(services)} failed: {_tail(out)}"
         healthy, detail = _wait_healthy(settings, store, deps, services, log)
@@ -464,8 +525,19 @@ def _verdict(metric: str, before: Optional[float], after: Optional[float], none_
     return "worse" if delta > 0 else "better"
 
 
+def _refresh_scorecard(settings, store: ReportStore, deps: "Deps", log: Log) -> None:
+    """Rebuild the scorecard once the proposal is final, so its fix state reads verified / rolled back
+    rather than the 'applied' it had when the re-run's analysis ran. Never raises."""
+    try:
+        from faultline.agents import scorecard
+        scorecard.run(store, deps.topology or store.topology(), settings.compose_project, log=lambda m: None)
+    except Exception as exc:  # noqa: BLE001
+        log(f"scorecard not refreshed: {type(exc).__name__}: {exc}")
+
+
 def _service_score(store: ReportStore, services: list[str]) -> Optional[float]:
-    """Same rule propose.py used for the `before` value: the weakest score among the fix's target services."""
+    """The score of the experiment's target service, the same service propose.py recorded `before` for
+    (comparing a different service's score after would make any fix look better or worse for no reason)."""
     sc = store.scorecard()
     if sc is None:
         return None
@@ -585,7 +657,9 @@ def apply_and_verify(settings, store: ReportStore, proposal_id: str, allow_prote
         if not _take_fix_lock(store, p.proposal_id, deps.clock):
             return _refuse(store, p, ["another fix is in flight (it took the lock first)"], say)
         try:
-            return _locked_apply(settings, store, p, allow_protected, include_test, deps, say)
+            result = _locked_apply(settings, store, p, allow_protected, include_test, deps, say)
+            _refresh_scorecard(settings, store, deps, say)
+            return result
         finally:
             _clear_experiment_lock(store, p)
             _release_fix_lock(store, p.proposal_id)
@@ -647,9 +721,11 @@ def _locked_apply(settings, store: ReportStore, p: FixProposal, allow_protected:
                 deps.analyze()
             # g. compare
             p.verification = _compare(p, rb.fix, original, rerun,
-                                      _service_score(store, list(p.target_services)))
+                                      _service_score(store, [original.target.get("service", "")]))
         else:
-            p.verification = FixVerification(rerun_experiment_id=rerun.experiment_id if rerun else None,
+            # Only point at a re-run report that exists: the Injector does not write one for a skipped run.
+            rerun_id = rerun.experiment_id if rerun is not None and store.experiment(rerun.experiment_id) else None
+            p.verification = FixVerification(rerun_experiment_id=rerun_id,
                                              targeted_metric=_targeted_metric(rb.fix, p.finding_code),
                                              outcome="verification_failed", reason=why)
         store.write_proposal(p)

@@ -369,3 +369,13 @@ of the blackboard on 2026-10-12 (nothing applied):
   is computed before the final transition; the next `faultline scorecard` or analysis corrects it.
 - Regression mode is only partly delivered: see the roadmap in
   [docs/REFERENCE.md](docs/REFERENCE.md#roadmap).
+
+## Live integration run (2026-10-12, project bosch-ditto)
+
+`FAULTLINE_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x -s` (4 tests, skipped in the normal suite):
+- Approve flow: `fx-484ad4e23d` (add_or_tighten_healthcheck on connectivity, gateway, things-search, from the things container_crash `083c6cac4a0d`) applied, re-run `6600e215b8e8` and **verified**: error rate during the fault 100% -> 100% (same), time to recover 32.5 s -> 32.8 s (same), no new findings. An honest result: tightening the healthcheck changes what the platform reports, not how the crash hurts users.
+- Reject: `fx-0bacda5fe5` rejected, override and containers unchanged.
+- Bad fix: `fx-a6e19a88f5` (test-only failing healthcheck on things) went unhealthy and was **rolled back automatically**; things healthy again on its original /alive check.
+- STOP present: `fx-21fb47179b` apply refused ("STOP file present"), status stayed approved.
+
+Bugs the live run found and fixed: recreating gateway left nginx proxying to the old container IP (API at 0%, first attempt rolled back), now `nginx -s reload` after recreating a proxied service; the health wait declared success while the Injector's 20 s steady-state window still held the outage, so the re-run was refused as "not steady", now the same window is used; a container replaced mid-inspection no longer raises. The run was cut short by a network outage before its final clean-up check; the stack config was verified clean afterwards (no override, no STOP, no locks).

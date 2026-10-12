@@ -530,6 +530,141 @@ def test_exception_during_health_wait_restores_and_releases_locks(env):
     assert_unlocked(env)
 
 
+class RecordingDocker(FakeDocker):
+    """FakeDocker that also records `exec` calls (e.g. the proxy reload)."""
+
+    def __init__(self, settings, exec_code=0, **kw):
+        super().__init__(settings, **kw)
+        self.execs: list[tuple[str, list]] = []
+        self.exec_code = exec_code
+
+    def exec(self, svc, cmd, detach=False, user=None):
+        self.execs.append((svc, list(cmd)))
+        return self.exec_code, "" if self.exec_code == 0 else "nginx: [emerg] boom"
+
+
+def _approved_on(env, services):
+    """An approved add_or_tighten_healthcheck on exactly `services`, built the way propose does it."""
+    from faultline.remediation import catalog
+    from faultline.schemas import FixProposal, ProposalExplanation
+    base, label = ov.load(env.s.compose_file), propose._path_label(env.s)
+    change = catalog.get("add_or_tighten_healthcheck").build(base, {}, list(services), env.topology)
+    preview = catalog.preview(change, "", label)
+    p = FixProposal(proposal_id=P.new_proposal_id(), experiment_id="orig0001",
+                    finding_code="health_check_masked_failure", catalog_fix_id="add_or_tighten_healthcheck",
+                    target_services=list(change.services), change_preview=preview, change_hash=P.change_hash(preview),
+                    explanation=ProposalExplanation(problem="p", change="c", expected_improvement="e", risks="r",
+                                                    rollback="rb"),
+                    expires_at=P.expires_at(600))
+    env.store.write_proposal(p)
+    return P.approve(env.store, p.proposal_id, p.change_hash, "test", "go")
+
+
+def test_recreating_a_proxied_service_reloads_the_proxy_in_front_of_it(env):
+    """Found live: nginx resolves `proxy_pass http://gateway:8080` once, so a recreated gateway (new IP) left the
+    API at 0% until nginx was reloaded. After every recreate, apply and rollback, the proxy is reloaded."""
+    original_experiment(env)
+    p = _approved_on(env, ["gateway"])
+    docker = RecordingDocker(env.s)
+    got = run(env, p, deps=make_deps(env, docker=docker))
+    assert got.status == "verified", got.audit[-1].note
+    assert docker.execs == [("nginx", ["nginx", "-s", "reload"])]
+    assert any("reloaded nginx" in m for m in env.logs)
+
+
+def test_rollback_recreate_also_reloads_the_proxy(env):
+    original_experiment(env)
+    p = _approved_on(env, ["gateway"])
+    docker = RecordingDocker(env.s, health_fn=lambda svc, text: "unhealthy" if "/ready" in text else "healthy")
+    got = run(env, p, deps=make_deps(env, docker=docker))
+    assert got.status == "rolled_back"
+    assert docker.execs == [("nginx", ["nginx", "-s", "reload"])] * 2      # after apply and after rollback
+
+
+def test_no_proxy_reload_for_services_no_proxy_fronts(env):
+    original_experiment(env)
+    p = approved(env)                                     # things: nginx only proxies to gateway and ditto-ui
+    docker = RecordingDocker(env.s)
+    assert run(env, p, deps=make_deps(env, docker=docker)).status == "verified"
+    assert docker.execs == []
+
+
+def test_failed_proxy_reload_is_reported_not_raised(env):
+    original_experiment(env)
+    p = _approved_on(env, ["gateway"])
+    docker = RecordingDocker(env.s, exec_code=1)
+    assert run(env, p, deps=make_deps(env, docker=docker)).status == "verified"
+    assert any("reloading nginx failed" in m for m in env.logs)
+
+
+def test_container_replaced_mid_lookup_is_not_healthy_yet_rather_than_an_error(env):
+    """docker.errors.NotFound while compose swaps a container is transient: keep waiting, do not roll back."""
+    original_experiment(env)
+    p = approved(env)
+
+    class NotFound(Exception):
+        pass
+
+    class Flaky(FakeDocker):
+        n = 0
+
+        def state(self, svc):
+            if Path(self.s.remediation_override_file).exists():     # only during the health wait after the change
+                Flaky.n += 1
+                if Flaky.n <= 2:
+                    raise NotFound("No such container: bb464c44")
+            return super().state(svc)
+
+    got = run(env, p, deps=make_deps(env, docker=Flaky(env.s)))
+    assert got.status == "verified", got.audit[-1].note
+    assert Flaky.n >= 3                                   # it really hit NotFound twice and kept waiting
+
+
+class RecoveringWindow:
+    """The API probe after a recreate: failing until `recovered_at` (fake clock), then 100%. A window that still
+    covers the outage reports the outage's success rate, as the real SampleWindow does."""
+
+    def __init__(self, recovered_at):
+        self.recovered_at = recovered_at
+
+    def stats_since(self, t0, t1=None):
+        return WindowStats(sample_count=40, success_rate=1.0 if t0 >= self.recovered_at else 0.69, p95_ms=50.0)
+
+
+def test_health_wait_uses_the_injectors_steady_state_window_so_the_rerun_is_not_refused(env):
+    """Found live: health was judged over the last 10 s, the Injector's preflight over pre_window_s (20 s), so the
+    re-run started at once and was skipped ("system is not steady: success rate 69%"). They must agree."""
+    original_experiment(env)
+    p = approved(env)
+    env.s.fix_health_timeout_s = 120
+    pol = Policy(env.policy_raw)
+    window = RecoveringWindow(recovered_at=env.clock() + 5)
+    seen = []
+
+    def inject(spec):          # what the real Injector's preflight measures at the moment the re-run starts
+        seen.append(window.stats_since(env.clock() - pol.pre_window_s).success_rate)
+        return env.injector(spec)
+
+    got = run(env, p, deps=make_deps(env, window=window, inject=inject))
+    assert seen and seen[0] >= pol.min_pre_success, seen
+    assert got.status == "verified", got.audit[-1].note
+
+
+def test_skipped_rerun_without_a_report_is_not_linked(env):
+    original_experiment(env)
+    p = approved(env)
+
+    def skipped(spec):         # the real Injector returns a skipped report without writing it
+        r = env.make_report(experiment_id=spec.experiment_id, service=spec.target_service,
+                            failure_type=spec.failure_type, status="skipped")
+        r.error = "system is not steady: success rate 69% before injection"
+        return r
+
+    got = run(env, p, deps=make_deps(env, inject=skipped))
+    assert got.status == "rolled_back" and "not steady" in got.verification.reason
+    assert got.verification.rerun_experiment_id is None
+
+
 def test_locks_are_held_during_apply_and_released_after_refusal_inside_the_lock(env, monkeypatch):
     original_experiment(env)
     p = approved(env)
@@ -625,3 +760,32 @@ def test_rerun_aborted_for_a_different_reason_still_fails(env):
 
     got = run(env, p, deps=make_deps(env, inject=inject))
     assert got.status == "rolled_back" and "aborted by safety" in got.verification.reason
+
+
+def test_service_score_compares_the_same_service_and_scorecard_shows_the_final_state(env):
+    original_experiment(env)
+    p = approved(env)
+    got = run(env, p)
+    assert got.status == "verified"
+    sc = env.store.scorecard()
+    things = next(r for r in sc.ranking if r.service == "things")
+    score = next(c for c in got.verification.comparisons if c.metric == "service_score")
+    assert score.after == things.score                       # the experiment target, not the fix's other services
+    assert any(f.proposal_id == p.proposal_id and f.state == "verified" for f in things.fixes)
+    md = (env.store.root / "proposals" / f"{p.proposal_id}.md").read_text()
+    assert "**Status:** verified" in md
+
+
+def test_cli_apply_only_applies_an_approved_proposal(env, monkeypatch):
+    from faultline import cli
+    original_experiment(env)
+    p = approved(env)
+    P.transition(p, "applying", "test")
+    env.store.write_proposal(p)
+
+    class A:
+        proposal_id, allow_protected = p.proposal_id, False
+
+    assert cli.cmd_apply(env.s, env.store, A()) == 1
+    A.proposal_id = "fx-missing"
+    assert cli.cmd_apply(env.s, env.store, A()) == 1

@@ -452,6 +452,23 @@ def _email_proposals(s, store, made, apply_after: bool, allow_protected: bool) -
     return rc
 
 
+def cmd_apply(s, store, a):
+    """Apply an already-approved proposal (e.g. after `approve --no-apply`): preflight, apply, re-run, verify."""
+    from .remediation.apply import apply_and_verify
+
+    p = store.proposal(a.proposal_id)
+    if p is None:
+        say(f"no proposal {a.proposal_id}")
+        return 1
+    if p.status != "approved":
+        say(f"proposal {a.proposal_id} is {p.status}; only an approved proposal can be applied")
+        return 1
+    done = apply_and_verify(s, store, a.proposal_id, allow_protected=a.allow_protected, log=say)
+    refused = done.status == "approved" and done.audit and done.audit[-1].note.startswith("apply refused")
+    say(f"{done.proposal_id}: {done.audit[-1].note if refused else done.status}")
+    return 0 if done.status in ("verified", "applied") else 1
+
+
 def cmd_proposals(s, store, a):
     from .remediation import proposals as P
     from .remediation.propose import render_text
@@ -892,6 +909,10 @@ def main(argv=None) -> int:
     pr.add_argument("--no-apply", action="store_true", help="with --email: record the decision but do not apply")
     pr.add_argument("--allow-protected", action="store_true", help="with --email: allow an approved fix to touch a protected service")
     pr.set_defaults(fn=cmd_propose)
+    pa = sub.add_parser("apply", help="apply an approved fix proposal, re-run its experiment and keep or roll back the change")
+    pa.add_argument("proposal_id")
+    pa.add_argument("--allow-protected", action="store_true", help="required when the fix touches a protected service")
+    pa.set_defaults(fn=cmd_apply)
     ps = sub.add_parser("proposals", help="list open fix proposals (expired ones are swept first) or show one")
     ps.add_argument("--all", action="store_true", help="include decided and final proposals")
     ps.add_argument("--id", help="show one proposal in full, with its audit trail")
