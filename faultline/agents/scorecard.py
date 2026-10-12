@@ -7,7 +7,7 @@ from statistics import mean
 from typing import Callable, Optional
 
 from ..reporting.store import ReportStore
-from ..schemas import ExperimentReport, RiskAssessment, Scorecard, ServiceScore, Topology
+from ..schemas import ExperimentReport, FixState, RiskAssessment, Scorecard, ServiceScore, Topology
 from .knowledge import target_service
 
 SCORED_STATUSES = ("completed", "aborted")
@@ -103,11 +103,31 @@ def _weakest_reason(s: ServiceScore, reports: list[ExperimentReport]) -> str:
     return "; ".join(dict.fromkeys(reasons)) or "lowest score among tested services"
 
 
+def fix_state(status: str) -> str:
+    """Proposal status -> the word the scorecard shows (a pending proposal is "proposed")."""
+    return "proposed" if status == "pending" else status
+
+
+def _attach_fixes(ranking: list[ServiceScore], experiments: list[ExperimentReport], proposals: list) -> None:
+    """Each finding's fix state, on the service the finding was raised against (the experiment's target)
+    and on every service the fix changes."""
+    target_of = {r.experiment_id: target_service(r) for r in experiments}
+    by_service = {s.service: s for s in ranking}
+    for p in sorted(proposals or [], key=lambda p: p.created_at):
+        reason = p.verification.reason if p.verification and p.verification.reason else p.reason
+        state = FixState(proposal_id=p.proposal_id, experiment_id=p.experiment_id, finding_code=p.finding_code,
+                         catalog_fix_id=p.catalog_fix_id, state=fix_state(p.status), reason=reason or "")
+        for svc in dict.fromkeys([target_of.get(p.experiment_id, ""), *p.target_services]):
+            if svc in by_service:
+                by_service[svc].fixes.append(state)
+
+
 def compute(
     experiments: list[ExperimentReport],
     risks: dict[str, RiskAssessment],
     topology: Optional[Topology],
     project: str,
+    proposals: Optional[list] = None,
 ) -> Scorecard:
     scored = [r for r in experiments if r.status in SCORED_STATUSES]
     by_service: dict[str, list[ExperimentReport]] = defaultdict(list)
@@ -120,6 +140,7 @@ def compute(
             services.append(name)
 
     ranking = sorted((_score_service(s, by_service.get(s, [])) for s in services), key=_rank_key)
+    _attach_fixes(ranking, experiments, proposals or [])
     tested = [s for s in ranking if s.score is not None]
     overall = round(mean(s.score for s in tested), 1) if tested else None  # type: ignore[misc]
 
@@ -158,6 +179,18 @@ def render_markdown(sc: Scorecard) -> str:
         lines.append(f"| {i} | `{s.service}` | **{s.grade}** | {score} | {s.experiments} | {worst} | {slowest} | {s.findings} | {notes} |")
     lines += [
         "",
+    ]
+    fixed = [(s.service, f) for s in sc.ranking for f in s.fixes]
+    if fixed:
+        lines += ["", "## Fix states", "",
+                  "Human-approved fix proposals for these findings (nothing is applied without an approval).", "",
+                  "| Service | Finding | Fix | State | Proposal |", "|---|---|---|---|---|"]
+        for svc, f in fixed:
+            note = f" ({f.reason})".replace("|", "/") if f.reason and f.state in ("rolled_back", "verification_failed", "rejected") else ""
+            lines.append(f"| `{svc}` | `{f.finding_code}` | `{f.catalog_fix_id}` | {f.state.replace('_', ' ')}{note} | "
+                         f"[{f.proposal_id}](proposals/{f.proposal_id}.md) |")
+    lines += [
+        "",
         "Score = 100 − mean penalty; penalty = 40·(1−success during) + 20·min(TTR/120 s, 1) + 20·(manual recovery) "
         "+ 10·(high/critical findings, max 3) + 5·(cascade). Grades: A ≥ 90, B ≥ 80, C ≥ 65, D ≥ 50, else F.",
     ]
@@ -167,7 +200,11 @@ def render_markdown(sc: Scorecard) -> str:
 def run(store: ReportStore, topology: Optional[Topology], project: str, log: Callable[[str], None] = print) -> Scorecard:
     experiments = store.experiments()
     risks = {r.experiment_id: rk for r in experiments if (rk := store.risk(r.experiment_id)) is not None}
-    sc = compute(experiments, risks, topology, project)
+    try:
+        proposals = store.proposals()
+    except Exception:  # a broken proposal file must never stop the scorecard
+        proposals = []
+    sc = compute(experiments, risks, topology, project, proposals)
     store.write_scorecard(sc)
     md: Path = store.root / "scorecard.md"
     md.write_text(render_markdown(sc))

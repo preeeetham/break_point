@@ -195,12 +195,30 @@ def _llm_paragraph(llm: Optional[OllamaClient], report: ExperimentReport, risk: 
     return "  " + " ".join(text.split())
 
 
+def _verified_fixes(report: ExperimentReport, proposals: Optional[list]) -> list[str]:
+    """Human-approved fixes for this experiment's findings that a re-run verified (or that were rolled back)."""
+    lines = []
+    for p in proposals or []:
+        if p.experiment_id != report.experiment_id or p.status not in ("verified", "rolled_back"):
+            continue
+        svcs = ", ".join(p.target_services)
+        if p.status == "verified":
+            ttr = next((c for c in (p.verification.comparisons if p.verification else []) if c.metric == "time_to_recover_s"), None)
+            delta = f" (time to recover {ttr.before:g} s -> {ttr.after:g} s)" if ttr and ttr.before is not None and ttr.after is not None else ""
+            lines.append(f"  Fix verified: {p.catalog_fix_id} on {svcs}, approved by {p.decided_by or 'an operator'}{delta}")
+        else:
+            why = p.verification.reason if p.verification and p.verification.reason else p.reason
+            lines.append(f"  Fix rolled back: {p.catalog_fix_id} on {svcs}" + (f" ({why})" if why else ""))
+    return lines
+
+
 def narrate(
     report: ExperimentReport,
     risk: Optional[RiskAssessment],
     fix: Optional[FixRecommendation],
     llm: Optional[OllamaClient],
     use_llm: bool,
+    proposals: Optional[list] = None,
 ) -> list[str]:
     lines = [_header(report)]
     if report.status == "skipped":
@@ -217,6 +235,7 @@ def narrate(
     lines += _findings(report)
     lines.append(_risk(risk))
     lines.append(_fix(fix))
+    lines += _verified_fixes(report, proposals)
     if report.status == "failed" and report.error:
         lines.append(f"  Error: {report.error}")
     if use_llm:
@@ -268,7 +287,11 @@ def _narrate_id(store: ReportStore, eid: str, llm: Optional[OllamaClient], use_l
         risk = risk_agent.assess(report, store.topology(), None)
     if fix is None:
         fix = fix_agent.recommend(report, risk, None)
-    for line in narrate(report, risk, fix, llm, use_llm):
+    try:
+        proposals = store.proposals()
+    except Exception:
+        proposals = []
+    for line in narrate(report, risk, fix, llm, use_llm, proposals):
         log(line)
     log("")
 

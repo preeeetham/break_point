@@ -361,6 +361,17 @@ class FixRecommendation(BaseModel):
     generated_by: Literal["llm+rules", "rules"]
 
 
+class FixState(BaseModel):
+    """A finding's fix state on the scorecard, linking to reports/proposals/<proposal_id>.json."""
+    proposal_id: str
+    experiment_id: str
+    finding_code: str
+    catalog_fix_id: str
+    state: Literal["proposed", "approved", "applying", "applied", "verified", "verification_failed",
+                   "rejected", "rolled_back", "expired"]
+    reason: str = ""
+
+
 class ServiceScore(BaseModel):
     service: str
     score: Optional[float]
@@ -370,6 +381,7 @@ class ServiceScore(BaseModel):
     slowest_recovery_s: Optional[float] = None
     findings: int = 0
     notes: list[str] = []
+    fixes: list[FixState] = []                # human-approved fix proposals for this service's findings
 
 
 class Scorecard(BaseModel):
