@@ -185,7 +185,15 @@ def _apply_target(s: Settings) -> None:
         return
     tfile = tdir / TARGET_FILE
     if tfile.is_file():
-        _apply_yaml(s, yaml.safe_load(tfile.read_text()) or {}, base=tdir)
+        try:
+            data = yaml.safe_load(tfile.read_text()) or {}
+        except yaml.YAMLError as exc:
+            s.target_error = f"targets/{s.target}/{TARGET_FILE} is not valid YAML: {exc}".replace("\n", " ")
+            return
+        if not isinstance(data, dict):
+            s.target_error = f"targets/{s.target}/{TARGET_FILE} must be a mapping of settings"
+            return
+        _apply_yaml(s, data, base=tdir)
     knowledge = tdir / f"{s.target}{KNOWLEDGE_SUFFIX}"
     if not knowledge.is_file():
         # `faultline onboard <repo> --out targets/<name>` names the file after the repository, not the target

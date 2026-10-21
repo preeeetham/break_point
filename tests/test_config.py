@@ -89,6 +89,16 @@ def test_missing_target_directory_is_reported_not_raised(tmp_path, monkeypatch):
     assert "targets/absent/ does not exist" in s.target_error and "available: present" in s.target_error
 
 
+@pytest.mark.parametrize("text,match", [
+    ("links:\n  API: user: pw\n", "is not valid YAML"),
+    ("- just\n- a list\n", "must be a mapping"),
+])
+def test_a_broken_target_yaml_is_reported_not_raised(tmp_path, monkeypatch, text, match):
+    _target(tmp_path, monkeypatch, target_yaml=text)
+    s = load_settings()
+    assert match in s.target_error and s.target_dir is None and s.compose_file == ""
+
+
 def test_no_target_leaves_paths_empty_rather_than_pointing_at_the_repo_root(monkeypatch):
     for key in ("FAULTLINE_TARGET", "FAULTLINE_COMPOSE_FILE", "FAULTLINE_NGINX_CONF", "FAULTLINE_KNOWLEDGE_FILE",
                 "FAULTLINE_PROBE_FILE", "FAULTLINE_RULES_FILE"):
