@@ -1,0 +1,82 @@
+@import "tailwindcss";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource-variable/azeret-mono";
+
+@theme {
+  --font-sans: "Archivo Variable", "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Azeret Mono Variable", "Azeret Mono", ui-monospace, Menlo, monospace;
+
+  /* lab: the light explainer */
+  --color-bg: #ededE8;
+  --color-sheet: #f6f6f3;
+  --color-fg: #121212;
+  --color-fg-2: #4b4f55;
+  --color-line: #c9cac4;
+  --color-grid: #dcddd7;
+
+  /* the one accent: crash-test marker yellow */
+  --color-marker: #ffd60a;
+  --color-marker-ink: #121212;
+
+  /* status inks, always paired with a glyph or a word */
+  --color-pass: #1e7f57;
+  --color-fail: #c8321a;
+  --color-on-fail: #fff6f3;
+  --color-model: #5a5ad8;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --radius-lab: 2px;
+}
+
+/* camera: the dark workflow. Utilities read the variables, so scoping them re-skins everything inside. */
+[data-theme="camera"] {
+  --color-bg: #0e0e0e;
+  --color-sheet: #171717;
+  --color-fg: #ededE8;
+  --color-fg-2: #9a9c98;
+  --color-line: #2c2c2a;
+  --color-grid: #1e1e1d;
+  --color-pass: #3dbf8a;
+  --color-fail: #f0563c;
+  --color-model: #9a9af2;
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-variation-settings: "wdth" 100;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  html:not([data-theme="camera"]) { color-scheme: light; }
+  /* keep focused and anchored elements clear of the sticky camera header and the narrator bar */
+  html { scroll-padding-top: 8.5rem; scroll-padding-bottom: 3.5rem; }
+  @media (max-width: 767px) { html { scroll-padding-top: 7rem; } }
+  body { margin: 0; min-height: 100svh; background: var(--color-bg); color: var(--color-fg); }
+  ::selection { background: var(--color-marker); color: var(--color-marker-ink); }
+  :focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; border-radius: 2px; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+  code, kbd, samp, pre { font-family: var(--font-mono); }
+  /* Azeret's fi ligature reads as "f1" ("conf1g"): wrong in a typeface that quotes config files */
+  code, kbd, samp, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+}
+
+@utility display-wide { font-variation-settings: "wdth" 118, "wght" 640; letter-spacing: -0.035em; line-height: 0.96; }
+@utility display { font-variation-settings: "wdth" 108, "wght" 600; letter-spacing: -0.025em; line-height: 1.02; }
+@utility label-condensed { font-variation-settings: "wdth" 78, "wght" 540; letter-spacing: 0.01em; }
+@utility tabular { font-variant-numeric: tabular-nums; }
+@utility mm-grid {
+  background-image:
+    linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+@utility sr-only-focusable {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  &:focus { position: static; width: auto; height: auto; overflow: visible; clip: auto; white-space: normal; }
+}
+@utility scroll-x-snap { scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; scrollbar-width: none; &::-webkit-scrollbar { display: none; } }

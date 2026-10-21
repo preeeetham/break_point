@@ -1,0 +1,388 @@
+# Progress — Weakness Scout
+
+Build log for the Weakness Scout agent on branch `feature/weakness-scout`. The commits below built
+it, on top of `7c984dd`; the concurrent test work has since added more (see **What is left**). The
+feature is described for readers in
+[docs/REFERENCE.md](docs/REFERENCE.md#predicting-weaknesses-before-breaking-anything); this file is the record of how
+it was built, what was verified and how, and what is not done.
+
+## What it is, in one paragraph
+
+Every other agent in Faultline is empirical: the Risk agent scores an experiment that already ran,
+the Fix agent recommends off a finding that was already observed. Correct, and it means Faultline has
+nothing to say about a service nobody has gotten around to breaking — which matters on a hackathon
+time budget and matters more the moment Faultline is pointed at an unfamiliar repo. The Scout runs
+once, early (right after Topology, before any experiment), reads the compose file, the declared health
+checks, the resource limits, the restart policies and the knowledge file, and produces a ranked list
+of *predicted* weaknesses. `faultline scout --reconcile` later scores those predictions against the
+experiments that have since run.
+
+Two rules hold it together. The checks are 100 % deterministic — the LLM never decides whether a
+weakness exists, because a hallucinated "no health check" on a service that has one would be
+indistinguishable from a real finding in a severity-ranked report. And a prediction is labelled as one
+everywhere: `PREDICTED_LABEL` = `"[predicted, unconfirmed]"` rides on the report, on every record, in
+the Markdown header and on every CLI line, the same discipline the Fix agent applies to its
+`[LLM suggestion, unverified]` extras.
+
+## Build order
+
+1. **The seven deterministic checks** (`faultline/agents/scout.py`): `check_health_checks` (two
+   categories, `shallow_health_check` and `missing_health_check`), `check_redundancy`,
+   `check_resource_limits`, `check_restart_policy`, `check_retry_backoff`, `check_published_ports`,
+   `check_rate_limiting` — eight categories from seven check functions. Every finding quotes the
+   compose field it was read from, or names precisely what is absent.
+2. **Severity scoring**, in the Risk agent's additive style: 3.5 x relative criticality + category
+   weight + 2 x blast fraction + 0.5 per other check the same service fails (max 3) + 1 if stateful
+   + 0.5 if protected, clamped to 10, levels at the Risk agent's own 3 / 5.5 / 8 thresholds. A
+   partially-present gap scales its category weight, so a service that sets a memory limit but no CPU
+   limit does not score as if it set neither. Each finding also nominates the existing catalog failure
+   type that would test it, resolved against `applicable()` and the safety policy so the suggestion is
+   always runnable — MongoDB is protected and degrade-only, so its predictions ask for `network_delay`.
+3. **Schema and blackboard slots** (`faultline/schemas.py`, `faultline/reporting/store.py`):
+   `PredictedWeakness`, `SystemicPattern`, `WeaknessReport`, `WeaknessOutcome`,
+   `WeaknessReconciliation`, `SuggestedExperiment`, `PREDICTED_LABEL`, plus `write_weaknesses` /
+   `weaknesses` / `write_reconciliation` / `reconciliation` on the store.
+4. **The LLM pass**, deliberately narrow: the one-sentence "why this matters" per finding, and at most
+   two systemic-pattern narratives over findings the checks already made. The model cannot add to,
+   remove from, re-rank or re-score the list; anything it returns for an id the checks did not produce
+   is dropped, and a pattern citing fewer than two known ids is dropped.
+5. **CLI** (`cmd_scout` and the `scout` subparser in `faultline/cli.py`): `faultline scout`,
+   `--reconcile`, `--json`, `--no-llm`, registered after `topology` and before `baseline`, and added
+   to `faultline demo` as step 2 of 7, with the reconciliation as step 5. With no `topology.json`
+   on disk it maps one first with
+   `live=False`, because static analysis has to work with the stack down.
+6. **Planner integration** (`WEAKNESS_WEIGHT`, `WEAKNESS_EXACT_MATCH_BONUS` in
+   `faultline/planning/planner.py`): strictly additive, bounded at +1.5.
+7. **Reconcile** (`faultline/agents/reconcile.py`): confirmed / cleared / untested per prediction,
+   pure arithmetic over `reports/`, no LLM anywhere in the module.
+
+The commit order is not quite the logical order above: the schema landed first so the contract existed
+before its producers, and reconcile landed before the CLI and planner wiring that consume it.
+
+## The commits
+
+| Commit | Purpose |
+|---|---|
+| `16743fa` | Schema + blackboard slots for predicted weaknesses — the contract, kept deliberately separate from the Risk agent's post-hoc measured severity |
+| `6584d3c` | The seven deterministic checks, the severity formula and the first LLM prose pass. **This is the commit the Ditto sanity check belongs to** (below) |
+| `b97495e` | `--reconcile`: the whole-system analogue of per-experiment `hypothesis_result.held`, plus the two gates that keep the headline number honest |
+| `edbad8d` | `faultline scout` and `faultline scout --reconcile` on the CLI, following the existing command pattern, with every printed severity labelled as predicted |
+| `a7a2ece` | Planner takes predicted weaknesses as an *additional* ranking signal, bounded at +1.5; the one change to already-working shared code, and strictly additive |
+| `0dc3ed4` | Split the LLM pass into small, independently-failing calls after a real provider exposed the one-big-call design as both over-budget and all-or-nothing |
+| `a73e263` | `tests/test_scout.py`, plus two fixes the tests and a clean-config run exposed: a well-configured deployment yields zero predictions, and a 0.0.0.0-bound port outranks a loopback one |
+| `1cba35c` | Attribute a per-service finding to the prediction it is actually about, and honour the module's own "never raises" contract. Moved the real result from 6 confirmed to 8 |
+| `78edf1a` | Say so when the safety policy forces a weaker stand-in experiment, instead of printing "take the single instance away" beside a latency injection |
+| _(demo)_ | `faultline demo` runs the reconciliation as step 5 of 7, closing the loop it opens at step 2 |
+
+## The Ditto sanity check — step 1, before any LLM or reconcile logic
+
+This is the result the whole feature rests on, and it was taken before the LLM pass was wired in and
+long before reconcile existed: `faultline scout` against `deploy/docker-compose.yml`, no model in the
+loop, checking whether purely deterministic checks rediscover gaps whose correct answers are already
+known elsewhere in this repository. **21 predictions.** Top of the ranking:
+
+```
+CRITICAL 9.5  no_redundancy        mongodb
+HIGH     7.7  no_resource_limits   mongodb
+HIGH     7.3  shallow_health_check policies
+HIGH     7.0  no_redundancy        policies
+HIGH     6.6  shallow_health_check things
+HIGH     6.4  no_redundancy        things
+HIGH     6.3  no_retry_or_backoff  policies,things,things-search,connectivity
+MEDIUM   3.5  missing_health_check nginx
+MEDIUM   3.0  no_rate_limiting     nginx
+```
+
+Why that is the right answer:
+
+- The top prediction is MongoDB having no replica set, whose fix is already in the Fix agent's
+  knowledge library word for word — "Run MongoDB as a replica set so the Ditto driver can fail over"
+  (`faultline/agents/knowledge.py`) — except that the library only offers it *after* an experiment
+  proves the point. The Scout predicts it from the compose file before anything is injected.
+- `no_redundancy` on `policies` is that library's other Ditto-specific one, "run ≥2 policies
+  instances".
+- `shallow_health_check` fires on all five Ditto Java services off the real evidence
+  ``test: curl --fail `hostname`:7626/alive`` — a bare liveness probe that never touches `mongodb`.
+  That is the static shape of `health_check_masked_failure`, the finding the README documents against
+  Ditto issue #1865, which until now Faultline could only find empirically.
+- `weak_restart_policy` reports **zero** predictions, and that is the point: every Ditto service
+  declares `restart: always`, which is part of why its crash recovery works cleanly. A check that
+  fires on everything is a broken check, so the checks discriminate.
+- The two lowest findings are `grafana` and `prometheus` publishing their own ports. Both are tagged
+  outside the system under test, and both say so in their policy note rather than pretending to be
+  testable.
+
+## Predicted before, confirmed after
+
+`faultline scout --reconcile` against the six experiment reports already on the blackboard:
+**21 predicted, 8 confirmed, 0 cleared, 13 untested**, across 6 experiments considered.
+
+The best single line of evidence: `shallow_health_check` on `things-search`, `connectivity` and
+`gateway` was predicted from the compose file,
+and experiment `fd1b18f67001` (`container_crash` on `things`) then raised a live
+`health_check_masked_failure` — `/ready` OK for 100 % of checks while API success was 0 %, citing Ditto
+issue #1865. Others: `no_resource_limits:mongodb` confirmed by `db_flood` (`7ec64f7a1498`) raising
+`slow_recovery`, 121 s against the hypothesis' 60 s; `no_retry_or_backoff` confirmed by
+`container_pause` (`2ee196bc306c`) turning requests into timeouts rather than errors.
+
+Two gates keep that number honest, because an inflated hit rate would be worse than no hit rate:
+
+1. **An `info`-severity finding is not a confirmation.** The injector writes `api_impact` at `info`
+   precisely to record "API unaffected"; `auto_recovered` and an operator-stop `safety_abort` are
+   always `info` too. Counting them would manufacture confirmations out of experiments that went fine.
+2. **Each prediction declares `confirming_failure_types`**, so only relevant experiments bear on it.
+   Before this gate a `container_crash` was "confirming" a predicted missing CPU limit through the
+   generic `api_impact` code — a crash is a fast, clean error, which is exactly not evidence about an
+   unbounded cgroup. Adding the gate dropped a spurious confirmation.
+
+0 cleared is not an unimplemented state. Clearing needs a bearing experiment that ran the distance and
+raised neither a confirming finding nor anything high or critical; on this blackboard every prediction
+an experiment bore on produced a confirming finding instead, and the other 15 had nothing bear on them
+at all.
+
+## Verified, and how
+
+- **Deterministic checks.** The Ditto sanity check above, run with `--no-llm`, against a compose file
+  whose correct answers are independently recorded in `faultline/agents/knowledge.py` and in the
+  README's own `health_check_masked_failure` / Ditto #1865 documentation. The silent
+  `weak_restart_policy` check is part of the result, not an omission from it.
+- **Reconcile.** Run against the six real experiment reports on the blackboard, not fixtures:
+  21 / 6 / 0 / 15, output in `reports/weaknesses_reconcile.json` and `.md`. Both gates were added in
+  response to a real spurious confirmation, not speculatively.
+- **Planner integration.** Measured on the real data by building the candidate list with and without
+  `reports/weaknesses.json`: `policies/container_stop` moves from rank #4 (priority 7.8) to rank #2
+  (9.03), because `container_stop` is the experiment `no_redundancy:policies` nominates. With no
+  weaknesses file on disk the ranking is unchanged, which is what the defaulted trailing argument
+  buys. `tests/test_planner.py` gained 6 cases, including a no-regression test pinned to hand-derived
+  numbers rather than a post-hoc snapshot, the headline ranking requirement, exact-match scoping, and
+  the +1.5 bound.
+- **Reconcile unit tests.** `tests/test_reconcile.py`, 315 lines, landed with `b97495e`.
+- **LLM path, against a real provider** (Groq, `openai/gpt-oss-120b`): 21/21 explanations and 2
+  systemic patterns, one of them the six core services sharing the same unbounded-cgroup gap and the
+  same traffic-spike exposure as one story rather than six separate line items. Both patterns carry
+  `[LLM suggestion, unverified]` and cite only ids the deterministic checks produced.
+- **The fallback was exercised for real, not simulated.** A genuine 429 and a genuine
+  `json_validate_failed` both left all 21 deterministic findings intact with templated prose, and the
+  report's notes say how many batches failed. That failure is what commit `0dc3ed4` is: one call
+  carrying all 21 weaknesses was ~14k characters, over the per-minute token budget of the tier these
+  models are actually served from, and all-or-nothing — a single 429 cost every explanation on the
+  report. Prose now goes in chunks of 7 and the patterns in one small call of their own.
+
+## What is left
+
+- **Nothing in the build order.** All seven steps are committed, the suite is green (405 tests, 133
+  of them for this agent), and a full `scout` -> experiments -> `scout --reconcile` cycle produces a
+  sensible predicted-vs-confirmed comparison. `faultline demo` now runs the reconciliation as step 5
+  of 7, so the loop the scout opens is closed inside the demo itself.
+- **Two commits carry pre-existing uncommitted work that was in the tree when this branch was cut.**
+  `main`'s working tree held roughly fifteen modified or untracked files from other in-flight work
+  (the repo-onboarding agent, the dashboard rewrite) at the time of branching, so `16743fa` also
+  contains the onboarding `RepoKnowledge` / `OnboardingReport` schema block and `edbad8d` also
+  contains `cmd_onboard` plus some `cmd_setup` / `cmd_heal` / `cmd_status` changes. Nothing was lost,
+  but the attribution is wrong and is worth untangling before merge if that work lands separately.
+- **Dashboard integration is built and verified end to end, but is not committed on this branch.** It
+  is interleaved with a large pre-existing uncommitted dashboard rewrite in the working tree, so
+  committing it here would drag that rewrite along with it. It works; it is simply not in these commits.
+- **Nothing has been pushed, because there is no git remote configured** (`git remote -v` is empty).
+  The commits exist only on this machine, on `feature/weakness-scout`. A PR body is
+  written and ready; opening it needs a remote.
+
+---
+
+# Progress — Cascade Attribution
+
+Branch `feature/cascade-attribution`, cut from `887b85f` (the tip of `feature/weakness-scout`, because
+`main` is still the single initial commit). For each experiment, an ordered per-hop account of how the
+failure moved through the dependency graph: **where** (which real topology edge, and when, as an
+interval) and **how** (a fixed set of mechanism labels). It is the lightweight, timing-and-topology
+version of the roadmap's OpenTelemetry item; real per-request tracing is still a roadmap item.
+
+## What the code said before anything was built
+
+- The fine-grained data already existed, transiently. `HealthProbe` kept every per-service,
+  timestamped `/alive` + `/ready` + docker-state sample in memory, and `SampleWindow` kept every API
+  request with its start time, operation, status and error kind. The injector collapsed the health
+  samples into `HealthSummary` fractions and persisted neither. So the new state is a stored
+  analysis of samples the probes already take, not a new metric or a new monitor.
+- **The cascade the brief imagined is not visible in health checks.** Across all 13 experiment reports
+  on disk, only the injected target ever failed a health check; `gateway`, `things-search` and the rest
+  kept `/ready` = 200 while 100 % of API traffic through them failed (Ditto #1865). Attribution from
+  health timing alone would have reported no cascade at all. The design therefore uses both probes:
+  health transitions where a service really does fail its check, and the API probe's per-operation
+  routes (`OP_ROUTES`: thing reads/writes via `things`, search via `things-search`) for services whose
+  traffic failed while their own check stayed green — flagged `masked_by_health_check`.
+- Timing is coarse: a short aborted run gets two health ticks at 3 s polling. Every onset is stored
+  as an interval and overlapping intervals are reported `same_interval`, never as an order.
+- Old reports cannot be back-filled: their raw samples were never stored.
+
+## Build order and commits
+
+| Step | Commit | What |
+|---|---|---|
+| 5 (contract first) | `b4fde01` | `CascadeAttribution` schema, optional on `ExperimentReport` so every old report still validates; `OP_ROUTES`; the shared `describe_hop()` sentence |
+| 2 | `4d4fb59` | Injector hands the raw samples (fault + recovery + after window) to attribution; provisional attribution into `live.json` every 3 s; Markdown section. An exception leaves `cascade=None` and changes nothing else |
+| 3 + 4 | `3db01b5` | Deterministic mechanism classification and path matching against `topology.json` |
+| 7 | `20d5fb7` | Risk: `cascade_depth` + `cascade_masked` factors (own commit) |
+| 7 | `d254a5c` | Narrator: hop-by-hop section, LLM gets the hops as facts (own commit) |
+| 6 | `1b408ff` | Fixes found by the first live run |
+| 8 | `f27812a` | Control room: only the cascade path pulses, labelled with mechanism and confidence |
+| 6 | `c3a0841` | Fix found by the second live run |
+
+Built with four parallel agents against the committed contract (core logic, injector wiring,
+Risk + Narrator, dashboard), each reviewed before commit.
+
+## Step 6 — validated against real experiments on the live stack
+
+Three experiments were run against the live Ditto stack (compose project `bosch-ditto`) from the
+branch's own blackboard, each with the deterministic planner and full safety limits.
+
+**`841f241dfa92` — `container_stop` on `policies`, 20 s.** Expected beforehand (from the earlier
+`reports-demo` run): 503s through gateway. Observed instead: **API success stayed at 100 %**, but p95
+rose 69 → 314 ms (search 95 → 800 ms) from about +16 s — Ditto kept serving from cached policy
+enforcers and slowed as they aged. Attribution reported exactly that: `gateway`, `things`,
+`things-search` `latency_degraded` from +16.1–17.1 s with health checks green; `gateway` ambiguous
+between `policies → gateway` and `policies → things → gateway` (both are real edges, and the timing
+cannot separate them); `mongodb` flagged `no_graph_path`. **The path matched; the run also exposed
+three bugs**, fixed in `1b408ff`:
+- t=0 was stamped after the blocking `docker stop` returned, so the target's own shutdown looked
+  "already unhealthy before the injection". t=0 is now when the fault command is issued.
+- `mongodb`'s onset interval (+14.9..+21.4 s) straddled the revert (+21.2 s) and was labelled
+  `after_rollback` on its upper bound alone. Now only intervals that begin after the revert are.
+- `liveness_failed` said "/alive" for MongoDB, whose check is a `mongosh ping`.
+- The `mongodb` blip itself is most likely the 3 s `mongosh ping` timing out while the policies JVM
+  restarted; it is reported as `no_graph_path` ("an undeclared dependency or a coincidence") rather
+  than forced onto a path, which is the intended behaviour, and it adds no Risk depth.
+
+**`fa94eb25fce6` — `container_pause` on `things`, 15 s (aborted by the error-rate threshold).** Every
+request timed out for ~6 s, yet attribution said "the failure stayed at things". **This was a real
+false negative:** the 10 % significance bar was computed over the whole window, so ~30 s of healthy
+recovery traffic diluted 3 timeouts in 61 requests below it. Fixed in `c3a0841`: fractions are taken
+over the span between an operation's first and last failure; two failures far apart are still noise.
+
+**`3200d6e73851` — the same `container_pause` on `things`, after the fix.** Attribution: `things`
+paused (health probe saw `process_paused` at +0.8 s); `gateway` and `things-search` requests timed
+out from +0.0–0.2 s and +0.0–0.4 s with their health checks green; `nginx` beyond the hypothesis;
+`gateway` ambiguous between `things → gateway` and `things → things-search → gateway`. **This matches
+what is known about the run independently:** the injector's own `dependency_blind_readiness` finding,
+computed by separate code from health fractions, names the same services as having stayed "ready"
+while `things` was down, and the API probe recorded 7/7 timeouts.
+
+`2cf082c7bc16` (a repeat of the policies stop) recovered in 14.5 s with no latency signal and was
+reported as "the failure stayed at policies", consistent with its unchanged p95.
+
+## Verified, and how
+
+- `pytest`: 449 passed (offline). New: `tests/test_cascade.py`, `test_injector_cascade.py`,
+  `test_risk_cascade.py`, `test_narrator_cascade.py`, plus control-room pass-through tests.
+- Risk on 36 old-style reports and Narrator on 3: byte-identical output to before.
+- Control room: screenshots of the live map (only the cascade path pulses; ordered solid with its
+  lag, ambiguous / same-interval dashed and badged; reduced-motion static) and of the expanded
+  experiment's Cascade block.
+
+## What is left
+
+- No git remote is configured, so nothing has been pushed and no PR is open.
+- The `fable/` React frontend does not render the cascade yet (it reads only `blast.expected` /
+  `blast.observed`).
+- The main tree's uncommitted `narrate_sections()` should gain a `"cascade"` key from
+  `narrator._cascade()` when it lands, and `dashboard/control.py`'s live `blast` line will need a
+  trivial merge with that tree's edits.
+- `OP_ROUTES` is Ditto-specific, like the probe itself; another target needs its own routes.
+
+---
+
+# Progress: Human-approved fixes (2026-10-12)
+
+Branch `feature/hitl-fix`. Until now every Faultline fix was advice. This feature adds one narrow
+path that can change the application, and only with a person's say-so: after an experiment finds a
+problem, Faultline asks "Can I fix this?" (what is wrong, the exact change, the expected improvement,
+the risks, the rollback), applies only the exact change a human approved by its hash, re-runs the same
+experiment, and keeps the change only if the before/after comparison holds. The feature is described
+for readers in [docs/REFERENCE.md](docs/REFERENCE.md#human-approved-fixes); the 60-second demo script
+is [docs/demo/HITL_FIX_DEMO.md](docs/demo/HITL_FIX_DEMO.md).
+
+## The rules it was built around
+
+- **Only code-defined changes.** Six catalog entries (`faultline/remediation/catalog.py`) build every
+  change deterministically from the live stack's merged compose config. A model may rank the shortlist
+  and reword three prose fields; it never writes the change, the rollback text or the diff, and an id
+  it invents is discarded. With `FAULTLINE_LLM=false` the feature works the same from templates.
+- **Nothing is approved by default.** Proposals expire (`FIX_PROPOSAL_TIMEOUT_SECONDS`, 1800 s); an
+  unanswered email, a send failure or missing mail settings decide nothing.
+- **The approval pins the change.** `change_hash` is the sha256 of the verbatim preview. CLI, control
+  room and email all approve a hash, and the apply engine rebuilds the change and refuses if it no
+  longer hashes the same.
+- **The stack's own compose files are never edited.** Changes go into a Faultline-owned, git-ignored
+  override (`deploy/docker-compose.override.yml`), backed up byte for byte under
+  `reports/remediation/backups/` and restored exactly on rollback.
+- **Every status change is a legal transition with an audit entry**
+  (`faultline/remediation/proposals.py`), so a rejected or expired proposal can never become applied.
+
+## Build order and commits
+
+| Commit | What |
+|---|---|
+| `d6eb237` | 1/5: the contract (`FixProposal`, `FixVerification`, `MetricComparison`, `FixState`) and the lifecycle: legal transitions, change hash, expiry |
+| `276fec9` | 2/5: the code-defined fix catalog and the Faultline-owned override (deterministic render, diff, exact-bytes backup and restore, live compose files from container labels, recreate) |
+| `197a795` | 3/5: "Can I fix this?" proposals (candidates, templates, optional validated LLM step) and the CLI (`propose`, `proposals`, `approve`, `reject`; `run --analyze` proposes) |
+| `a47d943` | 4/5: apply, re-run, verify and roll back automatically, with preflight refusals, the two locks and the metric tolerances |
+| `3ee3f13` | Fix states on the scorecard (`ServiceScore.fixes`, the Fix states table in `scorecard.md`) and verified or rolled-back fixes in the narrative |
+| _(uncommitted, in progress)_ | 5/5: the control room's Fix approvals panel (`static/fixes.js`), the `/api/proposals` endpoints and the `fix` job (`dashboard/server.py`, `dashboard/control.py`), the email channel (`agents/approval.py`, `propose --email`), `docs/UI_CONTRACT.md` §2.5 and their tests |
+
+## What it does on Ditto
+
+Checked against the live `bosch-ditto` project, with `faultline propose --no-llm` run against a copy
+of the blackboard on 2026-10-12 (nothing applied):
+
+- `fd1b18f67001` (`container_crash` on `things`; `health_check_masked_failure` on `things-search`,
+  `connectivity` and `gateway`) produced three `add_or_tighten_healthcheck` proposals, each a diff
+  that moves one service's healthcheck from `/alive` to `/ready` and keeps its 30 s interval, 15 s
+  timeout, 4 retries and 2 min start period.
+- `5b21bb133620` (`dependency_blind_readiness`) produced `add_or_tighten_healthcheck` on the three
+  services it names and a protected `add_dependency_healthcheck` on `mongodb`, and logged
+  `add_healthy_dependency ... nothing to change`, because the live MongoDB has no healthcheck for
+  `condition: service_healthy` to wait on.
+- `7ec64f7a1498` (`slow_recovery` after `db_flood`) produced a protected `set_resource_limits` on
+  `mongodb`.
+- `set_restart_policy` produces nothing anywhere on Ditto: every service already has
+  `restart: always`. As with the Scout's silent `weak_restart_policy` check, that is the right answer.
+
+## Verified, and how
+
+- `pytest` on the seven remediation test files (`test_apply.py`, `test_fix_approval_email.py`,
+  `test_fix_states.py`, `test_override.py`, `test_proposals.py`, `test_propose.py`,
+  `test_remediation_catalog.py`): 146 passed. The proposal and fix tests in `test_control.py` and
+  `test_server.py`: 22 passed. All offline; Docker is injected through `apply.Deps`.
+- The proposal step against the live stack's real merged config, as above.
+
+## What is left
+
+- **No live apply-and-verify run is recorded yet.** `reports/proposals/` on this machine is empty, so
+  there is no real before/after table to quote. The first real run should be written up here, the
+  way the Cascade Attribution section records its live experiments.
+- The 5/5 work above is still being finished and is not committed.
+- There is no CLI command that applies an already-approved proposal (`approve --no-apply` leaves it to
+  the control room's Apply now button or `POST /api/proposals/<id>/apply`).
+- The control room's scorecard panel does not draw fix states, and `narrate_sections()` (the
+  control room's narrative JSON) has no fix lines; both are in the CLI output and `scorecard.md` only.
+- The scorecard written right after a verification re-run still shows the fix as `applied`, because it
+  is computed before the final transition; the next `faultline scorecard` or analysis corrects it.
+- Regression mode is only partly delivered: see the roadmap in
+  [docs/REFERENCE.md](docs/REFERENCE.md#roadmap).
+
+## Live integration run (2026-10-12, project bosch-ditto)
+
+Rerun with `FAULTLINE_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x -s` (4 tests, skipped in the normal suite). Each scenario was exercised against the live stack while the tests were being written (evidence: the proposal records below); a final uninterrupted pass of all four still has to be run once Docker is back:
+- Approve flow: `fx-484ad4e23d` (add_or_tighten_healthcheck on connectivity, gateway, things-search, from the things container_crash `083c6cac4a0d`) applied, re-run `6600e215b8e8` and **verified**: error rate during the fault 100% -> 100% (same), time to recover 32.5 s -> 32.8 s (same), no new findings. An honest result: tightening the healthcheck changes what the platform reports, not how the crash hurts users.
+- Reject: `fx-0bacda5fe5` rejected, override and containers unchanged.
+- Bad fix: `fx-a6e19a88f5` (test-only failing healthcheck on things) went unhealthy and was **rolled back automatically**; things healthy again on its original /alive check.
+- STOP present: `fx-21fb47179b` apply refused ("STOP file present"), status stayed approved.
+
+Bugs the live run found and fixed: recreating gateway left nginx proxying to the old container IP (API at 0%, first attempt rolled back), now `nginx -s reload` after recreating a proxied service; the health wait declared success while the Injector's 20 s steady-state window still held the outage, so the re-run was refused as "not steady", now the same window is used; a container replaced mid-inspection no longer raises. The run was cut short by a network outage before its final clean-up check; the stack config was verified clean afterwards (no override, no STOP, no locks).
+
+## 2026-10-11: ingestion data quality (evaluator feedback)
+
+- New `faultline/topology/quality.py`: null, consistency, conformity, range, cleaning and time-lenience checks on raw compose input, run automatically on every topology build.
+- New `reports/data_quality.json` (`DataQualityReport`), validated before write; `TIME_LENIENCE_SECONDS` setting.
+- Ditto compose: clean, graph unchanged. Mastodon and OpenTelemetry demo: issues recorded, no edges invented.
+- Not yet wired: Repo Onboarding does not write its own data_quality report (it reuses the same compose parsers, so the topology build of an onboarded repo is covered).

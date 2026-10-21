@@ -1,0 +1,109 @@
+{
+  "experiment_id": "2ad72f695676",
+  "generated_at": "2026-10-10T11:01:04.362510Z",
+  "target_service": "mongodb",
+  "failure_type": "network_loss",
+  "risk_level": "low",
+  "recommendations": [
+    {
+      "title": "Run MongoDB as a replica set so the Ditto driver can fail over",
+      "category": "architecture",
+      "effort": "M",
+      "confidence": 0.9,
+      "rationale": "In experiment 2ad72f695676 (risk LOW 0.7/10), API success fell to 99% during injection, TTR 18 s. MongoDB is the sole datastore for policies, things, things-search and connectivity. A single standalone mongod turns any Mongo hiccup into a full-platform outage; a replica set lets the Java driver elect a new primary and keep serving within seconds.",
+      "steps": [
+        "Start mongod with `--replSet rs0 --bind_ip_all` (compose `command:`) and run `rs.initiate()` once via an init container or `docker exec`.",
+        "Add two more members (or one member plus an arbiter for the lab) on separate volumes.",
+        "Point the Ditto services at the set: `MONGO_DB_URI=mongodb://mongodb-0:27017,mongodb-1:27017,mongodb-2:27017/ditto?replicaSet=rs0&w=majority`.",
+        "Set `retryWrites=true&retryReads=true` on the URI so transient primary step-downs are retried by the driver."
+      ],
+      "verify": [
+        "`docker exec mongodb mongosh --eval 'rs.status().members.map(m => m.stateStr)'` shows one PRIMARY and \u22651 SECONDARY.",
+        "Re-run the same chaos experiment against the primary only; API success rate during injection should stay above the abort threshold and TTR should drop below 15 s."
+      ],
+      "references": [
+        "https://www.mongodb.com/docs/manual/tutorial/deploy-replica-set/",
+        "https://eclipse.dev/ditto/installation-operating.html"
+      ]
+    },
+    {
+      "title": "Add a MongoDB healthcheck and an autoheal sidecar to the compose stack",
+      "category": "operations",
+      "effort": "S",
+      "confidence": 0.85,
+      "rationale": "In experiment 2ad72f695676 (risk LOW 0.7/10), API success fell to 99% during injection, TTR 18 s. Docker's `restart: always` only reacts to a process exit; a container that is running but marked `unhealthy` is never restarted. Without a healthcheck on mongodb nothing even notices a wedged database, and dependents that lost their connection just sit there.",
+      "steps": [
+        "Add to the mongodb service: `healthcheck: {test: [\"CMD\", \"mongosh\", \"--quiet\", \"--eval\", \"db.adminCommand('ping').ok\"], interval: 10s, timeout: 5s, retries: 3, start_period: 20s}`.",
+        "Add an `autoheal` service: `image: willfarrell/autoheal`, `environment: [AUTOHEAL_CONTAINER_LABEL=all]`, mount `/var/run/docker.sock:/var/run/docker.sock:ro`, `restart: always`.",
+        "Label the Ditto services with `autoheal=true` (or keep `AUTOHEAL_CONTAINER_LABEL=all`) so an `unhealthy` state triggers a restart."
+      ],
+      "verify": [
+        "`docker inspect --format '{{.State.Health.Status}}' mongodb` reports `healthy` at steady state.",
+        "Pause mongodb for 60 s: autoheal logs show a restart of the unhealthy dependents within ~30 s of them flipping to unhealthy."
+      ],
+      "references": [
+        "https://github.com/willfarrell/docker-autoheal"
+      ]
+    },
+    {
+      "title": "Tune Ditto's MongoDB client timeouts and connection pool",
+      "category": "configuration",
+      "effort": "S",
+      "confidence": 0.75,
+      "rationale": "In experiment 2ad72f695676 (risk LOW 0.7/10), API success fell to 99% during injection, TTR 18 s. With default driver settings a stalled Mongo socket can hold a request thread for tens of seconds, which inflates p95 and keeps the health endpoints green while users see timeouts. Explicit, short timeouts turn a hang into a fast, retryable error.",
+      "steps": [
+        "Set connection/read timeouts on the Ditto services; Ditto reads `MONGO_DB_*` environment variables (e.g. `MONGO_DB_CONNECTION_POOL_SIZE`, `MONGO_DB_READ_PREFERENCE`, `MONGO_DB_QUERY_TIMEOUT`) \u2014 verify exact names against `ditto-mongo.conf` in the Ditto source and the operating docs before applying.",
+        "Alternatively encode them in the URI: `?connectTimeoutMS=3000&socketTimeoutMS=10000&serverSelectionTimeoutMS=5000&maxPoolSize=100`.",
+        "Keep `serverSelectionTimeoutMS` well below the nginx `proxy_read_timeout` so the edge sees a clean 5xx instead of a hung connection."
+      ],
+      "verify": [
+        "During a `network_delay` experiment on mongodb the p95 should plateau near the configured timeout instead of growing unbounded.",
+        "`docker logs things | grep -i 'MongoTimeout'` shows fast failures rather than minute-long waits."
+      ],
+      "references": [
+        "https://eclipse.dev/ditto/installation-operating.html"
+      ]
+    },
+    {
+      "title": "Set explicit timeouts end to end and add a circuit breaker at the API edge",
+      "category": "configuration",
+      "effort": "S",
+      "confidence": 0.8,
+      "rationale": "In experiment 2ad72f695676 (risk LOW 0.7/10), API success fell to 99% during injection, TTR 18 s. Latency injected into one hop propagated to the user as long hangs instead of fast failures. Without aligned timeouts each layer waits for the slowest one beneath it, request threads pile up, and the whole API degrades rather than the one slow path.",
+      "steps": [
+        "nginx: `proxy_connect_timeout 2s; proxy_send_timeout 10s; proxy_read_timeout 30s;` and `proxy_next_upstream timeout`.",
+        "Ditto gateway: lower the request timeout (`ditto.gateway.http.request-timeout` / `GATEWAY_HTTP_REQUEST_TIMEOUT`, default 60 s) to ~15 s; have clients send the `timeout` query parameter on commands (e.g. `?timeout=10s`) so Ditto fails fast instead of hanging.",
+        "Add a circuit breaker in front of the gateway (nginx `max_fails`/`fail_timeout`, or Envoy outlier detection) so a degraded backend sheds load for a few seconds instead of queuing.",
+        "Align Mongo driver `socketTimeoutMS` below the gateway timeout so the failure surfaces as a clean error with a cause."
+      ],
+      "verify": [
+        "Replay `network_delay` with the same latency: p95 is capped near the smallest configured timeout and the error budget burn is measurable rather than a hang.",
+        "No request in the probe log exceeds the nginx `proxy_read_timeout`."
+      ],
+      "references": [
+        "https://eclipse.dev/ditto/httpapi-concepts.html",
+        "https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_next_upstream"
+      ]
+    },
+    {
+      "title": "Baseline observability: SLO alert rules and chaos annotations in Grafana",
+      "category": "observability",
+      "effort": "S",
+      "confidence": 0.65,
+      "rationale": "In experiment 2ad72f695676 (risk LOW 0.7/10), API success fell to 99% during injection, TTR 18 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.",
+      "steps": [
+        "Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~\"5..\"}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.",
+        "Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.",
+        "Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs."
+      ],
+      "verify": [
+        "During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window."
+      ],
+      "references": [
+        "https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/"
+      ]
+    }
+  ],
+  "advisory_only": true,
+  "generated_by": "rules"
+}

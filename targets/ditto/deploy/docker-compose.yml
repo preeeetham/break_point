@@ -1,0 +1,240 @@
+# Faultline sandbox: Eclipse Ditto + MongoDB behind nginx, with a Prometheus/Grafana
+# observability stack on the same network so chaos experiments can be observed.
+#
+#   cp .env.example .env && docker compose up -d
+#
+# Only nginx (Ditto entry), Prometheus and Grafana publish ports, all bound to 127.0.0.1.
+name: faultline
+
+x-ditto-java-opts: &ditto-java-opts
+  JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -XX:+UseContainerSupport -XX:+UseStringDeduplication -Xss512k -XX:MaxRAMPercentage=50 -XX:+UseG1GC -XX:MaxGCPauseMillis=150 -Dpekko.coordinated-shutdown.exit-jvm=on -Dpekko.cluster.shutdown-after-unsuccessful-join-seed-nodes=180s -Dpekko.cluster.failure-detector.threshold=15.0 -Dpekko.cluster.failure-detector.expected-response-after=10s -Dpekko.cluster.failure-detector.acceptable-heartbeat-pause=20s -Dpekko.cluster.downing-provider-class=
+
+x-ditto-healthcheck: &ditto-healthcheck
+  test: curl --fail `hostname`:7626/alive || exit 1
+  interval: 30s
+  timeout: 15s
+  retries: 4
+  start_period: 120s
+
+x-logging: &default-logging
+  options:
+    max-size: 50m
+
+services:
+  mongodb:
+    image: docker.io/mongo:7.0
+    command: mongod --storageEngine wiredTiger --noscripting
+    user: mongodb
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    environment:
+      - TZ=Europe/Berlin
+    networks:
+      default:
+        aliases:
+          - mongodb
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: mongosh --quiet --eval "db.runCommand({ping:1}).ok" | grep -q 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  policies:
+    image: docker.io/eclipse/ditto-policies:${DITTO_VERSION:-3.9.8}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - ditto-cluster
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - MONGO_DB_HOSTNAME=mongodb
+      - *ditto-java-opts
+    healthcheck: *ditto-healthcheck
+    logging: *default-logging
+
+  things:
+    image: docker.io/eclipse/ditto-things:${DITTO_VERSION:-3.9.8}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - ditto-cluster
+    depends_on:
+      - policies
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - MONGO_DB_HOSTNAME=mongodb
+      - *ditto-java-opts
+    healthcheck: *ditto-healthcheck
+    logging: *default-logging
+
+  things-search:
+    image: docker.io/eclipse/ditto-things-search:${DITTO_VERSION:-3.9.8}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - ditto-cluster
+    depends_on:
+      - policies
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - MONGO_DB_HOSTNAME=mongodb
+      - *ditto-java-opts
+    healthcheck: *ditto-healthcheck
+    logging: *default-logging
+
+  connectivity:
+    image: docker.io/eclipse/ditto-connectivity:${DITTO_VERSION:-3.9.8}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    networks:
+      default:
+        aliases:
+          - ditto-cluster
+    depends_on:
+      - policies
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - MONGO_DB_HOSTNAME=mongodb
+      - *ditto-java-opts
+    healthcheck: *ditto-healthcheck
+    logging: *default-logging
+
+  gateway:
+    image: docker.io/eclipse/ditto-gateway:${DITTO_VERSION:-3.9.8}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - ditto-cluster
+    depends_on:
+      - policies
+    # Deliberately no published ports: nginx is the only entry point.
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - ENABLE_PRE_AUTHENTICATION=true
+      - DEVOPS_PASSWORD=${DEVOPS_PASSWORD:-foobar}
+      - STATUS_PASSWORD=${DEVOPS_PASSWORD:-foobar}
+      - *ditto-java-opts
+    healthcheck: *ditto-healthcheck
+    logging: *default-logging
+
+  ditto-ui:
+    image: docker.io/eclipse/ditto-ui:${DITTO_VERSION:-3.9.8}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 32m
+    logging: *default-logging
+
+  nginx:
+    image: docker.io/nginx:1.27-alpine
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 32m
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.htpasswd:/etc/nginx/nginx.htpasswd:ro
+      - ./nginx/nginx-cors.conf:/etc/nginx/nginx-cors.conf:ro
+      - ./nginx/index.html:/etc/nginx/html/index.html:ro
+    ports:
+      - "127.0.0.1:${DITTO_PORT:-8080}:80"
+    depends_on:
+      - gateway
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Monitoring
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: docker.io/prom/prometheus:v2.55.1
+    restart: always
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging: *default-logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: always
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=5s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    logging: *default-logging
+
+  blackbox:
+    image: docker.io/prom/blackbox-exporter:v0.25.0
+    restart: always
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    logging: *default-logging
+
+  grafana:
+    image: docker.io/grafana/grafana:11.3.0
+    restart: always
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/faultline.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    logging: *default-logging
+
+volumes:
+  mongodb_data: {}
+  grafana_data: {}

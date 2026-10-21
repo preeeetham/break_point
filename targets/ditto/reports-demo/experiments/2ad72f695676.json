@@ -1,0 +1,303 @@
+{
+  "schema_version": "1.0",
+  "experiment_id": "2ad72f695676",
+  "started_at": "2026-10-10T09:39:04.332183Z",
+  "ended_at": "2026-10-10T09:40:15.632183Z",
+  "target": {
+    "service": "mongodb",
+    "container": "bosch-ditto-mongodb-1"
+  },
+  "failure_type": "network_loss",
+  "parameters": {
+    "duration_s": 20,
+    "loss_percent": 15
+  },
+  "rationale": "mongodb has the highest criticality (9.5) yet no compose depends_on points at it; the env-var scan shows four services need it. It is protected, so a short degrade-only packet-loss fault is the safest way to test that hidden dependency first.",
+  "hypothesis": {
+    "statement": "Dropping 15% of packets leaving mongodb for 20 s will slow reads and writes through every Ditto service but keep the API error rate under 10%, and the API will be back to baseline latency within 30 s of rollback with no intervention.",
+    "expected_affected": [
+      "policies",
+      "things",
+      "things-search",
+      "connectivity"
+    ],
+    "expected_max_error_rate": 0.1,
+    "expected_recovery_s": 30.0
+  },
+  "hypothesis_result": {
+    "held": true,
+    "observed_max_error_rate": 0.014,
+    "observed_recovery_s": 18.4,
+    "unexpected_affected": [],
+    "notes": "error rate 1% vs <=10%; unexpected services none; recovery 18.4s vs <=45s"
+  },
+  "criticality_score": 9.5,
+  "planned_by": "llm",
+  "baseline": {
+    "sample_count": 80,
+    "success_rate": 1.0,
+    "p50_ms": 18.4,
+    "p95_ms": 41.2,
+    "p99_ms": 96.5,
+    "by_operation": {
+      "get_thing": {
+        "count": 30,
+        "success_rate": 1.0,
+        "p95_ms": 35.02
+      },
+      "put_property": {
+        "count": 20,
+        "success_rate": 1.0,
+        "p95_ms": 37.08
+      },
+      "search": {
+        "count": 20,
+        "success_rate": 1.0,
+        "p95_ms": 45.32
+      },
+      "get_property": {
+        "count": 10,
+        "success_rate": 1.0,
+        "p95_ms": 24.72
+      }
+    },
+    "status_counts": {
+      "200": 60,
+      "204": 20
+    }
+  },
+  "during": {
+    "sample_count": 72,
+    "success_rate": 0.9861,
+    "p50_ms": 190.2,
+    "p95_ms": 1238.7,
+    "p99_ms": 1611.0,
+    "by_operation": {
+      "get_thing": {
+        "count": 27,
+        "success_rate": 1.0,
+        "p95_ms": 1052.89
+      },
+      "put_property": {
+        "count": 18,
+        "success_rate": 1.0,
+        "p95_ms": 1114.83
+      },
+      "search": {
+        "count": 18,
+        "success_rate": 1.0,
+        "p95_ms": 1362.57
+      },
+      "get_property": {
+        "count": 9,
+        "success_rate": 0.8889,
+        "p95_ms": 743.22
+      }
+    },
+    "status_counts": {
+      "200": 53,
+      "204": 18,
+      "timeout": 1
+    }
+  },
+  "after": {
+    "sample_count": 32,
+    "success_rate": 1.0,
+    "p50_ms": 20.1,
+    "p95_ms": 44.3,
+    "p99_ms": 58.0,
+    "by_operation": {
+      "get_thing": {
+        "count": 12,
+        "success_rate": 1.0,
+        "p95_ms": 37.65
+      },
+      "put_property": {
+        "count": 8,
+        "success_rate": 1.0,
+        "p95_ms": 39.87
+      },
+      "search": {
+        "count": 8,
+        "success_rate": 1.0,
+        "p95_ms": 48.73
+      },
+      "get_property": {
+        "count": 4,
+        "success_rate": 1.0,
+        "p95_ms": 26.58
+      }
+    },
+    "status_counts": {
+      "200": 24,
+      "204": 8
+    }
+  },
+  "health": [
+    {
+      "service": "mongodb",
+      "ticks": 7,
+      "alive_ok_fraction": 0.71,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "policies",
+      "ticks": 7,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "things",
+      "ticks": 7,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "things-search",
+      "ticks": 7,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "connectivity",
+      "ticks": 7,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "gateway",
+      "ticks": 7,
+      "alive_ok_fraction": 1.0,
+      "ready_ok_fraction": 1.0,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    },
+    {
+      "service": "nginx",
+      "ticks": 7,
+      "alive_ok_fraction": null,
+      "ready_ok_fraction": null,
+      "docker_unhealthy_seen": false,
+      "container_down_seen": false
+    }
+  ],
+  "recovery": {
+    "recovered": true,
+    "recovered_at": "2026-10-10T09:39:45.532183Z",
+    "time_to_recover_s": 18.4,
+    "outage_duration_s": 2.1,
+    "auto_restarted_by_docker": null,
+    "remediation_actions": [],
+    "data_integrity_ok": true,
+    "data_integrity_detail": "stored seq=212, last acknowledged write seq=212"
+  },
+  "safety": {
+    "aborted_early": false,
+    "abort_reason": null,
+    "abort_detail": {},
+    "watchdog_fired": false,
+    "operator_stop": false,
+    "thresholds": {
+      "abort_error_rate_above": 0.3,
+      "abort_p95_ms_above": 3000.0,
+      "trailing_samples": 10,
+      "non_target_health_failures_in_a_row": 3,
+      "max_experiment_seconds": 90,
+      "watchdog_grace_seconds": 15,
+      "recovery_success_rate_at_least": 0.95,
+      "recovery_p95_ms_below": 300.0,
+      "recovery_consecutive_checks": 3,
+      "recovery_timeout_seconds": 300,
+      "baseline_p95_ms": 41.2
+    }
+  },
+  "affected_services_observed": [
+    "mongodb"
+  ],
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "info",
+      "title": "API success dropped to 99% during the fault",
+      "evidence": "72 requests, status counts {'200': 53, '204': 18, 'timeout': 1}, p95 1238.7 ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 18s",
+      "evidence": "outage as seen by clients: 2.1s"
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-10-10T09:39:04.332183Z",
+      "t_plus_s": 0.0,
+      "event": "planned",
+      "detail": "network_loss on mongodb (llm): protected datastore, degrade-only fault"
+    },
+    {
+      "at": "2026-10-10T09:39:05.932183Z",
+      "t_plus_s": 1.6,
+      "event": "injected",
+      "detail": "pumba netem loss 15% on bosch-ditto-mongodb-1 for 20s"
+    },
+    {
+      "at": "2026-10-10T09:39:11.232183Z",
+      "t_plus_s": 6.9,
+      "event": "first_api_error",
+      "detail": "status counts {'200': 14, '204': 5, 'timeout': 1}"
+    },
+    {
+      "at": "2026-10-10T09:39:26.032183Z",
+      "t_plus_s": 21.7,
+      "event": "injection_ended",
+      "detail": "fault expired on its own"
+    },
+    {
+      "at": "2026-10-10T09:39:26.132183Z",
+      "t_plus_s": 21.8,
+      "event": "rollback_started",
+      "detail": ""
+    },
+    {
+      "at": "2026-10-10T09:39:26.732183Z",
+      "t_plus_s": 22.4,
+      "event": "rollback_done",
+      "detail": "fault removed"
+    },
+    {
+      "at": "2026-10-10T09:39:45.532183Z",
+      "t_plus_s": 41.2,
+      "event": "recovered",
+      "detail": "success 100%, p95 44.3 ms, 0 remediation actions"
+    },
+    {
+      "at": "2026-10-10T09:39:45.632183Z",
+      "t_plus_s": 41.3,
+      "event": "integrity_check",
+      "detail": "stored seq=212, last acknowledged write seq=212"
+    }
+  ],
+  "resources": {
+    "mongodb": {
+      "cpu_pct_peak": 31.0,
+      "mem_mb_peak": 412
+    }
+  },
+  "reproduce": [
+    "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock gaiaadm/pumba:latest netem --duration 20s --tc-image ghcr.io/alexei-led/pumba-alpine-nettools:latest loss --percent 15 bosch-ditto-mongodb-1"
+  ],
+  "raw_logs_ref": "reports/experiments/2ad72f695676/",
+  "status": "completed",
+  "error": null
+}

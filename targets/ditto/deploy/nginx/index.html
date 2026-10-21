@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Faultline sandbox — Eclipse Ditto</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #222; background: #fafafa; }
+    h1 { font-size: 1.5rem; }
+    code { background: #eee; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    li { margin: 0.4rem 0; }
+    footer { margin-top: 2rem; font-size: 0.85rem; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Faultline sandbox — Eclipse Ditto</h1>
+  <p>This is the Eclipse Ditto target stack for Faultline chaos experiments.</p>
+  <ul>
+    <li><a href="/ui/">Ditto UI</a> — <code>/ui/</code></li>
+    <li><a href="/health">Gateway health</a> — <code>/health</code> (no auth)</li>
+    <li><a href="/api/2/things">Things API</a> — <code>/api/2/things</code> (basic auth)</li>
+  </ul>
+  <p>Default credentials: <code>ditto</code> / <code>ditto</code></p>
+  <footer>Monitoring: Prometheus on <code>127.0.0.1:9090</code>, Grafana on <code>127.0.0.1:3000</code>.</footer>
+</body>
+</html>

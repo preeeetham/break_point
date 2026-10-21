@@ -1,0 +1,71 @@
+{
+  "experiment_id": "f63b02a3c8ac",
+  "assessed_at": "2026-10-10T11:01:04.360991Z",
+  "target_service": "things",
+  "failure_type": "container_pause",
+  "severity": 6.22,
+  "level": "high",
+  "blast_radius": 1,
+  "user_impact": 1.0,
+  "recovery_s": 26.0,
+  "factors": {
+    "impact": 4.0,
+    "blast": 0.286,
+    "recovery": 0.433,
+    "intervention": 0.0,
+    "findings": 1.5
+  },
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "high",
+      "title": "API success dropped to 0% during the fault",
+      "evidence": "24 requests, status counts {'timeout': 24}, p95 None ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "health_check_masked_failure",
+      "severity": "high",
+      "title": "things-search kept reporting /ready=200 while the API was failing",
+      "evidence": "/ready OK 100% of 3 checks while API success was 0%; cf. Ditto issue #1865 (health checks ignore subsystem health)"
+    },
+    {
+      "code": "health_check_masked_failure",
+      "severity": "high",
+      "title": "connectivity kept reporting /ready=200 while the API was failing",
+      "evidence": "/ready OK 100% of 3 checks while API success was 0%; cf. Ditto issue #1865 (health checks ignore subsystem health)"
+    },
+    {
+      "code": "health_check_masked_failure",
+      "severity": "high",
+      "title": "gateway kept reporting /ready=200 while the API was failing",
+      "evidence": "/ready OK 100% of 3 checks while API success was 0%; cf. Ditto issue #1865 (health checks ignore subsystem health)"
+    },
+    {
+      "code": "no_automated_remediation",
+      "severity": "medium",
+      "title": "Nothing in the platform reacted to the outage",
+      "evidence": "target container stayed 'running' and never became 'unhealthy' during the fault; compose `restart: always` only acts on exit, never on health"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 26s",
+      "evidence": "outage as seen by clients: 33.2s"
+    },
+    {
+      "code": "slow_recovery",
+      "severity": "medium",
+      "title": "Recovery slower than hypothesised",
+      "evidence": "26s vs expected 15s"
+    },
+    {
+      "code": "safety_abort",
+      "severity": "medium",
+      "title": "Kill switch fired (error_rate)",
+      "evidence": "{\"trailing_samples\": 6, \"error_rate\": 1.0, \"p95_ms\": null, \"threshold\": 0.3}"
+    }
+  ],
+  "summary": "Pausing `things` (container_pause) moved API success from 100% to 0% across 24 samples; 1 service affected; recovered in 26 s without intervention. The safety monitor aborted early (error_rate).",
+  "production_implication": "In production most users would see errors for the whole duration of a container_pause on things. Health checks stayed green while the API failed, so no orchestrator or alert would have reacted. The container sat unhealthy with nothing acting on it; Docker's restart policy does not cover this state.",
+  "generated_by": "rules"
+}

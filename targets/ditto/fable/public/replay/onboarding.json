@@ -1,0 +1,407 @@
+{
+ "job": {
+  "id": "j1",
+  "kind": "onboard",
+  "label": "Onboard eclipse-ditto/ditto",
+  "status": "done",
+  "started_at": 1791677157.693372,
+  "ended_at": 1791677161.4424582,
+  "error": null,
+  "result": {
+   "report": {
+    "slug": "ditto",
+    "source": "eclipse-ditto/ditto",
+    "resolved_path": ".cache/onboarding/ditto",
+    "compose_path": ".cache/onboarding/ditto/deployment/docker/docker-compose.yml",
+    "readme_path": ".cache/onboarding/ditto/README.md",
+    "nginx_conf_path": ".cache/onboarding/ditto/deployment/docker/nginx.conf",
+    "services": [
+     "connectivity",
+     "ditto-ui",
+     "gateway",
+     "mongodb",
+     "nginx",
+     "policies",
+     "swagger-ui",
+     "things",
+     "things-search"
+    ],
+    "structural_edges": 13,
+    "generated_by": "llm",
+    "model": "openai:openai/gpt-oss-120b",
+    "knowledge": {
+     "health_port": 7626,
+     "cluster_alias": "ditto-cluster",
+     "roles": {},
+     "documented_edges": [
+      {
+       "src": "gateway",
+       "dst": "things",
+       "evidence": "Gateway forwards thing commands to Things service (architecture-services-gateway.md)"
+      },
+      {
+       "src": "gateway",
+       "dst": "things-search",
+       "evidence": "Gateway forwards /search requests to Things-Search service (architecture-services-gateway.md)"
+      },
+      {
+       "src": "gateway",
+       "dst": "connectivity",
+       "evidence": "Gateway forwards connection management to Connectivity service (architecture-services-gateway.md)"
+      },
+      {
+       "src": "connectivity",
+       "dst": "things",
+       "evidence": "Connectivity publishes to and subscribes from Things (architecture-services-connectivity.md)"
+      },
+      {
+       "src": "things-search",
+       "dst": "things",
+       "evidence": "Things-Search builds its index from Thing events (architecture-services-things-search.md)"
+      }
+     ],
+     "references": [
+      "https://www.eclipse.dev/ditto/",
+      "https://www.eclipse.dev/ditto/architecture-overview.html"
+     ]
+    },
+    "rejected": [],
+    "notes": [],
+    "output_path": ".cache/onboarding/knowledge/ditto_knowledge.yaml"
+   },
+   "comparison": {
+    "final_graph_coverage": {
+     "truth_relationships": 9,
+     "covered_by_generated_or_structural": 9,
+     "coverage": 1.0,
+     "uncovered": []
+    },
+    "edges": {
+     "generated": 5,
+     "truth": 9,
+     "matched": 5,
+     "precision": 1.0,
+     "recall": 0.556,
+     "f1": 0.714,
+     "matched_pairs": [
+      "connectivity -> things",
+      "gateway -> connectivity",
+      "gateway -> things",
+      "gateway -> things-search",
+      "things-search -> things"
+     ],
+     "missed": [
+      "connectivity -> policies",
+      "gateway -> policies",
+      "things -> policies",
+      "things-search -> policies"
+     ],
+     "extra": []
+    },
+    "roles": {
+     "compared": 9,
+     "agreed": 9,
+     "accuracy": 1.0,
+     "overrides_generated": {},
+     "overrides_truth": {
+      "mongodb": "datastore",
+      "nginx": "proxy",
+      "ditto-ui": "ui",
+      "swagger-ui": "ui",
+      "prometheus": "other",
+      "grafana": "other",
+      "cadvisor": "other",
+      "blackbox": "other"
+     },
+     "disagreed": []
+    },
+    "health_port": {
+     "generated": 7626,
+     "truth": 7626,
+     "match": true
+    },
+    "cluster_alias": {
+     "generated": "ditto-cluster",
+     "truth": "ditto-cluster",
+     "match": true
+    }
+   }
+  }
+ },
+ "onboarding": {
+  "at": 1791677161.442436,
+  "repo": "eclipse-ditto/ditto",
+  "report": {
+   "slug": "ditto",
+   "source": "eclipse-ditto/ditto",
+   "resolved_path": ".cache/onboarding/ditto",
+   "compose_path": ".cache/onboarding/ditto/deployment/docker/docker-compose.yml",
+   "readme_path": ".cache/onboarding/ditto/README.md",
+   "nginx_conf_path": ".cache/onboarding/ditto/deployment/docker/nginx.conf",
+   "services": [
+    "connectivity",
+    "ditto-ui",
+    "gateway",
+    "mongodb",
+    "nginx",
+    "policies",
+    "swagger-ui",
+    "things",
+    "things-search"
+   ],
+   "structural_edges": 13,
+   "generated_by": "llm",
+   "model": "openai:openai/gpt-oss-120b",
+   "knowledge": {
+    "health_port": 7626,
+    "cluster_alias": "ditto-cluster",
+    "roles": {},
+    "documented_edges": [
+     {
+      "src": "gateway",
+      "dst": "things",
+      "evidence": "Gateway forwards thing commands to Things service (architecture-services-gateway.md)"
+     },
+     {
+      "src": "gateway",
+      "dst": "things-search",
+      "evidence": "Gateway forwards /search requests to Things-Search service (architecture-services-gateway.md)"
+     },
+     {
+      "src": "gateway",
+      "dst": "connectivity",
+      "evidence": "Gateway forwards connection management to Connectivity service (architecture-services-gateway.md)"
+     },
+     {
+      "src": "connectivity",
+      "dst": "things",
+      "evidence": "Connectivity publishes to and subscribes from Things (architecture-services-connectivity.md)"
+     },
+     {
+      "src": "things-search",
+      "dst": "things",
+      "evidence": "Things-Search builds its index from Thing events (architecture-services-things-search.md)"
+     }
+    ],
+    "references": [
+     "https://www.eclipse.dev/ditto/",
+     "https://www.eclipse.dev/ditto/architecture-overview.html"
+    ]
+   },
+   "rejected": [],
+   "notes": [],
+   "output_path": ".cache/onboarding/knowledge/ditto_knowledge.yaml"
+  },
+  "comparison": {
+   "final_graph_coverage": {
+    "truth_relationships": 9,
+    "covered_by_generated_or_structural": 9,
+    "coverage": 1.0,
+    "uncovered": []
+   },
+   "edges": {
+    "generated": 5,
+    "truth": 9,
+    "matched": 5,
+    "precision": 1.0,
+    "recall": 0.556,
+    "f1": 0.714,
+    "matched_pairs": [
+     "connectivity -> things",
+     "gateway -> connectivity",
+     "gateway -> things",
+     "gateway -> things-search",
+     "things-search -> things"
+    ],
+    "missed": [
+     "connectivity -> policies",
+     "gateway -> policies",
+     "things -> policies",
+     "things-search -> policies"
+    ],
+    "extra": []
+   },
+   "roles": {
+    "compared": 9,
+    "agreed": 9,
+    "accuracy": 1.0,
+    "overrides_generated": {},
+    "overrides_truth": {
+     "mongodb": "datastore",
+     "nginx": "proxy",
+     "ditto-ui": "ui",
+     "swagger-ui": "ui",
+     "prometheus": "other",
+     "grafana": "other",
+     "cadvisor": "other",
+     "blackbox": "other"
+    },
+    "disagreed": []
+   },
+   "health_port": {
+    "generated": 7626,
+    "truth": 7626,
+    "match": true
+   },
+   "cluster_alias": {
+    "generated": "ditto-cluster",
+    "truth": "ditto-cluster",
+    "match": true
+   }
+  }
+ },
+ "events": [
+  {
+   "seq": 2,
+   "ts": 1791677157.693386,
+   "level": "info",
+   "source": "system",
+   "text": "Job started: Onboard eclipse-ditto/ditto",
+   "data": {}
+  },
+  {
+   "seq": 3,
+   "ts": 1791677157.703726,
+   "level": "info",
+   "source": "onboarding",
+   "text": "Onboarding eclipse-ditto/ditto: locating the compose file, README and architecture documentation ...",
+   "data": {}
+  },
+  {
+   "seq": 4,
+   "ts": 1791677157.7041762,
+   "level": "info",
+   "source": "onboarding",
+   "text": "reusing cached checkout at .cache/onboarding/ditto",
+   "data": {}
+  },
+  {
+   "seq": 5,
+   "ts": 1791677157.820041,
+   "level": "info",
+   "source": "onboarding",
+   "text": "ditto: 9 services, 13 structural edges from docker-compose.yml + nginx.conf",
+   "data": {}
+  },
+  {
+   "seq": 6,
+   "ts": 1791677157.822224,
+   "level": "info",
+   "source": "onboarding",
+   "text": "README: README.md, 3873 chars after trimming",
+   "data": {}
+  },
+  {
+   "seq": 7,
+   "ts": 1791677157.822237,
+   "level": "info",
+   "source": "onboarding",
+   "text": "architecture docs: 6 file(s), 9691 chars (architecture-overview.md, architecture-services-connectivity.md, architecture-services-gateway.md, architecture-services-policies.md ...)",
+   "data": {}
+  },
+  {
+   "seq": 8,
+   "ts": 1791677157.8225229,
+   "level": "info",
+   "source": "onboarding",
+   "text": "asking openai:openai/gpt-oss-120b to document 9 services (21388 chars) ...",
+   "data": {}
+  },
+  {
+   "seq": 9,
+   "ts": 1791677161.420358,
+   "level": "info",
+   "source": "onboarding",
+   "text": "model proposed 5 edges, 5 survived validation",
+   "data": {}
+  },
+  {
+   "seq": 10,
+   "ts": 1791677161.42316,
+   "level": "success",
+   "source": "onboarding",
+   "text": "wrote .cache/onboarding/knowledge/ditto_knowledge.yaml",
+   "data": {}
+  },
+  {
+   "seq": 11,
+   "ts": 1791677161.423318,
+   "level": "ai",
+   "source": "onboarding",
+   "text": "ditto: 9 services, 13 structural edges, 5 documented edges (llm)",
+   "data": {}
+  },
+  {
+   "seq": 12,
+   "ts": 1791677161.423326,
+   "level": "ai",
+   "source": "onboarding",
+   "text": "documented edge gateway -> things: Gateway forwards thing commands to Things service (architecture-services-gateway.md)",
+   "data": {}
+  },
+  {
+   "seq": 13,
+   "ts": 1791677161.423329,
+   "level": "ai",
+   "source": "onboarding",
+   "text": "documented edge gateway -> things-search: Gateway forwards /search requests to Things-Search service (architecture-services-gateway.md)",
+   "data": {}
+  },
+  {
+   "seq": 14,
+   "ts": 1791677161.423331,
+   "level": "ai",
+   "source": "onboarding",
+   "text": "documented edge gateway -> connectivity: Gateway forwards connection management to Connectivity service (architecture-services-gateway.md)",
+   "data": {}
+  },
+  {
+   "seq": 15,
+   "ts": 1791677161.4233332,
+   "level": "ai",
+   "source": "onboarding",
+   "text": "documented edge connectivity -> things: Connectivity publishes to and subscribes from Things (architecture-services-connectivity.md)",
+   "data": {}
+  },
+  {
+   "seq": 16,
+   "ts": 1791677161.4233348,
+   "level": "ai",
+   "source": "onboarding",
+   "text": "documented edge things-search -> things: Things-Search builds its index from Thing events (architecture-services-things-search.md)",
+   "data": {}
+  },
+  {
+   "seq": 17,
+   "ts": 1791677161.423338,
+   "level": "info",
+   "source": "onboarding",
+   "text": "health_port=7626 cluster_alias=ditto-cluster",
+   "data": {}
+  },
+  {
+   "seq": 18,
+   "ts": 1791677161.423342,
+   "level": "success",
+   "source": "onboarding",
+   "text": "Wrote .cache/onboarding/knowledge/ditto_knowledge.yaml. Use it with: faultline topology --knowledge .cache/onboarding/knowledge/ditto_knowledge.yaml",
+   "data": {}
+  },
+  {
+   "seq": 19,
+   "ts": 1791677161.442404,
+   "level": "success",
+   "source": "onboarding",
+   "text": "Against the hand-authored config/ditto_knowledge.yaml: 9/9 documented relationships covered, edge f1 0.714, roles 1.0",
+   "data": {}
+  },
+  {
+   "seq": 20,
+   "ts": 1791677161.4424572,
+   "level": "success",
+   "source": "system",
+   "text": "Job finished: Onboard eclipse-ditto/ditto",
+   "data": {}
+  }
+ ]
+}
