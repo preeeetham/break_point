@@ -379,3 +379,10 @@ Rerun with `FAULTLINE_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x 
 - STOP present: `fx-21fb47179b` apply refused ("STOP file present"), status stayed approved.
 
 Bugs the live run found and fixed: recreating gateway left nginx proxying to the old container IP (API at 0%, first attempt rolled back), now `nginx -s reload` after recreating a proxied service; the health wait declared success while the Injector's 20 s steady-state window still held the outage, so the re-run was refused as "not steady", now the same window is used; a container replaced mid-inspection no longer raises. The run was cut short by a network outage before its final clean-up check; the stack config was verified clean afterwards (no override, no STOP, no locks).
+
+## 2026-10-11: ingestion data quality (evaluator feedback)
+
+- New `faultline/topology/quality.py`: null, consistency, conformity, range, cleaning and time-lenience checks on raw compose input, run automatically on every topology build.
+- New `reports/data_quality.json` (`DataQualityReport`), validated before write; `TIME_LENIENCE_SECONDS` setting.
+- Ditto compose: clean, graph unchanged. Mastodon and OpenTelemetry demo: issues recorded, no edges invented.
+- Not yet wired: Repo Onboarding does not write its own data_quality report (it reuses the same compose parsers, so the topology build of an onboarded repo is covered).

@@ -212,3 +212,22 @@ pytest -q            # offline, no Docker required
 ## Known limits
 
 Single node and Docker Compose only (no Kubernetes backend yet). Crash recovery times mostly measure JVM boot, not Ditto's fault handling. The control room is single-operator and unauthenticated, so keep it on loopback. The honest, complete list lives in [docs/REFERENCE.md](docs/REFERENCE.md#known-limitations), alongside the [roadmap](docs/REFERENCE.md#roadmap).
+
+## Ingestion data quality: validating what comes in
+
+*Added in response to evaluator feedback on how raw input is handled before it is used.*
+
+Every agent's output is schema-validated before it is written; this is the other end. Each topology build (CLI `faultline topology`, the control room's map job, and any command that rebuilds the map) now runs the raw compose mapping and the derived edges through `faultline/topology/quality.py` before the graph is built, and writes the audit trail to `reports/data_quality.json` (`DataQualityReport` in `faultline/schemas.py`, validated before write). Six deterministic checks, no LLM:
+
+| Check | What it does | Actions recorded |
+|---|---|---|
+| Null / missing | empty service blocks, no `image` and no `build`, healthcheck without `test` or `interval` | `defaulted` (with the documented default, e.g. Docker's 30 s interval), `flagged` |
+| Consistency | `depends_on` names and env hostnames (`*_HOST`, `*_URI`, ...) must resolve to a declared service or alias; every edge must join two declared services | `excluded` (no edge is created), `flagged` as a dangling reference. IPs, `localhost` and dotted names are treated as external, not as defects |
+| Conformity | service names match compose's grammar; `environment`, `depends_on`, `healthcheck` have the right shape; ports are numeric | `excluded`, `flagged` |
+| Range | ports 1-65535, memory limits > 0, healthcheck interval/timeout in (0, 3600] s, retries >= 0 | `excluded` (an out-of-range port is dropped), `flagged` |
+| Cleaning | trims stray whitespace in names, de-duplicates repeated env keys (last wins, as in compose), `depends_on` entries and edges, resolves relative `build` / `env_file` paths | `normalized`, `deduplicated` |
+| Time lenience | `same_window()` / `order()`: two timestamps closer than `TIME_LENIENCE_SECONDS` (default 1.5 s, `time_lenience_s` in settings) are reported as unordered, never as A-before-B | a utility for timestamp correlation, not a rewrite |
+
+Guardrails: the pass only drops or flags; it never adds an edge or changes what a value means. On Ditto's own compose file it reports **zero issues and an identical graph** (12 services, 21 edges); on unfamiliar repos it generalises (Mastodon: 5 healthchecks without an interval recorded as Docker's default; OpenTelemetry demo: 16 relative build paths resolved). Tests: `tests/test_data_quality.py`.
+
+This is the fifth data-quality guarantee, alongside schema validation on write, a measured baseline, cross-checking two independent signals, and the sequence-number canary.
