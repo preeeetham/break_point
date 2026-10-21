@@ -1,0 +1,27 @@
+# Worked example for `faultline onboard`: the shape and level of detail of a knowledge file.
+# It describes an INVENTED application on purpose ("Quillstack", a self-hosted document editor), so the
+# model sees what is wanted without being handed a real project to copy. The onboarding validator drops
+# any service name, proper noun or URL that can only have come from this file.
+health_port: 9090
+health_paths:
+  alive: /healthz/live
+  ready: /healthz/ready
+cluster_alias: quill-cluster
+roles:
+  quill-edge: proxy
+  quill-admin-ui: ui
+  doc-store: datastore
+  render-cache: datastore
+datastores:
+  doc-store:
+    engine: postgres
+    evidence: Dockerfile FROM postgres:16-alpine
+documented_edges:
+  - {src: quill-api, dst: quill-auth, evidence: "the API asks Quillstack auth to check a session token on every request"}
+  - {src: quill-api, dst: doc-indexer, evidence: "full-text search requests are forwarded to the indexer"}
+  - {src: doc-indexer, dst: doc-store, evidence: "the index is rebuilt from document revisions (eventually consistent)"}
+  - {src: quill-collab, dst: quill-api, evidence: "collaborative sessions persist every edit through the public API"}
+outage_error_rates:
+  doc-indexer: 0.25
+references:
+  - https://quillstack.example.invalid/docs/architecture

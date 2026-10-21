@@ -6,10 +6,9 @@ but it leaves nothing to say about a service nobody has gotten around to breakin
 when the experiment budget is a hackathon afternoon, and matters more once Faultline is pointed at an
 unfamiliar repo where you will never test every service.
 
-The project's own README documents `health_check_masked_failure`, grounded in Ditto issue #1865: a
-service answered /ready = 200 while the API through it was failing. That was found empirically. But a
-service whose compose healthcheck only curls `/alive` -- never its own dependencies -- is visible in
-the compose file before anything is broken. A careful read of the config predicts that exact class of
+The injector's `health_check_masked_failure` finding is empirical: a service answered "ready" while
+the API through it was failing. But a service whose compose healthcheck only curls a liveness path --
+never its own dependencies -- is visible in the compose file before anything is broken. A careful read of the config predicts that exact class of
 problem. That is what this agent does.
 
 Two rules hold this module together:
@@ -57,12 +56,12 @@ LLM_EXTRA_LABEL = "[LLM suggestion, unverified]"
 # + 0.5 no health endpoint), so 2.0 is roughly "two services break if this one does".
 CRITICAL_SCORE_FLOOR = 2.0
 # ... and "top tier" is relative to the most critical service in THIS deployment, so the redundancy
-# check stays meaningful on a target whose scores are nothing like Ditto's.
+# check stays meaningful whatever the scale of this target's scores.
 TOP_TIER_FRACTION = 0.4
 
 # Intrinsic weight per category, before the deployment's own criticality is applied. Ordered by how
-# reliably the gap turns into a user-visible incident; `shallow_health_check` leads because Faultline
-# has already proven that one empirically on this very stack (Ditto #1865).
+# reliably the gap turns into a user-visible incident; `shallow_health_check` leads because it is the
+# static shape of the one finding experiments keep confirming (`health_check_masked_failure`).
 CATEGORY_WEIGHT: dict[str, float] = {
     "shallow_health_check": 2.5,
     "no_redundancy": 2.25,
@@ -144,8 +143,9 @@ class ScoutContext:
     def candidates(self) -> list[str]:
         """Services worth analysing: present in both compose and topology, and chaos-relevant.
 
-        The observability stack in Ditto's compose file is tagged `other` in the knowledge file and
-        is not part of the system under test; flagging its missing limits would be noise.
+        An observability stack shipped in the same compose file is tagged `other` (by the role guesser
+        or the knowledge file) and is not part of the system under test; flagging its missing limits
+        would be noise.
         """
         services = self.compose.get("services") or {}
         return [n for n in self.topology.relevant_services() if n in services]
@@ -241,8 +241,8 @@ def check_health_checks(ctx: ScoutContext) -> list[_Raw]:
     """Missing healthcheck on a critical service, or one that is structurally liveness-only.
 
     The second case is the `health_check_masked_failure` predictor. It only applies to a service that
-    HAS dependencies: a service with none cannot have a dependency-aware health check, so Ditto's
-    mongodb (whose `mongosh ping` genuinely exercises its own storage engine) is correctly left alone.
+    HAS dependencies: a service with none cannot have a dependency-aware health check, so a datastore
+    whose check runs its engine's own ping (which genuinely exercises its storage) is correctly left alone.
     """
     out: list[_Raw] = []
     for name in ctx.candidates():
@@ -287,8 +287,8 @@ def check_health_checks(ctx: ScoutContext) -> list[_Raw]:
             evidence=(f"compose service `{name}`: healthcheck test `{text}` -- a bare liveness probe. "
                       f"It never touches {', '.join(sorted(deps))}, which {name} needs to serve a "
                       f"request, so the check can report healthy while the API through it fails. "
-                      f"This is the shape of Ditto issue #1865, which Faultline has already observed "
-                      f"empirically as `health_check_masked_failure`."),
+                      f"This is the static shape of `health_check_masked_failure`, which an experiment "
+                      f"can confirm."),
             experiment_prefs=[(ft, dep) for dep in _dep_order(ctx, deps)
                               for ft in ("container_stop", "network_partition", "network_delay",
                                          "container_pause", "network_loss")],
@@ -307,9 +307,9 @@ def _dep_order(ctx: ScoutContext, deps: list[str]) -> list[str]:
 def check_redundancy(ctx: ScoutContext) -> list[_Raw]:
     """A top-tier service running as exactly one instance.
 
-    This is the check that should rediscover, from the compose file alone, the two remediations the
-    Fix agent's knowledge library already recommends after an experiment proves them: run MongoDB as
-    a replica set, and run two `policies` instances.
+    This is the check that should rediscover, from the compose file alone, what the Fix agent's
+    knowledge library recommends after an experiment proves it: replicate the single datastore, and
+    run a second instance of the service everything else needs.
     """
     out: list[_Raw] = []
     for name in ctx.candidates():
@@ -379,9 +379,8 @@ def check_resource_limits(ctx: ScoutContext) -> list[_Raw]:
 def check_restart_policy(ctx: ScoutContext) -> list[_Raw]:
     """`restart:` unset or `no` on a service the dependency graph marks critical.
 
-    On Ditto's own compose file this check is expected to stay SILENT: every service declares
-    `restart: always`, which is part of why its crash recovery works cleanly. A check that fires on
-    everything is a broken check.
+    On a compose file where every service declares `restart: always` this check is expected to stay
+    SILENT. A check that fires on everything is a broken check.
     """
     out: list[_Raw] = []
     for name in ctx.candidates():
@@ -410,8 +409,8 @@ def check_restart_policy(ctx: ScoutContext) -> list[_Raw]:
 def check_retry_backoff(ctx: ScoutContext) -> list[_Raw]:
     """No evidence of retry/backoff/circuit-breaking on a hard dependency edge.
 
-    One finding per dependency (not per dependent), because the gap belongs to the edge: four Ditto
-    services reaching MongoDB through a bare `MONGO_DB_HOSTNAME=mongodb` is one story, not four.
+    One finding per dependency (not per dependent), because the gap belongs to the edge: four
+    services reaching the database through a bare `DB_HOST=db` is one story, not four.
     """
     out: list[_Raw] = []
     knowledge_text = json.dumps(ctx.knowledge, default=str)
@@ -436,7 +435,7 @@ def check_retry_backoff(ctx: ScoutContext) -> list[_Raw]:
                 continue
             bare.append(src)
             # Being fair to the target: note settings that DO show resilience thinking but are not on
-            # this edge (Ditto tunes the Pekko failure detector globally, which says nothing about Mongo).
+            # this edge (a cluster failure detector tuned globally says nothing about the database edge).
             elsewhere = sorted({k for k, v in env.items()
                                 if RESILIENCE_RE.search(f"{k}={v}") and k not in touching})
             aside = (f" (sets {', '.join(elsewhere[:2])} elsewhere, but nothing on this edge)"
@@ -592,7 +591,7 @@ def resolve_experiment(raw: _Raw, ctx: ScoutContext) -> SuggestedExperiment:
         ft = CATALOG.get(ft_key)
         if ft is None or target not in ctx.topology.services:
             continue
-        if not applicable(ft, ctx.node(target)):
+        if not applicable(ft, ctx.node(target), ctx.topology):
             continue
         ok, why = ctx.policy.allows(target, ft_key)
         if not ok:
@@ -922,8 +921,8 @@ def render_markdown(report: WeaknessReport) -> str:
 def build_context(settings, topology: Topology, nginx_text: str = "") -> ScoutContext:
     from ..safety.thresholds import load_policy
 
-    knowledge_path = settings.knowledge_file if Path(settings.knowledge_file).is_file() else None
-    if nginx_text == "" and Path(settings.nginx_conf).is_file():
+    knowledge_path = settings.knowledge_file if settings.knowledge_file and Path(settings.knowledge_file).is_file() else None
+    if nginx_text == "" and settings.nginx_conf and Path(settings.nginx_conf).is_file():
         nginx_text = Path(settings.nginx_conf).read_text()
     return ScoutContext(
         topology=topology,

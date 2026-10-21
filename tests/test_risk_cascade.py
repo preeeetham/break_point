@@ -10,7 +10,7 @@ from faultline.agents import risk
 from faultline.schemas import CascadeAttribution, CascadeHop
 
 
-def _origin(service: str = "policies") -> CascadeHop:
+def _origin(service: str = "auth") -> CascadeHop:
     return CascadeHop(service=service, onset_earliest_s=0.0, onset_latest_s=0.0, onset_source="injection",
                       mechanism="injected_fault", mechanism_evidence="docker kill", path=[service],
                       path_confidence="origin", hops_from_origin=0)
@@ -26,17 +26,17 @@ def _hop(service: str, upstream: str, path: list[str], *, confidence: str = "ord
                       beyond_hypothesis=beyond)
 
 
-def _cascade(*hops: CascadeHop, origin: str = "policies", hops_beyond: int = 0) -> CascadeAttribution:
+def _cascade(*hops: CascadeHop, origin: str = "auth", hops_beyond: int = 0) -> CascadeAttribution:
     return CascadeAttribution(origin=origin, health_interval_s=3.0, window_start_s=-10.0, window_end_s=60.0,
                               hops=[_origin(origin), *hops], hops_beyond_hypothesis=hops_beyond,
                               beyond_hypothesis=[h.service for h in hops if h.beyond_hypothesis],
-                              summary="policies failed; gateway timed out waiting on it 4.0s later.")
+                              summary="auth failed; gateway timed out waiting on it 4.0s later.")
 
 
-# Two hops deep beyond the hypothesis, both on a graph path: policies -> gateway -> nginx.
+# Two hops deep beyond the hypothesis, both on a graph path: auth -> gateway -> nginx.
 TWO_DEEP = (
-    _hop("gateway", "policies", ["gateway", "policies"]),
-    _hop("nginx", "gateway", ["nginx", "gateway", "policies"], mechanism="dependency_error"),
+    _hop("gateway", "auth", ["gateway", "auth"]),
+    _hop("nginx", "gateway", ["nginx", "gateway", "auth"], mechanism="dependency_error"),
 )
 
 
@@ -80,58 +80,58 @@ def test_two_hops_beyond_hypothesis_on_graph_path_adds_one(make_report, topology
     assert _without_cascade(new.factors) == {**old.factors, "findings": 0.0}
     assert new.severity == pytest.approx(old.severity - 0.5 + 1.0, abs=0.01)
     assert new.severity == pytest.approx(sum(new.factors.values()), abs=0.01)
-    assert "cascaded beyond the hypothesis along policies → gateway → nginx." in new.summary
+    assert "cascaded beyond the hypothesis along auth → gateway → nginx." in new.summary
 
 
 def test_masked_beyond_hop_adds_half(make_report, topology):
     base = make_report(affected=["gateway"])
-    one_deep = base.model_copy(update={"cascade": _cascade(_hop("gateway", "policies", ["gateway", "policies"]))})
-    masked = base.model_copy(update={"cascade": _cascade(_hop("gateway", "policies", ["gateway", "policies"], masked=True))})
+    one_deep = base.model_copy(update={"cascade": _cascade(_hop("gateway", "auth", ["gateway", "auth"]))})
+    masked = base.model_copy(update={"cascade": _cascade(_hop("gateway", "auth", ["gateway", "auth"], masked=True))})
     a, b = risk.assess(one_deep, topology, None), risk.assess(masked, topology, None)
     assert a.factors["cascade_depth"] == b.factors["cascade_depth"] == 0.5
     assert a.factors["cascade_masked"] == 0.0 and b.factors["cascade_masked"] == 0.5
     assert b.severity == pytest.approx(a.severity + 0.5, abs=0.01)
     # a masked hop inside the hypothesis does not count
-    inside = base.model_copy(update={"cascade": _cascade(_hop("gateway", "policies", ["gateway", "policies"],
+    inside = base.model_copy(update={"cascade": _cascade(_hop("gateway", "auth", ["gateway", "auth"],
                                                               masked=True, beyond=False))})
     c = risk.assess(inside, topology, None)
     assert c.factors["cascade_masked"] == 0.0 and c.factors["cascade_depth"] == 0.0
 
 
 def test_no_graph_path_hops_do_not_deepen(make_report, topology):
-    stray = _hop("connectivity", None, [], confidence="no_graph_path", mechanism="elevated_error_rate")
+    stray = _hop("notifier", None, [], confidence="no_graph_path", mechanism="elevated_error_rate")
     # even if the stored int claims depth, it is recomputed from the hops
-    report = make_report(affected=["connectivity"], finding_codes=["cascade_beyond_hypothesis"])
+    report = make_report(affected=["notifier"], finding_codes=["cascade_beyond_hypothesis"])
     report = report.model_copy(update={"cascade": _cascade(stray, hops_beyond=3)})
     a = risk.assess(report, topology, None)
     assert a.factors["cascade_depth"] == 0.0
     assert a.factors["findings"] == 0.0
-    assert "no dependency route to policies" in a.summary
+    assert "no dependency route to auth" in a.summary
 
 
 def test_depth_cap_holds(make_report, topology):
     deep = (
-        _hop("things", "policies", ["things", "policies"]),
-        _hop("gateway", "things", ["gateway", "things", "policies"]),
-        _hop("nginx", "gateway", ["nginx", "gateway", "things", "policies"]),
+        _hop("orders", "auth", ["orders", "auth"]),
+        _hop("gateway", "orders", ["gateway", "orders", "auth"]),
+        _hop("nginx", "gateway", ["nginx", "gateway", "orders", "auth"]),
     )
-    report = make_report(affected=["things", "gateway", "nginx"]).model_copy(
+    report = make_report(affected=["orders", "gateway", "nginx"]).model_copy(
         update={"cascade": _cascade(*deep, hops_beyond=3)})
     a = risk.assess(report, topology, None)
     assert a.factors["cascade_depth"] == risk.CASCADE_DEPTH_CAP == 1.0
 
 
 def test_hedged_path_in_summary_when_not_ordered(make_report, topology):
-    hop = _hop("gateway", "policies", ["gateway", "policies"], confidence="same_interval")
+    hop = _hop("gateway", "auth", ["gateway", "auth"], confidence="same_interval")
     report = make_report().model_copy(update={"cascade": _cascade(hop)})
     a = risk.assess(report, topology, None)
     assert a.factors["cascade_depth"] == 0.5  # same_interval still has a graph path
-    assert "along policies → gateway, order not certain." in a.summary
+    assert "along auth → gateway, order not certain." in a.summary
 
 
 def test_cascade_without_beyond_hops_adds_no_clause(make_report, topology):
     report = make_report().model_copy(update={"cascade": _cascade(
-        _hop("gateway", "policies", ["gateway", "policies"], beyond=False))})
+        _hop("gateway", "auth", ["gateway", "auth"], beyond=False))})
     a = risk.assess(report, topology, None)
     assert a.summary == risk.template_summary(make_report(), a.blast_radius)
     assert a.factors["cascade_depth"] == 0.0 and a.factors["cascade_masked"] == 0.0

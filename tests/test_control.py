@@ -39,7 +39,7 @@ from faultline.schemas import (
 from faultline.safety.thresholds import thresholds_from
 from faultline.schemas import PRE_INJECTION_REPLIES, ApprovalDecision, ApprovalRequest, utcnow
 
-from .conftest import PROJECT, ROOT
+from .conftest import PROJECT, ROOT, SHOP
 
 STATE_KEYS = {"now", "seq", "events", "session", "job", "run", "telemetry", "stop_requested",
               "pending_approval", "guardian", "agents", "llm", "topology", "baseline", "experiments",
@@ -48,7 +48,7 @@ PROPOSAL_SUMMARY_KEYS = {"id", "experiment_id", "finding_code", "catalog_fix_id"
                          "created_at", "expires_at", "seconds_left", "requires_allow_protected", "explanation",
                          "change_preview", "change_hash", "verification", "decided_by", "decided_at", "reason"}
 PREVIEW = ("--- deploy/docker-compose.override.yml\n+++ deploy/docker-compose.override.yml\n@@ services @@\n"
-           " services:\n   things:\n-    healthcheck: {test: [CMD, curl, -f, /alive]}\n"
+           " services:\n   orders:\n-    healthcheck: {test: [CMD, curl, -f, /alive]}\n"
            "+    healthcheck: {test: [CMD, curl, -f, /ready]}\n")
 
 
@@ -60,14 +60,14 @@ def make_proposal(proposal_id: str = "fx-0123456789", experiment_id: str = "exp-
 
     fields = dict(
         proposal_id=proposal_id, experiment_id=experiment_id, finding_code="health_check_masked_failure",
-        catalog_fix_id="add_or_tighten_healthcheck", target_services=["things"], change_preview=preview,
+        catalog_fix_id="add_or_tighten_healthcheck", target_services=["orders"], change_preview=preview,
         change_hash=P.change_hash(preview),
         explanation=ProposalExplanation(
-            problem="things answered /ready 200 while 92% of real requests through it failed (evidence: probe).",
-            change="Point the things health check at /ready instead of /alive.",
-            expected_improvement="Docker marks things unhealthy while its dependency is down.",
-            risks="A slow dependency now marks things unhealthy too.",
-            rollback="The previous override is restored byte-for-byte and things is recreated."),
+            problem="orders answered /ready 200 while 92% of real requests through it failed (evidence: probe).",
+            change="Point the orders health check at /ready instead of /alive.",
+            expected_improvement="Docker marks orders unhealthy while its dependency is down.",
+            risks="A slow dependency now marks orders unhealthy too.",
+            rollback="The previous override is restored byte-for-byte and orders is recreated."),
         created_at=utcnow() - timedelta(seconds=created_ago),
         expires_at=utcnow() + timedelta(seconds=expires_in),
     )
@@ -100,7 +100,7 @@ class FakeApi:
     def is_alive(self) -> bool:
         return self.alive and not self.stopped
 
-    def ensure_canary(self) -> None:
+    def ensure_setup(self) -> None:
         self.canary_calls += 1
 
     def stop(self) -> None:
@@ -141,7 +141,7 @@ def make_session_cls(topology, policy_raw, built: list, delay: float = 0.0):
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     return Settings(compose_project=PROJECT, reports_dir=str(tmp_path / "reports"),
-                    thresholds_file=str(ROOT / "config" / "thresholds.yaml"), llm_enabled=False)
+                    thresholds_file=str(SHOP / "thresholds.yaml"), llm_enabled=False)
 
 
 @pytest.fixture
@@ -252,14 +252,14 @@ def test_state_since_returns_only_newer_events(control):
 
 
 def test_run_state_reads_live_file_and_derives_blast(control, tmp_store):
-    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "things",
+    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "orders",
                           "failure_type": "container_crash", "elapsed_s": 3.0, "success_rate": 0.2,
-                          "health": {"things": {"alive": None, "ready": None, "status": "exited"},
+                          "health": {"orders": {"alive": None, "ready": None, "status": "exited"},
                                      "gateway": {"alive": 200, "ready": 200, "status": "running"},
-                                     "policies": {"alive": 503, "ready": 503, "status": "running"}}})
+                                     "auth": {"alive": 503, "ready": 503, "status": "running"}}})
     run = control.state(0)["run"]
-    assert run["phase"] == "injecting" and run["experiment_id"] == "abc" and run["target_service"] == "things"
-    assert sorted(run["blast"]["observed"]) == ["policies", "things"]
+    assert run["phase"] == "injecting" and run["experiment_id"] == "abc" and run["target_service"] == "orders"
+    assert sorted(run["blast"]["observed"]) == ["auth", "orders"]
     assert run["safety"] == {"abort_reason": None, "detail": {}} and run["timeline"] == []
 
 
@@ -298,30 +298,30 @@ def test_experiments_newest_first_and_detail(control, tmp_store, make_report):
 
 
 # ---------------------------------------------------------------- cascade attribution
-LIVE_EDGES = [{"src": "gateway", "dst": "things", "mechanism": "dependency_timeout", "confidence": "ambiguous",
+LIVE_EDGES = [{"src": "gateway", "dst": "orders", "mechanism": "dependency_timeout", "confidence": "ambiguous",
                "lag_s": 2.9},
               {"src": "nginx", "dst": "gateway", "mechanism": "dependency_error", "confidence": "ordered",
                "lag_s": 4.0}]
-LIVE_HOPS = [{"service": "things", "mechanism": "injected_fault", "path_confidence": "origin",
+LIVE_HOPS = [{"service": "orders", "mechanism": "injected_fault", "path_confidence": "origin",
               "masked_by_health_check": False, "beyond_hypothesis": False},
              {"service": "gateway", "mechanism": "dependency_timeout", "path_confidence": "ambiguous",
               "masked_by_health_check": True, "beyond_hypothesis": False}]
 
 
 def test_run_state_passes_live_cascade_through_to_blast(control, tmp_store):
-    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "things",
-                          "health": {"things": {"alive": None, "ready": None, "status": "exited"}},
+    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "orders",
+                          "health": {"orders": {"alive": None, "ready": None, "status": "exited"}},
                           "cascade_edges": LIVE_EDGES + ["junk", None], "cascade_hops": LIVE_HOPS})
     blast = control.state(0)["run"]["blast"]
-    assert blast["observed"] == ["things"]
+    assert blast["observed"] == ["orders"]
     assert blast["cascade_edges"] == LIVE_EDGES       # malformed entries dropped, the rest verbatim
     assert blast["cascade_hops"] == LIVE_HOPS
 
 
 @pytest.mark.parametrize("extra", [{}, {"cascade_edges": None, "cascade_hops": "nope"}])
 def test_run_state_without_cascade_degrades_to_empty_lists(control, tmp_store, extra):
-    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "things",
-                          "health": {"things": {"alive": None, "ready": None, "status": "exited"}}, **extra})
+    tmp_store.write_live({"phase": "injecting", "experiment_id": "abc", "target_service": "orders",
+                          "health": {"orders": {"alive": None, "ready": None, "status": "exited"}}, **extra})
     blast = control.state(0)["run"]["blast"]
     assert blast["cascade_edges"] == [] and blast["cascade_hops"] == []
     assert set(blast) == {"expected", "observed", "cascade_edges", "cascade_hops"}
@@ -329,37 +329,37 @@ def test_run_state_without_cascade_degrades_to_empty_lists(control, tmp_store, e
 
 def cascade_attribution() -> CascadeAttribution:
     hops = [
-        CascadeHop(service="things", onset_earliest_s=0.0, onset_latest_s=0.0, onset_source="injection",
-                   mechanism="injected_fault", mechanism_evidence="docker kill", path=["things"],
+        CascadeHop(service="orders", onset_earliest_s=0.0, onset_latest_s=0.0, onset_source="injection",
+                   mechanism="injected_fault", mechanism_evidence="docker kill", path=["orders"],
                    path_confidence="origin", hops_from_origin=0),
         CascadeHop(service="gateway", onset_earliest_s=0.0, onset_latest_s=3.1, onset_source="api_probe",
                    mechanism="dependency_timeout", mechanism_evidence="12/14 requests timed out",
-                   masked_by_health_check=True, upstream="things", edge_kinds=["env"], lag_s=3.1,
-                   path=["gateway", "things"],
-                   candidate_paths=[["gateway", "things"], ["gateway", "things-search", "things"]],
+                   masked_by_health_check=True, upstream="orders", edge_kinds=["env"], lag_s=3.1,
+                   path=["gateway", "orders"],
+                   candidate_paths=[["gateway", "orders"], ["gateway", "orders-search", "orders"]],
                    path_confidence="ambiguous", hops_from_origin=1),
-        CascadeHop(service="connectivity", onset_earliest_s=6.0, onset_latest_s=6.0, onset_source="health_probe",
+        CascadeHop(service="notifier", onset_earliest_s=6.0, onset_latest_s=6.0, onset_source="health_probe",
                    mechanism="readiness_failed", mechanism_evidence="alive=200 ready=503",
                    path_confidence="no_graph_path", beyond_hypothesis=True),
     ]
     return CascadeAttribution(
-        origin="things", health_interval_s=3.0, window_start_s=0.0, window_end_s=30.0, hops=hops,
-        edges=[CascadeEdge(src="gateway", dst="things", mechanism="dependency_timeout", confidence="ambiguous",
+        origin="orders", health_interval_s=3.0, window_start_s=0.0, window_end_s=30.0, hops=hops,
+        edges=[CascadeEdge(src="gateway", dst="orders", mechanism="dependency_timeout", confidence="ambiguous",
                            lag_s=3.1)],
-        hops_beyond_hypothesis=1, beyond_hypothesis=["connectivity"], unattributed=["connectivity"],
-        summary="things was killed; gateway timed out waiting on it.", notes=["health onsets are +/- 3.0 s"])
+        hops_beyond_hypothesis=1, beyond_hypothesis=["notifier"], unattributed=["notifier"],
+        summary="orders was killed; gateway timed out waiting on it.", notes=["health onsets are +/- 3.0 s"])
 
 
 def test_experiment_summary_and_detail_carry_the_cascade(control, tmp_store, make_report):
-    tmp_store.write_experiment(make_report(experiment_id="casc", service="things", cascade=cascade_attribution()))
+    tmp_store.write_experiment(make_report(experiment_id="casc", service="orders", cascade=cascade_attribution()))
     summary = control.state(0)["experiments"][0]
-    assert summary["cascade_hops_beyond_hypothesis"] == 1 and summary["cascade_beyond"] == ["connectivity"]
+    assert summary["cascade_hops_beyond_hypothesis"] == 1 and summary["cascade_beyond"] == ["notifier"]
     assert "cascade" not in summary          # the full attribution stays out of the 1 Hz poll
     cascade = control.experiment_detail("casc")["experiment"]["cascade"]
-    assert cascade["origin"] == "things" and cascade["summary"].startswith("things was killed")
-    assert [h["service"] for h in cascade["hops"]] == ["things", "gateway", "connectivity"]
+    assert cascade["origin"] == "orders" and cascade["summary"].startswith("orders was killed")
+    assert [h["service"] for h in cascade["hops"]] == ["orders", "gateway", "notifier"]
     assert cascade["hops"][1]["masked_by_health_check"] is True
-    assert cascade["edges"] == [{"src": "gateway", "dst": "things", "mechanism": "dependency_timeout",
+    assert cascade["edges"] == [{"src": "gateway", "dst": "orders", "mechanism": "dependency_timeout",
                                  "confidence": "ambiguous", "lag_s": 3.1}]
 
 
@@ -374,19 +374,19 @@ def test_experiment_without_cascade_degrades_to_todays_payload(control, tmp_stor
 def weakness_report(**overrides) -> WeaknessReport:
     """A minimal but complete WeaknessReport, built straight from the schema."""
     w = PredictedWeakness(
-        weakness_id="w1", category="shallow_health_check", services=["things"],
-        title="things reports ready while MongoDB is unreachable",
+        weakness_id="w1", category="shallow_health_check", services=["orders"],
+        title="orders reports ready while postgres is unreachable",
         evidence="healthcheck: curl -f http://localhost:7626/alive",
         predicted_severity=7.4, predicted_level="high",
         factors={"criticality": 0.9, "blast": 0.4},
         suggested_experiment=SuggestedExperiment(
-            failure_type="container_crash", target_service="mongodb",
-            reason="break what things depends on and watch /ready",
-            policy_note="mongodb is protected; requires allow_protected"),
+            failure_type="container_crash", target_service="postgres",
+            reason="break what orders depends on and watch /ready",
+            policy_note="postgres is protected; requires allow_protected"),
         confirming_finding_codes=["health_check_masked_failure"],
         why_it_matters="An orchestrator would keep routing traffic to a service that cannot serve it.")
-    base = {"project": PROJECT, "compose_file": "deploy/ditto/docker-compose.yml",
-            "knowledge_file": "config/knowledge.ditto.yaml", "weaknesses": [w],
+    base = {"project": PROJECT, "compose_file": "targets/shop/docker-compose.yml",
+            "knowledge_file": "targets/shop/shop_knowledge.yaml", "weaknesses": [w],
             "systemic_patterns": [SystemicPattern(title="Liveness-only health checks everywhere",
                                                   weakness_ids=["w1"], narrative="Every service ...")],
             "checks_run": ["shallow_health_check", "no_redundancy"], "notes": ["compose read from disk"]}
@@ -415,9 +415,9 @@ def test_weaknesses_state_matches_the_ui_contract(control, tmp_store):
     (w,) = st["weaknesses"]
     assert w["label"] == PREDICTED_LABEL and w["status"] == "predicted"
     assert w["predicted_level"] == "high" and w["predicted_severity"] == 7.4
-    assert w["category"] == "shallow_health_check" and w["services"] == ["things"]
+    assert w["category"] == "shallow_health_check" and w["services"] == ["orders"]
     assert w["suggested_experiment"]["failure_type"] == "container_crash"
-    assert w["suggested_experiment"]["target_service"] == "mongodb"
+    assert w["suggested_experiment"]["target_service"] == "postgres"
     assert w["suggested_experiment"]["policy_note"]
     assert w["confirming_finding_codes"] == ["health_check_masked_failure"]
     assert w["evidence"] and w["why_it_matters"]
@@ -476,7 +476,7 @@ def test_reconcile_job_closes_the_loop_and_exposes_state(control, tmp_store, mak
     assert "reconcile" in control_mod.JOB_KINDS and control_mod.AGENTS[-1] == "reconcile"
     assert control.state(0)["reconciliation"] is None
     tmp_store.write_weaknesses(weakness_report())
-    tmp_store.write_experiment(make_report(service="things", finding_codes=["health_check_masked_failure"]))
+    tmp_store.write_experiment(make_report(service="orders", finding_codes=["health_check_masked_failure"]))
     job = control.submit("reconcile", {})
     assert job.label == "Reconcile predictions against experiments"
     done = wait_job(control)
@@ -508,7 +508,7 @@ def test_analyze_reconciles_after_every_run_and_survives_a_reconcile_error(contr
     import faultline.agents.reconcile as reconcile_mod
 
     tmp_store.write_topology(topology)
-    tmp_store.write_experiment(make_report(service="things", finding_codes=["health_check_masked_failure"]))
+    tmp_store.write_experiment(make_report(service="orders", finding_codes=["health_check_masked_failure"]))
     control.submit("analyze", {"llm": False})
     assert wait_job(control)["status"] == "done"
     assert control.state(0)["reconciliation"] is None  # no predictions: nothing to reconcile
@@ -545,7 +545,7 @@ def test_baseline_job_drives_its_own_agent_entry(control, monkeypatch, make_repo
 
     def fake_capture(api, health, window, duration, url, policy, log=print):
         assert duration == 20
-        return Baseline(captured_at=utcnow(), duration_s=duration, ditto_url=url,
+        return Baseline(captured_at=utcnow(), duration_s=duration, target_url=url,
                         api=WindowStats(sample_count=80, success_rate=1.0, p50_ms=20, p95_ms=44, p99_ms=90),
                         health_availability={}, thresholds=thresholds)
 
@@ -576,7 +576,7 @@ def test_narrative_fills_missing_risk_and_fix_in_memory(control, tmp_store, make
     assert story["impact"].startswith("Impact: success 100% → 10%")
     assert story["recovery"].startswith("Recovery: 14 s")
     assert story["hypothesis"].startswith("Hypothesis: held")
-    assert story["findings"] == ["Finding [HIGH] policies health check masked failure (health_check_masked_failure)"]
+    assert story["findings"] == ["Finding [HIGH] auth health check masked failure (health_check_masked_failure)"]
     assert story["risk"].startswith("Risk: ") and "not yet assessed" not in story["risk"]
     assert story["fix"].startswith("Top fix: ") and "not yet available" not in story["fix"]
     assert story["safety"] is None and story["llm"] is None and story["error"] is None
@@ -598,29 +598,42 @@ def test_run_job_pushes_the_play_by_play_into_the_feed(control, injector):
 
 
 # ---------------------------------------------------------------- target
-def test_adopt_target_accepts_repo_relative_paths_and_disarms(control, sessions):
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A repository root holding the shop as targets/shop/, so adopting it never touches the real repo."""
+    import shutil
+
+    root = tmp_path / "repo"
+    shutil.copytree(SHOP, root / "targets" / "shop")
+    (root / "config").mkdir()
+    (root / "README.md").write_text("# not a target file\n")
+    monkeypatch.setattr(control_mod, "ROOT", root)
+    return root
+
+
+def test_adopt_target_accepts_repo_relative_paths_and_disarms(control, sessions, repo):
     control.arm()
     seq = control.events.seq
-    out = control.adopt_target({"compose": "deploy/docker-compose.yml", "knowledge": None})
-    assert out == {"compose_file": str(ROOT / "deploy" / "docker-compose.yml"),
+    out = control.adopt_target({"compose": "targets/shop/docker-compose.yml", "knowledge": None})
+    assert out == {"compose_file": str(repo / "targets" / "shop" / "docker-compose.yml"),
                    "knowledge_file": control.s.knowledge_file, "project": PROJECT}
     assert control.state(0)["target"] == out
     assert sessions[0].closed and control.session is None
     assert control.state(0)["agents"]["topology"]["state"] == "idle"
     assert any(e["source"] == "system" and "Target adopted" in e["text"] and e["seq"] > seq
                for e in control.state(0)["events"])
-    out = control.adopt_target({"knowledge": "config/ditto_knowledge.yaml"})
-    assert out["knowledge_file"] == str(ROOT / "config" / "ditto_knowledge.yaml")
+    out = control.adopt_target({"knowledge": "targets/shop/shop_knowledge.yaml"})
+    assert out["knowledge_file"] == str(repo / "targets" / "shop" / "shop_knowledge.yaml")
 
 
-def test_adopt_target_rejects_outside_paths_and_missing_files(control, tmp_path):
+def test_adopt_target_rejects_outside_paths_and_missing_files(control, tmp_path, repo):
     before = control.state(0)["target"]
     secret = tmp_path / "docker-compose.yml"
     secret.write_text("services: {}")
     with pytest.raises(ValueError, match="must live under"):
         control.adopt_target({"compose": str(secret)})
     with pytest.raises(ValueError, match="not found"):
-        control.adopt_target({"compose": "deploy/nope.yml"})
+        control.adopt_target({"compose": "targets/shop/nope.yml"})
     with pytest.raises(ValueError, match="must live under"):
         control.adopt_target({"knowledge": "../" * 6 + "etc/hosts"})
     # inside the repo is not enough: a YAML error on a file like .env would echo its contents
@@ -631,7 +644,7 @@ def test_adopt_target_rejects_outside_paths_and_missing_files(control, tmp_path)
     assert control.state(0)["target"] == before
 
 
-def test_topology_job_honours_compose_knowledge_and_live(control, monkeypatch, topology):
+def test_topology_job_honours_compose_knowledge_and_live(control, monkeypatch, topology, repo):
     seen = []
 
     def fake_build(s, store, live, knowledge=None, compose=None):
@@ -642,13 +655,14 @@ def test_topology_job_honours_compose_knowledge_and_live(control, monkeypatch, t
     control.submit("topology", {})
     assert wait_job(control)["status"] == "done"
     assert seen[-1] == {"live": True, "knowledge": None, "compose": None}
-    control.s.compose_file = str(ROOT / "deploy" / "configured-elsewhere.yml")
-    control.submit("topology", {"compose": "deploy/docker-compose.yml", "knowledge": "config/ditto_knowledge.yaml"})
+    control.s.compose_file = str(repo / "targets" / "shop" / "configured-elsewhere.yml")
+    control.submit("topology", {"compose": "targets/shop/docker-compose.yml",
+                                "knowledge": "targets/shop/shop_knowledge.yaml"})
     assert wait_job(control)["status"] == "done"
     # a compose file other than the configured one defaults to a static read: no docker to inspect
-    assert seen[-1] == {"live": False, "compose": str(ROOT / "deploy" / "docker-compose.yml"),
-                        "knowledge": str(ROOT / "config" / "ditto_knowledge.yaml")}
-    control.submit("topology", {"compose": "deploy/docker-compose.yml", "live": True})
+    assert seen[-1] == {"live": False, "compose": str(repo / "targets" / "shop" / "docker-compose.yml"),
+                        "knowledge": str(repo / "targets" / "shop" / "shop_knowledge.yaml")}
+    control.submit("topology", {"compose": "targets/shop/docker-compose.yml", "live": True})
     assert wait_job(control)["status"] == "done" and seen[-1]["live"] is True
     control.submit("topology", {"compose": "/etc/hosts"})
     assert wait_job(control)["status"] == "failed" and len(seen) == 3
@@ -711,7 +725,7 @@ def test_cancel_run_job_trips_stop(control, monkeypatch, tmp_store):
 
 
 @pytest.mark.parametrize("body,label", [
-    ({"mode": "manual", "target": "things", "failure": "network_delay"}, "network_delay on things"),
+    ({"mode": "manual", "target": "orders", "failure": "network_delay"}, "network_delay on orders"),
     ({"mode": "auto"}, "AI-planned experiment"),
     ({"mode": "auto", "experiments": 3}, "AI-planned experiments (x3)"),
     ({"mode": "manual"}, "AI-planned experiment"),  # manual without a target falls back to the planner
@@ -815,12 +829,12 @@ def test_stop_mid_run_prevents_the_next_experiment(control, injector, tmp_store)
 def test_manual_run_uses_operator_plan_and_clears_stale_stop(control, injector, tmp_store, sessions):
     injector()
     tmp_store.request_stop("old")
-    control.submit("run", {"mode": "manual", "target": "things", "failure": "container_crash",
+    control.submit("run", {"mode": "manual", "target": "orders", "failure": "container_crash",
                            "params": {"duration_s": 15}, "analyze": False, "llm": False})
     job = wait_job(control)
     spec = FakeInjector.instances[0].calls[0]
     assert job["status"] == "done" and spec.planned_by == "operator"
-    assert spec.target_service == "things" and spec.parameters["duration_s"] == 15
+    assert spec.target_service == "orders" and spec.parameters["duration_s"] == 15
     # resume_stop defaults to true: launching a run is treated as an explicit resume
     assert not tmp_store.stop_requested()
     assert len(sessions) == 1 and control.state(0)["session"]["armed"] is True
@@ -829,7 +843,7 @@ def test_manual_run_uses_operator_plan_and_clears_stale_stop(control, injector, 
 # ---------------------------------------------------------------- approval gate (scenario A)
 def make_approval_request(**kw) -> ApprovalRequest:
     fields = dict(approval_id="7f3c1a9b4d02", scenario="pre_injection", experiment_id="exp0001",
-                  token="FL-1a2b3c4d", to="admin@example.test", target_service="mongodb",
+                  token="FL-1a2b3c4d", to="admin@example.test", target_service="postgres",
                   failure_type="container_crash", created_at=utcnow(),
                   deadline=utcnow() + timedelta(seconds=90), timeout_s=90.0, default_on_timeout="skip",
                   options=list(PRE_INJECTION_REPLIES), sent=True)
@@ -852,7 +866,7 @@ class HeldPlanner:
     def _held(spec):
         if spec is not None:
             spec.requires_approval = True
-            spec.approval_reason = "mongodb is protected and the policy requires an explicit decision"
+            spec.approval_reason = "postgres is protected and the policy requires an explicit decision"
         return spec
 
     def plan_next(self):
@@ -958,7 +972,7 @@ def test_gate_approve_reduced_injects_the_halved_spec(control, injector, approva
     live: dict = {}
     injector(on_run=lambda: live.update(control.state(0)["run"]))
     approvals("approve_reduced")
-    control.submit("run", {"mode": "manual", "target": "things", "failure": "container_crash",
+    control.submit("run", {"mode": "manual", "target": "orders", "failure": "container_crash",
                            "params": {"duration_s": 40}, "analyze": False, "llm": False})
     assert wait_job(control)["status"] == "done"
     spec = FakeInjector.instances[0].calls[0]
@@ -998,7 +1012,7 @@ def test_plan_is_read_only_on_a_cold_controller(control, tmp_store, topology, se
     out = control.plan(use_llm=True, allow_protected=False)  # llm requested but disabled in settings
     assert out["candidates"] and out["pick"] is not None
     assert out["pick"]["planned_by"] == "deterministic" and out["llm"]["used"] is False
-    assert all(c["service"] != "mongodb" or c["failure_type"] in
+    assert all(c["service"] != "postgres" or c["failure_type"] in
                ("network_delay", "network_loss", "cpu_stress", "disk_pressure", "db_flood") for c in out["candidates"])
     assert sessions == [] and control.session is None
     assert control.state(0)["session"]["armed"] is False
@@ -1023,9 +1037,9 @@ def test_plan_narrates_only_when_the_pick_changes(control, tmp_store, topology):
 def test_catalog_is_read_only_on_a_cold_controller(control, tmp_store, topology, sessions):
     tmp_store.write_topology(topology)
     cat = control.catalog()
-    assert len(cat["failures"]) == 10 and "mongodb" in cat["protected"]
+    assert len(cat["failures"]) == 10 and "postgres" in cat["protected"]
     crash = next(f for f in cat["failures"] if f["key"] == "container_crash")
-    assert "mongodb" in crash["policy_blocked_on"] and "things" in crash["applies_to"]
+    assert "postgres" in crash["policy_blocked_on"] and "orders" in crash["applies_to"]
     assert sessions == [] and control.session is None
 
 
@@ -1201,7 +1215,7 @@ def test_fix_job_surfaces_an_apply_refusal_as_a_failed_job(control, tmp_store, m
 
     def refuse(settings, store, proposal_id, allow_protected=False, log=print, **kw):
         p = store.proposal(proposal_id)
-        P.note(p, "faultline", "apply refused: this fix touches protected service(s) mongodb")
+        P.note(p, "faultline", "apply refused: this fix touches protected service(s) postgres")
         store.write_proposal(p)
         return p
 
@@ -1211,7 +1225,7 @@ def test_fix_job_surfaces_an_apply_refusal_as_a_failed_job(control, tmp_store, m
     P.approve(tmp_store, "fx-0123456789", P.change_hash(PREVIEW), "test")
     control.submit_fix("fx-0123456789")
     job = wait_job(control)
-    assert job["status"] == "failed" and "protected service(s) mongodb" in job["error"]
+    assert job["status"] == "failed" and "protected service(s) postgres" in job["error"]
     assert tmp_store.proposal("fx-0123456789").status == "approved"   # a refusal never changes status
 
 
@@ -1256,12 +1270,12 @@ def test_analyze_builds_proposals_for_findings_above_info_and_never_fails(contro
     from faultline.schemas import Finding
 
     tmp_store.write_topology(topology)
-    tmp_store.write_experiment(make_report(experiment_id="exp-high", service="things",
+    tmp_store.write_experiment(make_report(experiment_id="exp-high", service="orders",
                                            finding_codes=["health_check_masked_failure"]))
-    info_only = make_report(experiment_id="exp-info", service="things")
+    info_only = make_report(experiment_id="exp-info", service="orders")
     info_only.findings = [Finding(code="auto_recovered", severity="info", title="ok", evidence="-")]
     tmp_store.write_experiment(info_only)
-    tmp_store.write_experiment(make_report(experiment_id="exp-done", service="things",
+    tmp_store.write_experiment(make_report(experiment_id="exp-done", service="orders",
                                            finding_codes=["slow_recovery"]))
     tmp_store.write_proposal(make_proposal("fx-existing", experiment_id="exp-done"))
     calls: list[tuple] = []
@@ -1283,7 +1297,7 @@ def test_analyze_builds_proposals_for_findings_above_info_and_never_fails(contro
         raise RuntimeError("catalog exploded")
 
     monkeypatch.setattr(propose_mod, "build_proposals", boom)
-    tmp_store.write_experiment(make_report(experiment_id="exp-new", service="things",
+    tmp_store.write_experiment(make_report(experiment_id="exp-new", service="orders",
                                            finding_codes=["slow_recovery"]))
     control.submit("analyze", {"llm": False})
     assert wait_job(control)["status"] == "done"
@@ -1295,7 +1309,7 @@ def test_analyze_passes_the_llm_only_when_asked(control, tmp_store, make_report,
     import faultline.remediation.propose as propose_mod
 
     tmp_store.write_topology(topology)
-    tmp_store.write_experiment(make_report(experiment_id="exp-llm", service="things",
+    tmp_store.write_experiment(make_report(experiment_id="exp-llm", service="orders",
                                            finding_codes=["health_check_masked_failure"]))
     seen: list = []
     monkeypatch.setattr(propose_mod, "build_proposals",
@@ -1323,6 +1337,6 @@ def test_fix_deps_reuse_the_rooms_armed_session(control, sessions, monkeypatch, 
     assert s.closed is False                                                # the session is the room's
     assert control._fix_deps(False, False) and len(sessions) == 1           # still one session
     tmp_store.write_topology(topology)
-    tmp_store.write_experiment(make_report(experiment_id="exp-rerun", service="things"))
+    tmp_store.write_experiment(make_report(experiment_id="exp-rerun", service="orders"))
     deps.analyze()                                                          # risk + scorecard, no LLM
     assert tmp_store.risk("exp-rerun") is not None and tmp_store.scorecard() is not None

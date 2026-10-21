@@ -9,7 +9,7 @@ dist/
 
 # Local configuration (secrets, API keys)
 .env
-deploy/.env
+targets/*/deploy/.env
 
 # Blackboard output: every run writes here. Keep the directory, drop the contents.
 reports/*
@@ -29,5 +29,6 @@ reports/*
 # Claude frontend (claude-frontend/)
 node_modules/
 
-# Faultline-owned remediation override (runtime state, backed up under reports/remediation/)
-deploy/docker-compose.override.yml
+# Faultline-owned remediation override next to each target's compose file (runtime state, backed up
+# under reports/remediation/)
+docker-compose.override.yml

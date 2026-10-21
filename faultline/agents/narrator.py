@@ -17,7 +17,7 @@ from .knowledge import target_service
 WATCH_INTERVAL_S = 3.0
 
 LLM_SYSTEM = (
-    "You are narrating a chaos-engineering experiment on an Eclipse Ditto deployment for an engineering audience. "
+    "You are narrating a chaos-engineering experiment on a docker-compose deployment for an engineering audience. "
     "Write one paragraph of two or three plain-English sentences: what was done, what users experienced, and what it means. "
     "Use only the facts provided; no numbers that are not in the input; no bullet points; no headings."
 )
@@ -28,8 +28,8 @@ LLM_CASCADE_RULE = (
     "the hops, do not change any mechanism, and do not present a hop as certain unless its confidence is "
     "\"ordered\"; for \"same_interval\" or \"ambiguous\" hops keep the hedge (say which failed first cannot be "
     "told, or name the alternative path). An ordered hop may be told plainly in cause-and-effect form, e.g. "
-    "\"policies failed, which took gateway down with it 4 seconds later because gateway's requests timed out "
-    "waiting on policies\", using only the lag and mechanism its sentence states."
+    "\"auth failed, which took api down with it 4 seconds later because api's requests timed out "
+    "waiting on auth\", using only the lag and mechanism its sentence states."
 )
 
 VERBS = {

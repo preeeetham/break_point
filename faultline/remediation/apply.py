@@ -338,7 +338,7 @@ def _service_ok(st: dict) -> tuple[bool, str]:
     status, health = st.get("status"), st.get("health")
     if status != "running" or st.get("paused"):
         return False, f"{status}{' (paused)' if st.get('paused') else ''}"
-    # No healthcheck declared (health None, e.g. the live MongoDB): running is all Docker can say; the
+    # No healthcheck declared (health None, e.g. a datastore without one): running is all Docker can say; the
     # API probe below covers whether it actually serves.
     if health in (None, "", "none", "healthy"):
         return True, "running" + (f"/{health}" if health else "")
@@ -405,7 +405,7 @@ def _proxies_in_front(topology, services: list[str]) -> list[str]:
 def _refresh_proxies(deps: Deps, services: list[str], log: Log) -> list[str]:
     """After recreating `services`, make the proxies in front of them resolve the new container IPs.
 
-    A recreated container gets a new IP, but nginx resolves a static `proxy_pass http://gateway:8080` once, at
+    A recreated container gets a new IP, but nginx resolves a static `proxy_pass http://api:8080` once, at
     config load, so without this it keeps sending traffic to the old address (another container may hold it now)
     and the API stays down until nginx is reloaded. `nginx -s reload` re-reads the unchanged config and re-resolves
     the names without dropping in-flight requests; nothing about the proxy container changes. Never raises."""

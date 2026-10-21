@@ -16,9 +16,10 @@ from faultline.schemas import Finding, HealthSummary
 from faultline.topology.graph import build
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPOSE = ROOT / "deploy" / "docker-compose.yml"
-NGINX = ROOT / "deploy" / "nginx" / "nginx.conf"
-KNOWLEDGE = ROOT / "config" / "ditto_knowledge.yaml"
+SHOP = ROOT / "tests" / "fixtures" / "shop"
+COMPOSE = SHOP / "docker-compose.yml"
+NGINX = SHOP / "nginx" / "nginx.conf"
+KNOWLEDGE = SHOP / "shop_knowledge.yaml"
 PROJECT = "faultline-test"
 EID = "exp-things-crash"
 
@@ -35,7 +36,7 @@ def _no_docker(monkeypatch):
 def settings(tmp_path) -> Settings:
     return Settings(
         compose_project=PROJECT, compose_file=str(COMPOSE), nginx_conf=str(NGINX), knowledge_file=str(KNOWLEDGE),
-        reports_dir=str(tmp_path / "reports"), thresholds_file=str(ROOT / "config" / "thresholds.yaml"),
+        reports_dir=str(tmp_path / "reports"), thresholds_file=str(SHOP / "thresholds.yaml"),
         remediation_override_file=str(tmp_path / "deploy" / "docker-compose.override.yml"),
         llm_enabled=False, fix_proposal_timeout_s=1800.0,
     )
@@ -50,19 +51,19 @@ def store(settings) -> ReportStore:
 
 @pytest.fixture
 def report(make_report, store):
-    """A things container_crash where things' /ready stayed green and its dependents never noticed."""
+    """A orders container_crash where orders' /ready stayed green and its dependents never noticed."""
     r = make_report(
-        experiment_id=EID, service="things", failure_type="container_crash", during_success=0.12, ttr=41.0,
-        affected=["gateway", "things-search", "connectivity"],
-        health=[HealthSummary(service="things", ticks=30, alive_ok_fraction=1.0, ready_ok_fraction=1.0)],
+        experiment_id=EID, service="orders", failure_type="container_crash", during_success=0.12, ttr=41.0,
+        affected=["gateway", "orders-search", "notifier"],
+        health=[HealthSummary(service="orders", ticks=30, alive_ok_fraction=1.0, ready_ok_fraction=1.0)],
         findings=[
             Finding(code="api_impact", severity="high", title="API success dropped to 12% during the fault",
                     evidence="120 requests, p95 800 ms (baseline 60 ms)"),
             Finding(code="health_check_masked_failure", severity="high",
-                    title="things kept reporting /ready=200 while the API was failing",
-                    evidence="/ready OK 100% of 30 checks while API success was 12%; cf. Ditto issue #1865"),
+                    title="orders kept reporting /ready=200 while the API was failing",
+                    evidence="/ready OK 100% of 30 checks while API success was 12%"),
             Finding(code="dependency_blind_readiness", severity="low",
-                    title="Dependents stayed 'ready' while things was down: gateway (100%), things-search (100%)",
+                    title="Dependents stayed 'ready' while orders was down: gateway (100%), orders-search (100%)",
                     evidence="readiness only reflects the service's own process"),
             Finding(code="auto_recovered", severity="info", title="Recovered on its own in 41s", evidence="-"),
         ],
@@ -101,15 +102,15 @@ def _expected_preview(settings, store, p):
 def test_candidates_are_code_selected_from_the_catalog(settings, store, report):
     cands = propose.candidates(settings, store, EID)
     pairs = {(c.fix.id, tuple(c.services)) for c in cands}
-    # /alive -> /ready on things (named by the masked-failure finding) and on its blind dependents
-    assert ("add_or_tighten_healthcheck", ("things",)) in pairs
-    assert ("add_or_tighten_healthcheck", ("gateway", "things-search")) in pairs
+    # /alive -> /ready on orders (named by the masked-failure finding) and on its blind dependents
+    assert ("add_or_tighten_healthcheck", ("orders",)) in pairs
+    assert ("add_or_tighten_healthcheck", ("gateway", "orders-search")) in pairs
     assert all(catalog.get(c.fix.id) is not None for c in cands)
     assert all(c.finding.severity != "info" for c in cands)
     assert len(pairs) == len(cands)                    # deduplicated by (fix, services)
-    # the base compose already gives mongodb a healthcheck, so that catalog entry has nothing to change
+    # the base compose already gives postgres a healthcheck, so that catalog entry has nothing to change
     assert not any(c.fix.id == "add_dependency_healthcheck" for c in cands)
-    hc = next(c for c in cands if c.fix.id == "add_or_tighten_healthcheck" and c.services == ["things"])
+    hc = next(c for c in cands if c.fix.id == "add_or_tighten_healthcheck" and c.services == ["orders"])
     assert hc.motivated_by                               # the Fix agent's recommendation for this finding
     assert not hc.requires_allow_protected
 
@@ -124,15 +125,15 @@ def test_proposals_have_code_built_preview_and_hash(settings, store, report):
         assert p.audit[0].actor == "faultline" and "proposed by faultline" in p.audit[0].note
         assert timedelta(seconds=1700) < p.expires_at - p.created_at <= timedelta(seconds=1801)
         assert store.proposal(p.proposal_id) == p
-    things = next(p for p in made if p.target_services == ["things"])
-    assert "-    test: curl --fail `hostname`:7626/alive" not in things.change_preview  # the override only adds
-    assert "+      test: curl --fail `hostname`:7626/ready || exit 1" in things.change_preview
+    orders = next(p for p in made if p.target_services == ["orders"])
+    assert "-    test: curl --fail `hostname`:7626/alive" not in orders.change_preview  # the override only adds
+    assert "+      test: curl --fail `hostname`:7626/ready || exit 1" in orders.change_preview
     assert not Path(settings.remediation_override_file).exists()                      # nothing was applied
 
 
 def test_template_explanation_without_llm(settings, store, report):
     made = propose.build_proposals(settings, store, EID, llm=None, log=lambda m: None)
-    p = next(x for x in made if x.target_services == ["things"])
+    p = next(x for x in made if x.target_services == ["orders"])
     e = p.explanation
     assert e.generated_by == "template"
     for part in (e.problem, e.change, e.expected_improvement, e.risks, e.rollback):
@@ -163,37 +164,37 @@ def test_disabled_llm_is_never_called(settings, store, report):
 
 
 def test_protected_service_needs_allow_protected(settings, store, report):
-    # restart_service_now addresses manual_restart_required; aimed at mongodb (protected in thresholds.yaml)
-    r = report.model_copy(update={"experiment_id": "exp-mongo", "target": {"service": "mongodb"},
+    # restart_service_now addresses manual_restart_required; aimed at postgres (protected in thresholds.yaml)
+    r = report.model_copy(update={"experiment_id": "exp-db", "target": {"service": "postgres"},
                                   "affected_services_observed": [],
                                   "findings": [Finding(code="manual_restart_required", severity="high",
                                                        title="Recovery needed restarts beyond the rollback",
-                                                       evidence="restart mongodb")]})
+                                                       evidence="restart postgres")]})
     store.write_experiment(r)
-    made = propose.build_proposals(settings, store, "exp-mongo", log=lambda m: None)
+    made = propose.build_proposals(settings, store, "exp-db", log=lambda m: None)
     p = next(x for x in made if x.catalog_fix_id == "restart_service_now")
     assert p.requires_allow_protected
     assert "--allow-protected" in p.explanation.risks
     assert p.change_preview.startswith("docker restart ")
 
 
-def test_mongodb_healthcheck_proposal_is_flagged_protected(settings, store, report):
-    # The live upstream stack runs mongodb without a healthcheck: build against such a base config.
+def test_datastore_healthcheck_proposal_is_flagged_protected(settings, store, report):
+    # The live upstream stack runs postgres without a healthcheck: build against such a base config.
     base = override.base_config(settings)
-    del base["services"]["mongodb"]["healthcheck"]
+    del base["services"]["postgres"]["healthcheck"]
     made = propose.build_proposals(settings, store, EID, base=base, log=lambda m: None)
     p = next(x for x in made if x.catalog_fix_id == "add_dependency_healthcheck")
-    assert p.target_services == ["mongodb"]
+    assert p.target_services == ["postgres"]
     assert p.requires_allow_protected is True
     assert "--allow-protected" in p.explanation.risks and "--allow-protected" in propose.render_text(p)
-    assert all(not x.requires_allow_protected for x in made if "mongodb" not in x.target_services)
+    assert all(not x.requires_allow_protected for x in made if "postgres" not in x.target_services)
 
 
 # ---------------------------------------------------------------- the LLM step is validated strictly
 def test_llm_naming_an_off_catalog_fix_is_discarded(settings, store, report):
     logs: list[str] = []
-    llm = StubLLM({"ranking": ["drop_database:mongodb"],
-                   "rewrites": {"drop_database:mongodb": {"problem": "Mongo is slow, drop it."}}})
+    llm = StubLLM({"ranking": ["drop_database:postgres"],
+                   "rewrites": {"drop_database:postgres": {"problem": "The database is slow, drop it."}}})
     made = propose.build_proposals(settings, store, EID, llm=llm, log=logs.append)
     assert llm.calls == 1
     assert {p.catalog_fix_id for p in made} <= set(catalog.CATALOG)
@@ -210,8 +211,8 @@ def test_llm_ranking_is_applied_and_diff_text_rejected(settings, store, report):
     def answer(user):
         return {"ranking": [last, last, "made_up:x"],
                 "rewrites": {
-                    last: {"problem": "services:\n  things:\n    healthcheck: {}",           # YAML: rejected
-                           "risks": "Recreating things takes about two minutes; the cluster rejoins on its own.",
+                    last: {"problem": "services:\n  orders:\n    healthcheck: {}",           # YAML: rejected
+                           "risks": "Recreating orders takes about two minutes; the cluster rejoins on its own.",
                            "change": "+ restart: always",                                   # never the model's
                            "rollback": "just delete the file"},
                     first: {"expected_improvement": "x" * 700,                             # too long: rejected
@@ -223,7 +224,7 @@ def test_llm_ranking_is_applied_and_diff_text_rejected(settings, store, report):
     assert top.rank == 1 and all(p.ranked_by == "llm" for p in made)
     assert sorted(p.rank for p in made) == list(range(1, len(made) + 1))       # a permutation, nothing lost
     assert top.explanation.generated_by == "llm"
-    assert top.explanation.risks.startswith("Recreating things takes about two minutes")
+    assert top.explanation.risks.startswith("Recreating orders takes about two minutes")
     assert "healthcheck: {}" not in top.explanation.problem                      # template kept
     assert "Exact change (shown verbatim below)" in top.explanation.change       # code-built
     assert "byte for byte" in top.explanation.rollback

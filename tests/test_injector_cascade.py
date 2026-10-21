@@ -19,7 +19,7 @@ from faultline.reporting.markdown import experiment_markdown
 from faultline.schemas import CascadeAttribution, CascadeEdge, CascadeHop, ExperimentSpec, Hypothesis
 
 T0 = 1_700_000_000.0
-TARGET = "policies"
+TARGET = "auth"
 
 
 # ---------------------------------------------------------------- fakes
@@ -109,9 +109,9 @@ class FakeHandle(Handle):
 
 def _spec(**kw) -> ExperimentSpec:
     return ExperimentSpec(experiment_id=kw.pop("experiment_id", "exp-cascade"), target_service=TARGET,
-                          container=f"bosch-ditto-{TARGET}-1", failure_type="container_crash",
+                          container=f"shop-{TARGET}-1", failure_type="container_crash",
                           parameters={"duration_s": 6}, rationale="test",
-                          hypothesis=Hypothesis(statement="things degrade", expected_affected=["things"],
+                          hypothesis=Hypothesis(statement="orders degrade", expected_affected=["orders"],
                                                 expected_recovery_s=60),
                           criticality_score=1.0, planned_by="operator", **kw)
 
@@ -159,10 +159,10 @@ def _attribution(origin=TARGET) -> CascadeAttribution:
     return CascadeAttribution(
         origin=origin, health_interval_s=3.0, window_start_s=-6.0, window_end_s=40.0,
         hops=[_hop(origin, "injected_fault", "origin", [origin], src="injection", ev="SIGKILL"),
-              _hop("connectivity", "process_down", "ordered", ["connectivity", origin], upstream=origin,
+              _hop("notifier", "process_down", "ordered", ["notifier", origin], upstream=origin,
                    e=0.5, l=3.0, lag_s=3.0, hops_from_origin=1, beyond_hypothesis=True)],
-        edges=[CascadeEdge(src="connectivity", dst=origin, mechanism="process_down", confidence="ordered", lag_s=3.0)],
-        beyond_hypothesis=["connectivity"], hops_beyond_hypothesis=1,
+        edges=[CascadeEdge(src="notifier", dst=origin, mechanism="process_down", confidence="ordered", lag_s=3.0)],
+        beyond_hypothesis=["notifier"], hops_beyond_hypothesis=1,
         notes=["health probe polls every 3s, so onsets are 3s intervals"])
 
 
@@ -187,7 +187,7 @@ def test_completed_run_carries_cascade_and_window_arguments(env, monkeypatch, to
 
     assert report.status == "completed"
     assert report.cascade is not None and report.cascade.origin == TARGET
-    assert [h.service for h in report.cascade.hops] == [TARGET, "connectivity"]
+    assert [h.service for h in report.cascade.hops] == [TARGET, "notifier"]
 
     final = rec.calls[-1]
     live_calls = rec.calls[:-1]
@@ -197,7 +197,7 @@ def test_completed_run_carries_cascade_and_window_arguments(env, monkeypatch, to
     window_end = final["window_end"]
     assert final["topology"] is topology
     assert final["target"] == TARGET
-    assert list(final["expected_affected"]) == ["things"]
+    assert list(final["expected_affected"]) == ["orders"]
     assert final["health_interval_s"] == 3.0
     assert final["baseline"] == report.baseline
     # the final window covers the fault, the recovery wait and the 8 s "after" window
@@ -219,12 +219,12 @@ def test_completed_run_carries_cascade_and_window_arguments(env, monkeypatch, to
 
 
 def test_attribute_failure_does_not_alter_experiment(env, monkeypatch):
-    inj_ok, _ = env(down=["connectivity"])
+    inj_ok, _ = env(down=["notifier"])
     monkeypatch.setattr(injector_mod, "attribute", Recorder(result=CascadeAttribution(
         origin=TARGET, health_interval_s=3.0, window_start_s=0, window_end_s=1)))
     ok = inj_ok.run(_spec())
 
-    inj_bad, ctx = env(down=["connectivity"])
+    inj_bad, ctx = env(down=["notifier"])
     boom = Recorder(exc=RuntimeError("boom"))
     monkeypatch.setattr(injector_mod, "attribute", boom)
     bad = inj_bad.run(_spec())
@@ -263,11 +263,11 @@ def test_skipped_run_has_no_cascade(env, monkeypatch):
 
 
 def test_cascade_finding_evidence_is_enriched_not_replaced(env, monkeypatch):
-    inj_none, _ = env(down=["connectivity"])
+    inj_none, _ = env(down=["notifier"])
     monkeypatch.setattr(injector_mod, "attribute", Recorder(exc=RuntimeError("off")))
     base = inj_none.run(_spec())
 
-    inj, _ = env(down=["connectivity"])
+    inj, _ = env(down=["notifier"])
     monkeypatch.setattr(injector_mod, "attribute", Recorder())
     report = inj.run(_spec())
 
@@ -277,7 +277,7 @@ def test_cascade_finding_evidence_is_enriched_not_replaced(env, monkeypatch):
     assert "cascade_beyond_hypothesis" in after
     old, new = before["cascade_beyond_hypothesis"].evidence, after["cascade_beyond_hypothesis"].evidence
     assert new.startswith(old)
-    assert f"{TARGET} → connectivity" in new and "process_down" in new
+    assert f"{TARGET} → notifier" in new and "process_down" in new
     for code in after:
         if code != "cascade_beyond_hypothesis":
             assert after[code].evidence == before[code].evidence
@@ -300,7 +300,7 @@ def test_live_json_carries_cascade_edges_and_keeps_last_value(env, monkeypatch):
     with_edges = [d for d in ctx.live if "cascade_edges" in d]
     assert with_edges
     assert with_edges[0]["cascade_edges"] == [e.model_dump() for e in attr.edges]
-    assert with_edges[0]["cascade_hops"][1] == {"service": "connectivity", "mechanism": "process_down",
+    assert with_edges[0]["cascade_hops"][1] == {"service": "notifier", "mechanism": "process_down",
                                                 "path_confidence": "ordered", "masked_by_health_check": False,
                                                 "beyond_hypothesis": True}
     phases = {d["phase"] for d in with_edges}
@@ -317,11 +317,11 @@ def test_markdown_renders_cascade_section(make_report):
     assert "## Cascade" in md
     section = md.split("## Cascade", 1)[1].split("## Findings", 1)[0]
     assert f"- {TARGET} had the fault injected at +0.0s (SIGKILL)" in section
-    assert f"- connectivity went down (container not running), first seen failing between +0.5s and +3.0s, " \
-           f"after {TARGET} (path {TARGET} → connectivity) [beyond the hypothesis]" in section
+    assert f"- notifier went down (container not running), first seen failing between +0.5s and +3.0s, " \
+           f"after {TARGET} (path {TARGET} → notifier) [beyond the hypothesis]" in section
     assert "- health probe polls every 3s, so onsets are 3s intervals" in section
     assert "| Service | onset | mechanism | via | confidence | masked |" in section
-    assert f"| connectivity | +0.5s–+3.0s | process_down | {TARGET} | ordered | no |" in section
+    assert f"| notifier | +0.5s–+3.0s | process_down | {TARGET} | ordered | no |" in section
     assert f"| {TARGET} | +0.0s | injected_fault | — | origin | no |" in section
 
 

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Stop the Faultline sandbox. Volumes (MongoDB data, Grafana state) are kept.
+# Stop the selected target's stack. Volumes (datastore data, dashboards) are kept.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT/deploy"
+PY="${PY:-$ROOT/.venv/bin/python}"
+[[ -x "$PY" ]] || PY=python3
+cd "$ROOT"
+vars="$("$PY" -m faultline target --shell)" || { echo "$vars" >&2; exit 1; }
+eval "$vars"
 
-docker compose down
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down
 
 echo
 echo "Stack stopped. Volumes were kept."
-echo "To also delete the MongoDB data and Grafana state, run:"
-echo "  (cd $ROOT/deploy && docker compose down -v)"
+echo "To also delete them, run:"
+echo "  docker compose -p $COMPOSE_PROJECT -f $COMPOSE_FILE down -v"

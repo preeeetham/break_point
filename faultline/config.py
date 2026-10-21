@@ -1,3 +1,9 @@
+"""Settings, layered: process environment > .env > targets/<target>/target.yaml > config/settings.yaml > defaults.
+
+Faultline itself knows nothing about any one application. Everything that belongs to the system under test
+-- its compose file, its proxy config, its documented knowledge, how to send it traffic, extra fix rules --
+lives in one directory, `targets/<name>/`, selected with FAULTLINE_TARGET. See docs/ONBOARDING_A_TARGET.md.
+"""
 from __future__ import annotations
 
 import os
@@ -7,6 +13,16 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+TARGETS_DIR = ROOT / "targets"
+TARGET_FILE = "target.yaml"
+PROBE_FILE = "probe.yaml"
+RULES_FILE = "rules.yaml"
+KNOWLEDGE_SUFFIX = "_knowledge.yaml"
+# docker compose merges a file with this name next to the base compose file on its own, so the
+# Faultline-owned override is visible to a plain `docker compose up` in the target's directory too.
+OVERRIDE_NAME = "docker-compose.override.yml"
+PATH_FIELDS = ("compose_file", "nginx_conf", "reports_dir", "thresholds_file", "knowledge_file", "probe_file",
+               "rules_file", "onboarding_example", "remediation_override_file")
 
 
 def _dotenv(path: Path) -> dict[str, str]:
@@ -23,12 +39,15 @@ def _dotenv(path: Path) -> dict[str, str]:
 
 @dataclass
 class Settings:
+    target: str = ""               # name of the directory under targets/; empty = nothing selected
+    target_error: str = ""         # why the selected target could not be loaded; `faultline setup` reports it
+    app_name: str = ""             # how prompts and reports name the system under test; empty = generic wording
     compose_project: str = "faultline"
-    compose_file: str = "deploy/docker-compose.yml"
-    nginx_conf: str = "deploy/nginx/nginx.conf"
-    ditto_url: str = "http://127.0.0.1:8080"
-    ditto_user: str = "ditto"
-    ditto_password: str = "ditto"
+    compose_file: str = ""
+    nginx_conf: str = ""
+    target_url: str = "http://127.0.0.1:8080"
+    target_user: str = ""          # empty = requests carry no credentials
+    target_password: str = ""
     prometheus_url: str = "http://127.0.0.1:9090"
     llm_provider: str = "ollama"  # ollama | openai | anthropic
     llm_model: str = ""           # empty = provider default (phi4-mini / gpt-4o-mini / claude-sonnet-5)
@@ -38,7 +57,12 @@ class Settings:
     llm_timeout_s: float = 120.0
     reports_dir: str = "reports"
     thresholds_file: str = "config/thresholds.yaml"
-    knowledge_file: str = "config/ditto_knowledge.yaml"
+    knowledge_file: str = ""       # empty = targets/<target>/<target>_knowledge.yaml when it exists
+    probe_file: str = ""           # empty = targets/<target>/probe.yaml when it exists, else health-only probing
+    rules_file: str = ""           # empty = targets/<target>/rules.yaml when it exists, else the generic rules only
+    # The worked example the onboarding prompt shows the model. A neutral, invented application on purpose:
+    # the onboarding validator drops anything that can only have come from the example.
+    onboarding_example: str = "config/examples/knowledge.example.yaml"
     probe_rps: float = 4.0
     probe_namespace: str = "faultline.probe"
     health_interval_s: float = 3.0
@@ -69,7 +93,7 @@ class Settings:
     # ---- human-approved fixes. Proposals expire unanswered (never auto-approved); config changes go
     # into a Faultline-owned compose override next to the base compose file, never into it.
     fix_proposal_timeout_s: float = 1800.0
-    remediation_override_file: str = "deploy/docker-compose.override.yml"
+    remediation_override_file: str = ""   # empty = docker-compose.override.yml next to compose_file
     fix_health_timeout_s: float = 180.0
     compose_env: str = ""          # "K=V,K2=V2" passed to `docker compose` when recreating fixed services
     approval_poll_s: float = 5.0
@@ -82,18 +106,30 @@ class Settings:
     def compose_network(self) -> str:
         return self.network_name or f"{self.compose_project}_default"
 
+    @property
+    def target_dir(self) -> Path | None:
+        return TARGETS_DIR / self.target if self.target and not self.target_error else None
+
+    @property
+    def app_label(self) -> str:
+        return self.app_name or "the application under test"
+
 
 ENV_MAP = {
     "TIME_LENIENCE_SECONDS": "time_lenience_s",
+    "FAULTLINE_APP_NAME": "app_name",
     "FAULTLINE_COMPOSE_PROJECT": "compose_project",
     "FAULTLINE_COMPOSE_FILE": "compose_file",
+    "FAULTLINE_NGINX_CONF": "nginx_conf",
     "FAULTLINE_KNOWLEDGE_FILE": "knowledge_file",
+    "FAULTLINE_PROBE_FILE": "probe_file",
+    "FAULTLINE_RULES_FILE": "rules_file",
     "FAULTLINE_REPORTS_DIR": "reports_dir",
     "FAULTLINE_LLM": "llm_enabled",
     "FAULTLINE_NETWORK": "network_name",
-    "DITTO_URL": "ditto_url",
-    "DITTO_USER": "ditto_user",
-    "DITTO_PASSWORD": "ditto_password",
+    "TARGET_URL": "target_url",
+    "TARGET_USER": "target_user",
+    "TARGET_PASSWORD": "target_password",
     "PROMETHEUS_URL": "prometheus_url",
     # OLLAMA_* are legacy aliases; LLM_* come later in the map so they win when both are set
     "OLLAMA_URL": "llm_base_url",
@@ -124,14 +160,54 @@ ENV_MAP = {
 }
 
 
+def _apply_yaml(s: Settings, data: dict, base: Path | None = None) -> None:
+    """Set known fields from a YAML mapping. Relative paths in a target file are relative to the target."""
+    for k, v in (data or {}).items():
+        if not hasattr(s, k) or v is None or k in ("target", "target_error"):
+            continue
+        if base is not None and k in PATH_FIELDS and v and not Path(str(v)).is_absolute():
+            v = str(base / str(v))
+        setattr(s, k, v)
+
+
+def _apply_target(s: Settings) -> None:
+    """Layer targets/<target>/target.yaml and pick up the target's conventional files.
+
+    A missing target directory is recorded rather than raised: .env is shared by every branch of
+    this repository, and a branch that does not carry the target must still load its settings.
+    `faultline setup` reports the error, and every command that needs a compose file says so.
+    """
+    tdir = TARGETS_DIR / s.target
+    if not tdir.is_dir():
+        known = sorted(p.name for p in TARGETS_DIR.iterdir() if p.is_dir()) if TARGETS_DIR.is_dir() else []
+        s.target_error = (f"FAULTLINE_TARGET={s.target} but targets/{s.target}/ does not exist "
+                          f"(available: {', '.join(known) or 'none'})")
+        return
+    tfile = tdir / TARGET_FILE
+    if tfile.is_file():
+        _apply_yaml(s, yaml.safe_load(tfile.read_text()) or {}, base=tdir)
+    knowledge = tdir / f"{s.target}{KNOWLEDGE_SUFFIX}"
+    if not knowledge.is_file():
+        # `faultline onboard <repo> --out targets/<name>` names the file after the repository, not the target
+        found = sorted(tdir.glob(f"*{KNOWLEDGE_SUFFIX}"))
+        knowledge = found[0] if len(found) == 1 else knowledge
+    for attr, path in (("knowledge_file", knowledge), ("probe_file", tdir / PROBE_FILE), ("rules_file", tdir / RULES_FILE)):
+        if not getattr(s, attr) and path.is_file():
+            setattr(s, attr, str(path))
+
+
 def load_settings(path: str | None = None) -> Settings:
     s = Settings()
     cfg = Path(path) if path else ROOT / "config" / "settings.yaml"
     if cfg.is_file():
-        for k, v in (yaml.safe_load(cfg.read_text()) or {}).items():
-            if hasattr(s, k) and v is not None:
-                setattr(s, k, v)
+        data = yaml.safe_load(cfg.read_text()) or {}
+        _apply_yaml(s, data)
+        s.target = str(data.get("target") or "")
     env = {**_dotenv(ROOT / ".env"), **os.environ}
+    if env.get("FAULTLINE_TARGET"):
+        s.target = env["FAULTLINE_TARGET"].strip()
+    if s.target:
+        _apply_target(s)
     for ek, attr in ENV_MAP.items():
         raw = env.get(ek)
         if raw is None or raw == "":
@@ -150,8 +226,10 @@ def load_settings(path: str | None = None) -> Settings:
     s.imap_host = s.imap_host or s.smtp_host
     s.imap_user = s.imap_user or s.smtp_user
     s.imap_password = s.imap_password or s.smtp_password
-    for attr in ("compose_file", "nginx_conf", "reports_dir", "thresholds_file", "knowledge_file", "remediation_override_file"):
-        p = Path(getattr(s, attr))
-        if not p.is_absolute():
-            setattr(s, attr, str(ROOT / p))
+    for attr in PATH_FIELDS:
+        raw = getattr(s, attr)
+        if raw and not Path(raw).is_absolute():
+            setattr(s, attr, str(ROOT / raw))
+    if not s.remediation_override_file and s.compose_file:
+        s.remediation_override_file = str(Path(s.compose_file).parent / OVERRIDE_NAME)
     return s

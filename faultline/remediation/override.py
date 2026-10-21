@@ -268,8 +268,8 @@ def _project_args(settings: Any, info: Optional[dict]) -> list[str]:
 
 
 def compose_env(settings: Any) -> dict[str, str]:
-    """Extra variables the live stack's compose files need (settings.compose_env, "K=V,K2=V2"), e.g.
-    DITTO_LOCAL_DIR, which the stack's own launcher script exports and Faultline otherwise lacks."""
+    """Extra variables the live stack's compose files need (settings.compose_env, "K=V,K2=V2"), e.g. a
+    source directory the stack's own launcher script exports and Faultline otherwise lacks."""
     out: dict[str, str] = {}
     for item in str(getattr(settings, "compose_env", "") or "").split(","):
         k, sep, v = item.partition("=")

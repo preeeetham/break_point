@@ -19,11 +19,11 @@ export const EXPLAIN = {
   },
   graph: {
     title: "The application map, built automatically",
-    body: "Services, dependencies and data flows are discovered from the Compose file, the containers' environment variables, the nginx routes and live Docker inspection. The key finding: Compose's depends_on never mentions MongoDB, yet every Ditto service reaches it through MONGO_DB_HOSTNAME. Only the environment scan reveals that it is the single biggest point of failure. Node size follows criticality; during an experiment the blast radius spreads across the edges in real time. When the failure's path has been worked out, only that path pulses, travelling from the broken dependency to the services that rely on it; a dashed pulse means the timing could not prove which way it went.",
+    body: "Services, dependencies and data flows are discovered from the Compose file, the containers' environment variables, the nginx routes and live Docker inspection. The typical finding: Compose's depends_on never mentions the database, yet every service reaches it through an environment variable such as DB_HOST. Only the environment scan reveals that it is the single biggest point of failure. Node size follows criticality; during an experiment the blast radius spreads across the edges in real time. When the failure's path has been worked out, only that path pulses, travelling from the broken dependency to the services that rely on it; a dashed pulse means the timing could not prove which way it went.",
   },
   chart: {
     title: "What the probe sees",
-    body: "A synthetic client calls the Ditto Things API about four times a second — create, read, update, search — exactly like a real device would. The green area is the share of those calls that succeeded; the cyan line is 95th-percentile latency. Shaded bands mark what the system was doing. Dashed lines are the abort thresholds: cross one and the experiment is rolled back automatically.",
+    body: "A synthetic client calls the application's API about four times a second — the requests the target's probe spec defines — exactly like a real client would. The green area is the share of those calls that succeeded; the cyan line is 95th-percentile latency. Shaded bands mark what the system was doing. Dashed lines are the abort thresholds: cross one and the experiment is rolled back automatically.",
   },
   kpis: {
     title: "Live numbers",
@@ -79,7 +79,7 @@ export const PHASE_INDEX = {
 };
 
 export const FINDING_HELP = {
-  health_check_masked_failure: "The platform reported this service as ready while real requests were failing — an orchestrator would have kept routing traffic to it. This mirrors Eclipse Ditto issue #1865.",
+  health_check_masked_failure: "The platform reported this service as ready while real requests were failing — an orchestrator would have kept routing traffic to it.",
   dependency_blind_readiness: "Dependents stayed 'ready' while their dependency was gone, because readiness only reflects the service's own process.",
   no_automated_remediation: "Nothing reacted to the outage. Docker's restart policy only fires when a container exits, never when it is merely unhealthy.",
   manual_restart_required: "The system did not heal by itself; the tool had to restart containers. In production this is a page at 3am.",

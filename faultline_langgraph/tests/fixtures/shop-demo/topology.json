@@ -1,0 +1,494 @@
+{
+  "project": "shop",
+  "generated_at": "2026-10-10T09:26:04.332183Z",
+  "services": {
+    "postgres": {
+      "name": "postgres",
+      "image": "docker.io/postgres:16-alpine",
+      "role": "datastore",
+      "stateful": true,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": 256,
+      "aliases": [
+        "postgres"
+      ],
+      "chaos_relevant": true,
+      "container": "shop-postgres-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always",
+      "engine": "postgres",
+      "engine_evidence": "image docker.io/postgres:16-alpine"
+    },
+    "auth": {
+      "name": "auth",
+      "image": "docker.io/example/shop-auth:${SHOP_VERSION:-1.4.0}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "shop-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "shop-auth-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "orders": {
+      "name": "orders",
+      "image": "docker.io/example/shop-orders:${SHOP_VERSION:-1.4.0}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "shop-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "shop-orders-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "orders-search": {
+      "name": "orders-search",
+      "image": "docker.io/example/shop-orders-search:${SHOP_VERSION:-1.4.0}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "shop-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "shop-orders-search-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "notifier": {
+      "name": "notifier",
+      "image": "docker.io/example/shop-notifier:${SHOP_VERSION:-1.4.0}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 768,
+      "aliases": [
+        "shop-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "shop-notifier-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "gateway": {
+      "name": "gateway",
+      "image": "docker.io/example/shop-gateway:${SHOP_VERSION:-1.4.0}",
+      "role": "app",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": 7626,
+      "mem_limit_mb": 512,
+      "aliases": [
+        "shop-cluster"
+      ],
+      "chaos_relevant": true,
+      "container": "shop-gateway-1",
+      "state": "running",
+      "health": "healthy",
+      "restart_policy": "always"
+    },
+    "web-ui": {
+      "name": "web-ui",
+      "image": "docker.io/example/shop-ui:${SHOP_VERSION:-1.4.0}",
+      "role": "ui",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": 32,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "shop-web-ui-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "nginx": {
+      "name": "nginx",
+      "image": "docker.io/nginx:1.27-alpine",
+      "role": "proxy",
+      "stateful": false,
+      "entrypoint": true,
+      "health_port": null,
+      "mem_limit_mb": 32,
+      "aliases": [],
+      "chaos_relevant": true,
+      "container": "shop-nginx-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "prometheus": {
+      "name": "prometheus",
+      "image": "docker.io/prom/prometheus:v2.55.1",
+      "role": "other",
+      "stateful": false,
+      "entrypoint": true,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "shop-prometheus-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "cadvisor": {
+      "name": "cadvisor",
+      "image": "gcr.io/cadvisor/cadvisor:v0.49.1",
+      "role": "other",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "shop-cadvisor-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "blackbox": {
+      "name": "blackbox",
+      "image": "docker.io/prom/blackbox-exporter:v0.25.0",
+      "role": "other",
+      "stateful": false,
+      "entrypoint": false,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "shop-blackbox-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    },
+    "grafana": {
+      "name": "grafana",
+      "image": "docker.io/grafana/grafana:11.3.0",
+      "role": "other",
+      "stateful": true,
+      "entrypoint": true,
+      "health_port": null,
+      "mem_limit_mb": null,
+      "aliases": [],
+      "chaos_relevant": false,
+      "container": "shop-grafana-1",
+      "state": "running",
+      "health": null,
+      "restart_policy": "always"
+    }
+  },
+  "edges": [
+    {
+      "src": "orders",
+      "dst": "auth",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "orders-search",
+      "dst": "auth",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "notifier",
+      "dst": "auth",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "gateway",
+      "dst": "auth",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "nginx",
+      "dst": "gateway",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "grafana",
+      "dst": "prometheus",
+      "kind": "depends_on",
+      "evidence": "depends_on"
+    },
+    {
+      "src": "auth",
+      "dst": "postgres",
+      "kind": "env",
+      "evidence": "env DB_HOST=postgres"
+    },
+    {
+      "src": "orders",
+      "dst": "postgres",
+      "kind": "env",
+      "evidence": "env DB_HOST=postgres"
+    },
+    {
+      "src": "orders-search",
+      "dst": "postgres",
+      "kind": "env",
+      "evidence": "env DB_HOST=postgres"
+    },
+    {
+      "src": "notifier",
+      "dst": "postgres",
+      "kind": "env",
+      "evidence": "env DB_HOST=postgres"
+    },
+    {
+      "src": "nginx",
+      "dst": "gateway",
+      "kind": "proxy",
+      "evidence": "proxy_pass → gateway"
+    },
+    {
+      "src": "nginx",
+      "dst": "web-ui",
+      "kind": "proxy",
+      "evidence": "proxy_pass → web-ui"
+    },
+    {
+      "src": "gateway",
+      "dst": "auth",
+      "kind": "documented",
+      "evidence": "gateway asks auth to authorise every request (architecture-overview)"
+    },
+    {
+      "src": "gateway",
+      "dst": "orders",
+      "kind": "documented",
+      "evidence": "gateway forwards order commands to orders over the cluster"
+    },
+    {
+      "src": "gateway",
+      "dst": "orders-search",
+      "kind": "documented",
+      "evidence": "gateway forwards /search to orders-search"
+    },
+    {
+      "src": "gateway",
+      "dst": "notifier",
+      "kind": "documented",
+      "evidence": "gateway forwards connection management to notifier"
+    },
+    {
+      "src": "orders",
+      "dst": "auth",
+      "kind": "documented",
+      "evidence": "orders enforces auth on every command"
+    },
+    {
+      "src": "orders-search",
+      "dst": "auth",
+      "kind": "documented",
+      "evidence": "search results are filtered by policy enforcement"
+    },
+    {
+      "src": "orders-search",
+      "dst": "orders",
+      "kind": "documented",
+      "evidence": "search index is built from order events (eventually consistent)"
+    },
+    {
+      "src": "notifier",
+      "dst": "orders",
+      "kind": "documented",
+      "evidence": "connections publish to and subscribe from orders"
+    },
+    {
+      "src": "notifier",
+      "dst": "auth",
+      "kind": "documented",
+      "evidence": "notifier enforces auth for inbound/outbound messages"
+    }
+  ],
+  "criticality": [
+    {
+      "service": "postgres",
+      "fan_in": 4,
+      "transitive_dependents": [
+        "notifier",
+        "gateway",
+        "nginx",
+        "auth",
+        "orders",
+        "orders-search"
+      ],
+      "score": 9.5,
+      "reasons": [
+        "6 services depend on it transitively",
+        "holds state",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "auth",
+      "fan_in": 4,
+      "transitive_dependents": [
+        "notifier",
+        "gateway",
+        "nginx",
+        "orders",
+        "orders-search"
+      ],
+      "score": 5.0,
+      "reasons": [
+        "5 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "orders",
+      "fan_in": 3,
+      "transitive_dependents": [
+        "notifier",
+        "gateway",
+        "nginx",
+        "orders-search"
+      ],
+      "score": 4.0,
+      "reasons": [
+        "4 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "grafana",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 3.5,
+      "reasons": [
+        "nothing depends on it",
+        "holds state",
+        "reachable from outside the sandbox",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "prometheus",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "grafana"
+      ],
+      "score": 2.5,
+      "reasons": [
+        "1 service depends on it transitively",
+        "reachable from outside the sandbox",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "notifier",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "gateway",
+        "nginx"
+      ],
+      "score": 2.0,
+      "reasons": [
+        "2 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "orders-search",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "gateway",
+        "nginx"
+      ],
+      "score": 2.0,
+      "reasons": [
+        "2 services depend on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "nginx",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 1.5,
+      "reasons": [
+        "nothing depends on it",
+        "reachable from outside the sandbox",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "web-ui",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "nginx"
+      ],
+      "score": 1.0,
+      "reasons": [
+        "1 service depends on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "gateway",
+      "fan_in": 1,
+      "transitive_dependents": [
+        "nginx"
+      ],
+      "score": 1.0,
+      "reasons": [
+        "1 service depends on it transitively",
+        "single instance"
+      ]
+    },
+    {
+      "service": "blackbox",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 0.5,
+      "reasons": [
+        "nothing depends on it",
+        "no application health endpoint",
+        "single instance"
+      ]
+    },
+    {
+      "service": "cadvisor",
+      "fan_in": 0,
+      "transitive_dependents": [],
+      "score": 0.5,
+      "reasons": [
+        "nothing depends on it",
+        "no application health endpoint",
+        "single instance"
+      ]
+    }
+  ],
+  "findings": [
+    "postgres: not referenced by any depends_on; 4 services reach it only via environment variables"
+  ]
+}

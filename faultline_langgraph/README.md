@@ -27,7 +27,7 @@ python -m faultline_langgraph.cli graph
 |---|---|
 | `plan` | Ranks the candidates and lets the planning agent pick the next experiment. Runs nothing, like `faultline plan`. |
 | `--no-llm` | Deterministic plan only. Output is the same as `faultline plan --no-llm`. |
-| `--allow-protected` | Same meaning as in `faultline`: lets protected services (MongoDB) get crash/stop/pause/partition candidates. |
+| `--allow-protected` | Same meaning as in `faultline`: lets protected services (typically the datastore) get crash/stop/pause/partition candidates. |
 | `--trace` | Prints the agent's steps: the ranking, each turn's tool calls, each validation (accepted or rejected, and why), and any fallback. |
 | `--json` | Prints the `ExperimentSpec` as JSON on stdout; everything else goes to stderr. |
 | `graph` | Prints the planner graph as Mermaid (the diagram below). |
@@ -141,7 +141,7 @@ The acceptance bar for this conversion:
 
 ## Equivalence results
 
-Measured on 2026-10-11 against the demo fixture (`reports-demo`: 4 past experiments) and the same fixture with no history.
+Measured on 2026-10-11 against the demo fixture (now `tests/fixtures/shop-demo`: 4 past experiments) and the same fixture with no history.
 
 **1. Schema.** Every spec either engine produced in the runs below validates against `faultline.schemas.ExperimentSpec` (round-trip `model_validate(model_dump())`), and so does every spec in the offline suite.
 
@@ -161,10 +161,10 @@ This is by construction rather than by luck: the ranking is `Planner.candidates(
 | target in top 5, parameters in bounds, hypothesis in range | 6 / 6 | 6 / 6 |
 | tool calls per plan | none | 2-6 (inspect_service, baseline_summary, failure_type_info, preview_candidate) |
 | recoveries | none needed | 5 garbled tool calls retried, 2 text answers rejected and resubmitted |
-| picks | network_delay on mongodb 4x, db_flood and network_loss on mongodb once each | network_delay on mongodb 6x |
+| picks | network_delay on the datastore 4x, db_flood and network_loss on it once each | network_delay on the datastore 6x |
 | wall time per plan | about 1 s | 52-122 s |
 
-Both engines made the same kind of decision, inside the same top 5 and the same bounds, with coherent hypotheses. For example, the agent wrote: "Increasing network latency to MongoDB will degrade API latency for all dependent services but keep success rates above 95% and recover within 10 seconds." The cost is time and tokens. An agent sends the whole conversation again on every turn, and on Groq's free tier most of the wall time is rate-limit backoff. For a live demo, use a paid tier or local Ollama, or run the original planner when speed matters.
+Both engines made the same kind of decision, inside the same top 5 and the same bounds, with coherent hypotheses. For example, the agent wrote: "Increasing network latency to [the datastore] will degrade API latency for all dependent services but keep success rates above 95% and recover within 10 seconds." The cost is time and tokens. An agent sends the whole conversation again on every turn, and on Groq's free tier most of the wall time is rate-limit backoff. For a live demo, use a paid tier or local Ollama, or run the original planner when speed matters.
 
 Two things showed up that the offline tests could not show:
 

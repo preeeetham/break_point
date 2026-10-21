@@ -5,8 +5,6 @@ import re
 
 from faultline.schemas import Topology
 
-DEFAULT_CLUSTER_ALIAS = "ditto-cluster"
-
 
 def _mid(name: str) -> str:
     return "svc_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
@@ -23,12 +21,13 @@ def _shape(name: str, role: str) -> str:
     return f'{_mid(name)}["{label}"]'
 
 
-def mermaid(topo: Topology, cluster_alias: str = DEFAULT_CLUSTER_ALIAS) -> str:
+def mermaid(topo: Topology, cluster_alias: str | None = None) -> str:
+    """`cluster_alias` is the knowledge file's: services sharing that network alias are drawn as one cluster."""
     lines = ["graph LR"]
-    in_cluster = [n for n, s in topo.services.items() if cluster_alias in s.aliases]
+    in_cluster = [n for n, s in topo.services.items() if cluster_alias and cluster_alias in s.aliases]
     outside = [n for n in topo.services if n not in in_cluster]
     if in_cluster:
-        lines.append(f'  subgraph cluster["{cluster_alias} (Pekko cluster)"]')
+        lines.append(f'  subgraph cluster["{cluster_alias} (cluster)"]')
         lines += [f"    {_shape(n, topo.services[n].role)}" for n in in_cluster]
         lines.append("  end")
     lines += [f"  {_shape(n, topo.services[n].role)}" for n in outside]
@@ -56,7 +55,7 @@ def _cell(v) -> str:
     return str(v).replace("|", "\\|").replace("\n", " ")
 
 
-def markdown(topo: Topology, cluster_alias: str = DEFAULT_CLUSTER_ALIAS) -> str:
+def markdown(topo: Topology, cluster_alias: str | None = None) -> str:
     out: list[str] = []
     out.append(f"# Faultline topology — project `{topo.project}`")
     out.append("")
@@ -69,12 +68,12 @@ def markdown(topo: Topology, cluster_alias: str = DEFAULT_CLUSTER_ALIAS) -> str:
 
     out.append("## Services")
     out.append("")
-    out.append("| service | role | mem limit (MB) | health port | container | state | health | restart policy | chaos target |")
-    out.append("|---|---|---|---|---|---|---|---|---|")
+    out.append("| service | role | engine | mem limit (MB) | health port | container | state | health | restart policy | chaos target |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|")
     for n, s in topo.services.items():
         out.append("| " + " | ".join(_cell(x) for x in (
-            f"`{n}`", s.role, s.mem_limit_mb, s.health_port, s.container, s.state, s.health, s.restart_policy,
-            "yes" if s.chaos_relevant else "no",
+            f"`{n}`", s.role, s.engine if s.role == "datastore" else None, s.mem_limit_mb, s.health_port, s.container,
+            s.state, s.health, s.restart_policy, "yes" if s.chaos_relevant else "no",
         )) + " |")
     out.append("")
 

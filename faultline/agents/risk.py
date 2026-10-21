@@ -32,7 +32,7 @@ CASCADE_MASKED_BONUS = 0.5
 GRAPH_PATH_CONFIDENCE = frozenset({"ordered", "same_interval", "ambiguous"})
 
 LLM_SYSTEM = (
-    "You are an SRE writing a terse incident risk note for a chaos experiment on an Eclipse Ditto deployment. "
+    "You are an SRE writing a terse incident risk note for a chaos experiment on a docker-compose deployment. "
     "Write exactly two sentences for each field. Use only the numbers and findings given; do not speculate beyond them. "
     'Reply with JSON only: {"summary": str, "production_implication": str}.'
 )

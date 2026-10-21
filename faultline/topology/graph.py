@@ -73,6 +73,9 @@ def _structural_findings(nodes: dict[str, ServiceNode], edges: list[Edge]) -> li
     for name, node in nodes.items():
         if node.role == "app" and node.health_port is None and node.chaos_relevant:
             findings.append(f"{name}: no healthcheck with an application port in compose")
+        if node.role == "datastore" and node.chaos_relevant and node.engine is None:
+            findings.append(f"{name}: datastore engine not identified from its image, the knowledge file or a "
+                            f"connection URI; only generic faults apply (no engine ping, no write flood)")
     return findings
 
 
@@ -118,6 +121,49 @@ def build(
     findings.extend(_structural_findings(nodes, edges))
 
     return Topology(project=project, services=nodes, edges=edges, criticality=criticality(nodes, edges), findings=findings)
+
+
+# ---------------------------------------------------------------- operations
+def start_order(topo: Topology) -> list[str]:
+    """Datastores and app services, every service after the services it depends on, for a restart.
+
+    Depth is the longest chain of dependencies below a service; a cycle (two services that each claim
+    the other) is cut where it closes instead of recursing forever. Ties sort by name, so the order is
+    stable from run to run."""
+    names = [n for n, s in topo.services.items() if s.chaos_relevant and s.role in ("datastore", "app")]
+    deps: dict[str, set[str]] = {n: set() for n in names}
+    for e in topo.edges:
+        if e.src in deps and e.dst in deps and e.src != e.dst:
+            deps[e.src].add(e.dst)
+    depth: dict[str, int] = {}
+
+    def walk(n: str, path: frozenset[str]) -> int:
+        if n in depth:
+            return depth[n]
+        below = [walk(d, path | {n}) + 1 for d in deps[n] if d not in path]
+        depth[n] = max(below, default=0)
+        return depth[n]
+
+    for n in names:
+        walk(n, frozenset())
+    return sorted(names, key=lambda n: (topo.services[n].role != "datastore", depth[n], n))
+
+
+# ---------------------------------------------------------------- prompt context
+def system_summary(topo: Topology | None) -> str:
+    """One line naming the stack's tiers, for LLM prompts: `nginx -> api -> auth/orders -> db (postgres)`.
+
+    Derived from the topology so a prompt never carries a hardcoded description of one application. The
+    entry tier is what the proxies forward to; datastores carry their engine when it is known."""
+    if topo is None or not topo.services:
+        return "a docker-compose deployment"
+    live = {n: s for n, s in topo.services.items() if s.chaos_relevant}
+    proxies = sorted(n for n, s in live.items() if s.role == "proxy")
+    entry = sorted({e.dst for e in topo.edges if e.src in proxies and live.get(e.dst) and live[e.dst].role == "app"})
+    apps = sorted(n for n, s in live.items() if s.role == "app" and n not in entry)
+    stores = sorted(f"{n} ({s.engine})" if s.engine else n for n, s in live.items() if s.role == "datastore")
+    tiers = [t for t in ("/".join(proxies), "/".join(entry), "/".join(apps), "/".join(stores)) if t]
+    return " -> ".join(tiers) or "a docker-compose deployment"
 
 
 # ---------------------------------------------------------------- console

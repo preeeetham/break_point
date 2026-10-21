@@ -1,7 +1,7 @@
 # Faultline developer shortcuts. Every target assumes the repo root as cwd.
 #
 #   make venv      create .venv and install faultline in editable mode
-#   make up        start the Ditto + monitoring sandbox and wait for /health = UP
+#   make up        start the selected target's stack (FAULTLINE_TARGET) and wait until it is healthy
 #   make demo      topology -> baseline -> run -> risk -> fix -> scorecard -> narrate
 #
 # Override the experiment count with N=5, the LLM with LLM=--no-llm, etc.
@@ -13,7 +13,7 @@ N         ?= 3
 LLM       ?=
 PORT      ?= 8765
 
-.PHONY: venv up down status setup topology baseline run demo dashboard guardian test clean-reports
+.PHONY: venv up down status target setup topology baseline run demo dashboard guardian test clean-reports
 
 venv:
 	python3 -m venv $(VENV)
@@ -29,6 +29,9 @@ down:
 
 status:
 	scripts/status.sh
+
+target:
+	$(FAULTLINE) target
 
 setup:
 	$(FAULTLINE) setup

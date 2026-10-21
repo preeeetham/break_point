@@ -50,7 +50,7 @@ _DIFF_PREFIXES = ("+", "-", "@@", "services:", "```")
 # (faultline/dashboard/static/copy.js), with the dashes taken out.
 FINDING_PLAIN = {
     "health_check_masked_failure": "The platform reported this service as ready while real requests were failing, so an "
-                                   "orchestrator would have kept routing traffic to it. This mirrors Eclipse Ditto issue #1865.",
+                                   "orchestrator would have kept routing traffic to it.",
     "dependency_blind_readiness": "Dependents stayed 'ready' while their dependency was gone, because readiness only "
                                   "reflects the service's own process.",
     "no_automated_remediation": "Nothing reacted to the outage. Docker's restart policy only fires when a container exits, "
@@ -167,7 +167,7 @@ def _topology(settings, store: ReportStore) -> Optional[Topology]:
         return topo
     try:
         from faultline.topology.graph import build
-        nginx = settings.nginx_conf if Path(settings.nginx_conf).is_file() else None
+        nginx = settings.nginx_conf if settings.nginx_conf and Path(settings.nginx_conf).is_file() else None
         return build(settings.compose_file, settings.compose_project, nginx, settings.knowledge_file, live=False)
     except Exception:
         return None
@@ -192,7 +192,8 @@ def _fix_agent_titles(store: ReportStore, eid: str) -> list[str]:
     return [r.title for r in rec.recommendations] if rec else []
 
 
-def _motivating_title(titles: list[str], finding: Finding, services: list[str], fix: Any) -> str:
+def _motivating_title(titles: list[str], finding: Finding, services: list[str], fix: Any,
+                      rules: Optional[list[dict]] = None) -> str:
     """Which Fix-agent recommendation (reports/fixes/<id>.json) led here: matched through the knowledge rules
     by finding code first, then by target service. Empty when the Fix agent said nothing relevant."""
     if not titles:
@@ -202,10 +203,12 @@ def _motivating_title(titles: list[str], finding: Finding, services: list[str], 
         for t in getattr(fix, attr, None) or ():
             if t in present:
                 return t
-    try:
-        from faultline.agents.knowledge import RULES
-    except Exception:
-        RULES = []
+    if rules is None:
+        try:
+            from faultline.agents.knowledge import RULES as rules
+        except Exception:
+            rules = []
+    RULES = rules
     by_code = [r["recommendation"]["title"] for r in RULES
                if finding.code in (r["match"].get("finding_codes") or ()) and r["recommendation"]["title"] in present]
     if by_code:
@@ -239,6 +242,11 @@ def candidates(settings, store: ReportStore, experiment_id: str, include_test: b
     if report is None:
         raise KeyError(f"no experiment {experiment_id}")
     topology = _topology(settings, store)
+    try:
+        from faultline.agents.knowledge import rules_for
+        rules = rules_for(settings)
+    except Exception:
+        rules = None
     base_cfg = base if base is not None else base_compose(settings)
     current, current_text = _current_override(settings)
     label = _path_label(settings)
@@ -283,7 +291,7 @@ def candidates(settings, store: ReportStore, experiment_id: str, include_test: b
             out.append(Candidate(
                 finding=finding, fix=fix, change=change, services=services, preview=preview,
                 requires_allow_protected=_requires_allow_protected(settings, fix, services),
-                motivated_by=_motivating_title(titles, finding, services, fix), path_label=label,
+                motivated_by=_motivating_title(titles, finding, services, fix, rules), path_label=label,
             ))
     return out
 
@@ -470,7 +478,7 @@ def template_explanation(report: ExperimentReport, c: Candidate, metrics: list[E
 
 # ---------------------------------------------------------------------- optional LLM step
 LLM_SYSTEM = (
-    "You review proposed fixes for an Eclipse Ditto docker-compose deployment after a chaos experiment. "
+    "You review proposed fixes for a docker-compose deployment after a chaos experiment. "
     "The fixes and their exact changes are fixed by code; you cannot add, change or invent fixes. "
     "You may (a) rank the given candidate ids from most to least valuable, and (b) reword the 'problem', "
     "'expected_improvement' and 'risks' texts of a candidate in plain language for an operator, keeping every "

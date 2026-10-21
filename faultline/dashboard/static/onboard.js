@@ -13,10 +13,10 @@ import { announce, clear, el, fmtNum, relTime, svgIcon } from "./util.js";
 // ----------------------------------------------------------------- explain copy (§5)
 const EXPLAIN = {
   title: "What is this panel for?",
-  body: "Faultline derives its map, its hypotheses and its safety rails from a Docker-Compose file plus one small YAML of facts no parser can see: cluster membership, which service authorises another's requests, which store feeds which index. This panel generates that YAML for any repository you point it at — a GitHub URL, owner/name, or a path on this machine — which is what makes Faultline a tool you can aim at your own application instead of a demo wired to Eclipse Ditto.",
+  body: "Faultline derives its map, its hypotheses and its safety rails from a Docker-Compose file plus one small YAML of facts no parser can see: cluster membership, which service authorises another's requests, which store feeds which index. This panel generates that YAML for any repository you point it at — a GitHub URL, owner/name, or a path on this machine — which is what makes Faultline a tool you can aim at your own application instead of a demo wired to one.",
 };
 
-const PLACEHOLDER = "eclipse-ditto/ditto";
+const PLACEHOLDER = "owner/name";
 const MAX_SERVICE_CHIPS = 12;
 const MAX_PROGRESS = 6;
 
@@ -75,7 +75,7 @@ export function createOnboard(hostEl, { onJob } = {}) {
     el("div", { class: "panel__title" },
       el("span", { class: "panel__icon" }, svgIcon("book", 15)),
       el("span", { text: "Repo onboarding" }),
-      el("span", { class: "micro dim fl-onb-sub-title", text: "any compose app, not just Ditto" })),
+      el("span", { class: "micro dim fl-onb-sub-title", text: "any compose app" })),
     headActions);
 
   // ---- the form (left column). The input is created once so typing is never interrupted.
@@ -421,7 +421,7 @@ export function createOnboard(hostEl, { onJob } = {}) {
         svgIcon("database", 26, { class: "empty__icon" }),
         el("p", { class: "empty__title", text: kn ? "No knowledge files yet" : "Loading …" }),
         el("p", { class: "empty__hint", text: kn
-          ? "Onboard a repository and its documented knowledge lands next to the Ditto one."
+          ? "Onboard a repository and its documented knowledge lands next to the active one."
           : "Reading the config directory." })));
       return;
     }

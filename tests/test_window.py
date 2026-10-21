@@ -1,7 +1,7 @@
 from faultline.observe.window import Sample, SampleWindow, percentile, stats
 
 
-def _s(ts: float, status: int = 200, latency: float = 10.0, op: str = "get_thing", error: str = "") -> Sample:
+def _s(ts: float, status: int = 200, latency: float = 10.0, op: str = "get_order", error: str = "") -> Sample:
     return Sample(ts=ts, op=op, status=status, latency_ms=latency, error=error)
 
 
@@ -32,11 +32,11 @@ def test_stats_success_rate_latency_and_counts():
 
 
 def test_stats_by_operation():
-    samples = [_s(0, 200, 10, "get_thing"), _s(1, 500, 10, "get_thing"), _s(2, 200, 30, "search")]
+    samples = [_s(0, 200, 10, "get_order"), _s(1, 500, 10, "get_order"), _s(2, 200, 30, "search")]
     st = stats(samples)
-    assert set(st.by_operation) == {"get_thing", "search"}
-    assert st.by_operation["get_thing"]["count"] == 2
-    assert st.by_operation["get_thing"]["success_rate"] == 0.5
+    assert set(st.by_operation) == {"get_order", "search"}
+    assert st.by_operation["get_order"]["count"] == 2
+    assert st.by_operation["get_order"]["success_rate"] == 0.5
     assert st.by_operation["search"]["p95_ms"] == 30
 
 

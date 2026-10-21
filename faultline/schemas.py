@@ -31,7 +31,7 @@ class DataQualityIssue(BaseModel):
 class DataQualityReport(BaseModel):
     """reports/data_quality.json: the audit trail of validating and cleaning what comes IN."""
     generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    source: str                       # e.g. "topology:deploy/docker-compose.yml"
+    source: str                       # e.g. "topology:targets/<name>/deploy/docker-compose.yml"
     rules_only: bool = True           # no LLM is involved in any check
     time_lenience_s: float
     services_seen: int = 0
@@ -47,6 +47,10 @@ class ServiceNode(BaseModel):
     stateful: bool = False
     entrypoint: bool = False
     health_port: Optional[int] = None
+    health_path: Optional[str] = None     # liveness path on health_port, from the compose healthcheck or knowledge
+    ready_path: Optional[str] = None      # readiness path, only when the knowledge file declares one
+    engine: Optional[str] = None          # datastore engine (topology.datastores), None = not known
+    engine_evidence: Optional[str] = None
     mem_limit_mb: Optional[int] = None
     aliases: list[str] = []
     chaos_relevant: bool = True
@@ -127,7 +131,7 @@ class Thresholds(BaseModel):
 class Baseline(BaseModel):
     captured_at: datetime
     duration_s: float
-    ditto_url: str
+    target_url: str
     api: WindowStats
     health_availability: dict[str, Optional[float]]
     thresholds: Thresholds
@@ -222,8 +226,8 @@ CASCADE_MECHANISMS = (
     "injected_fault",          # the origin: Faultline did this on purpose
     "process_down",            # container not running (exited / missing)
     "process_paused",          # container frozen (SIGSTOP)
-    "liveness_failed",         # /alive not 200 (or mongosh ping failed)
-    "readiness_failed",        # /alive 200 but /ready not 200: subsystem-level failure
+    "liveness_failed",         # liveness path not 200 (or the datastore engine's ping failed)
+    "readiness_failed",        # liveness 200 but readiness not 200: subsystem-level failure
     "dependency_timeout",      # requests through it timed out (client timeout or 504)
     "dependency_unreachable",  # connection refused / reset, or 502 from the proxy
     "dependency_error",        # it answered, with 5xx (e.g. 503 when a dependency is gone)
@@ -250,7 +254,7 @@ class HealthTransition(BaseModel):
 
 class OperationSignal(BaseModel):
     """What one synthetic API operation saw during the window. `route` is the services it passes
-    through (faultline.observe.probes.OP_ROUTES), filtered to services present in the topology."""
+    through (the probe spec's `route` for it), filtered to services present in the topology."""
     op: str
     route: list[str]
     requests: int
@@ -436,11 +440,37 @@ class DocumentedEdge(BaseModel):
         return v
 
 
+class HealthPaths(BaseModel):
+    """Liveness / readiness paths on `health_port`, for services whose compose healthcheck does not say."""
+    alive: Optional[str] = None
+    ready: Optional[str] = None
+
+
+class DatastoreFact(BaseModel):
+    """Which engine a datastore runs, and the code evidence for it (see topology.datastores)."""
+    engine: str
+    evidence: str = ""
+
+    @field_validator("engine")
+    @classmethod
+    def _known_engine(cls, v: str) -> str:
+        from faultline.topology.datastores import ENGINES
+
+        if v not in ENGINES:
+            raise ValueError(f"unknown engine {v!r}; known: {sorted(ENGINES)}")
+        return v
+
+
 class RepoKnowledge(BaseModel):
     """The knowledge file. Consumed by topology.compose.service_nodes/documented_edges."""
     health_port: Optional[int] = None
+    health_paths: Optional[HealthPaths] = None
     cluster_alias: Optional[str] = None
     roles: dict[str, str] = Field(default_factory=dict)
+    datastores: dict[str, DatastoreFact] = Field(default_factory=dict)
+    # Share of the probe's requests a full outage of the service is expected to fail, where it is less than
+    # all of them (a search tier only some requests touch). Used to calibrate default hypotheses only.
+    outage_error_rates: dict[str, float] = Field(default_factory=dict)
     documented_edges: list[DocumentedEdge] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
 
@@ -501,7 +531,7 @@ class SuggestedExperiment(BaseModel):
     """Which EXISTING catalog failure type would actually test this prediction, and against whom.
 
     `target_service` is not always the weak service: the way to test a liveness-only health check on
-    `things` is to break what `things` depends on and watch whether its /ready notices.
+    `orders` is to break what `orders` depends on and watch whether its readiness notices.
     """
     failure_type: str
     target_service: str
@@ -721,7 +751,7 @@ class FixProposal(BaseModel):
     change_hash: str                          # sha256 of change_preview
     explanation: ProposalExplanation
     expected_metrics: list[ExpectedMetric] = []
-    requires_allow_protected: bool = False    # touches a protected service (MongoDB)
+    requires_allow_protected: bool = False    # touches a protected service (thresholds policy.protected)
     rank: int = 0                             # order among this experiment's proposals (code or LLM ranked)
     ranked_by: Literal["code", "llm"] = "code"
     status: ProposalStatus = "pending"

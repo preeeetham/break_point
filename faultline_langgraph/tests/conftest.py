@@ -3,8 +3,8 @@
 These tests live outside tests/ on purpose: pyproject's testpaths=["tests"] never collects them, so the base
 suite never needs langgraph. Run them with `python -m pytest faultline_langgraph/tests -q`.
 
-The blackboard fixture is fixtures/reports-demo/: topology.json, baseline.json and experiments/*.json copied
-byte-for-byte from reports-demo/ at commit 887b85f (this branch has no reports-demo/).
+The blackboard fixture is fixtures/shop-demo/: topology.json, baseline.json and experiments/*.json of a
+seeded demo blackboard, with its services renamed onto the invented shop application used by tests/.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from faultline.planning.planner import Planner, Policy  # noqa: E402
 from faultline.reporting.store import ReportStore  # noqa: E402
 from faultline.safety.thresholds import load_policy  # noqa: E402
 
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "reports-demo"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "shop-demo"
 IMAGES = frozenset({"pumba", "tc"})
 LABEL = "langgraph:scripted:fake"
 
@@ -58,7 +58,7 @@ def _copy_fixture(dst: Path, history: bool) -> Path:
 
 def _settings(reports_dir: Path) -> Settings:
     # A plain Settings object (no load_settings): no .env, no environment, LLM off for the original client.
-    return Settings(reports_dir=str(reports_dir), thresholds_file=str(ROOT / "config" / "thresholds.yaml"),
+    return Settings(reports_dir=str(reports_dir), thresholds_file=str(ROOT / "tests" / "fixtures" / "shop" / "thresholds.yaml"),
                     llm_enabled=False)
 
 
@@ -78,7 +78,7 @@ class Blackboard:
 
 @pytest.fixture
 def demo(tmp_path) -> Blackboard:
-    return Blackboard(_copy_fixture(tmp_path / "reports-demo", history=True), "history")
+    return Blackboard(_copy_fixture(tmp_path / "shop-demo", history=True), "history")
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "faultline"
 version = "0.1.0"
-description = "AI-driven chaos engineering for Eclipse Ditto: map dependencies, plan experiments, inject failures within safety limits, observe, and report."
+description = "AI-driven chaos engineering for docker-compose applications: map dependencies, plan experiments, inject failures within safety limits, observe, and report."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -37,8 +37,10 @@ include = ["faultline*"]
 
 [tool.setuptools.package-data]
 "faultline.dashboard" = ["static/*.html", "static/*.css", "static/*.js", "static/*.svg"]
-"faultline" = ["../config/*.yaml"]
+"faultline" = ["../config/*.yaml", "../config/examples/*.yaml"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# targets/<name>/tests hold the tests that need one target's real files; they run with the core suite
+# on a branch that carries the target.
+testpaths = ["tests", "targets"]
 addopts = "-q"

@@ -209,7 +209,7 @@ class ControlPlane:
             self.session_error = None
             svc = len(session.topology.services)
             self._agent("topology", "done", f"{svc} services mapped")
-            self.log("probe", f"Synthetic API probe running at {self.s.probe_rps:g} req/s against {self.s.ditto_url}", "success")
+            self.log("probe", f"Synthetic API probe running at {self.s.probe_rps:g} req/s against {self.s.target_url}", "success")
             self.log("system", f"Session armed: {svc} services, health checks every {self.s.health_interval_s:g}s", "success")
             return {"armed": True}
         except Exception as exc:
@@ -337,7 +337,7 @@ class ControlPlane:
                           ref=(body.get("ref") or None), log=log)
             self._agent("onboarding", "working", f"{src.slug}: reading {src.compose_path.name}")
             report = onboard(src, llm_client(self.s, not bool(body.get("no_llm"))),
-                             Path(self.s.knowledge_file), out_dir, log=log)
+                             Path(self.s.onboarding_example), out_dir, log=log)
             k = report.knowledge
             self.log("onboarding", f"{report.slug}: {len(report.services)} services, "
                                    f"{report.structural_edges} structural edges, "
@@ -377,7 +377,7 @@ class ControlPlane:
 
     # -- target files ------------------------------------------------------
     def _target_path(self, raw: Any, kind: str) -> Optional[Path]:
-        """Resolve an operator-supplied compose/knowledge path and refuse anything outside deploy/, config/
+        """Resolve an operator-supplied compose/knowledge path and refuse anything outside targets/, config/
         or the onboarding cache. Not the whole repo: a parse error would echo a line of `.env` to the browser."""
         text = str(raw or "").strip()
         if not text:
@@ -387,9 +387,9 @@ class ControlPlane:
         path = next((c.resolve() for c in candidates if c.is_file()), None)
         if path is None:
             raise ValueError(f"{kind} file not found: {text}")
-        roots = (ROOT / "deploy", ROOT / "config", ROOT / ONBOARD_CACHE_DIR)
+        roots = (ROOT / "targets", ROOT / "config", ROOT / ONBOARD_CACHE_DIR)
         if path not in self._startup_targets and not any(path.is_relative_to(r.resolve()) for r in roots):
-            raise ValueError(f"{kind} file must live under deploy/, config/ or {ONBOARD_CACHE_DIR}/: {text}")
+            raise ValueError(f"{kind} file must live under targets/, config/ or {ONBOARD_CACHE_DIR}/: {text}")
         return path
 
     def _target_state(self) -> dict:
@@ -477,7 +477,7 @@ class ControlPlane:
         try:
             session = self._require_session()
             self.log("probe", f"Measuring steady state for {duration}s ...")
-            b = capture(session.api, session.health, session.window, duration, self.s.ditto_url,
+            b = capture(session.api, session.health, session.window, duration, self.s.target_url,
                         session.policy_raw, log=self._logger("probe"))
             self.store.write_baseline(b)
             (self.store.root / "baseline.md").write_text(to_markdown(b))
@@ -666,6 +666,7 @@ class ControlPlane:
 
     def _analyze(self, use_llm: bool, only: list[str] | None = None) -> dict:
         from ..agents import fix, risk, scorecard
+        from ..agents.knowledge import rules_for
         from ..cli import llm_client
 
         llm = llm_client(self.s, use_llm)
@@ -674,7 +675,7 @@ class ControlPlane:
         risks = risk.run(self.store, llm, topo, only=only, log=self._logger("risk"))
         self._agent("risk", "done", f"{len(risks)} assessed")
         self._agent("fix", "working", "matching remediations")
-        fixes = fix.run(self.store, llm, only=only, log=self._logger("fix"))
+        fixes = fix.run(self.store, llm, only=only, log=self._logger("fix"), rules=rules_for(self.s), app=self.s.app_name)
         self._agent("fix", "done", f"{len(fixes)} report(s)")
         self._agent("scorecard", "working", "ranking services")
         sc = scorecard.run(self.store, topo, self.s.compose_project, log=self._logger("scorecard"))
@@ -993,7 +994,7 @@ class ControlPlane:
         self.log("system", "Healing the sandbox: removing chaos leftovers and waiting for health ...", "warn")
         rc = cmd_heal(self.s, self.store, argparse.Namespace(restart=bool(body.get("restart", False))))
         if self.session is not None:
-            self.session.api.ensure_canary()
+            self.session.api.ensure_setup()
         self.log("system", "Sandbox healthy again." if rc == 0 else "Sandbox did not come back healthy.",
                  "success" if rc == 0 else "error")
         return {"rc": rc}
@@ -1035,7 +1036,7 @@ class ControlPlane:
             missing = [r for r in ft.requires_images if r not in have]
             applies, blocked = [], []
             for name, node in services.items():
-                if not applicable(ft, node):
+                if not applicable(ft, node, topo):
                     continue
                 ok, _why = policy.allows(name, ft.key, False)
                 (applies if ok else blocked).append(name)
@@ -1059,7 +1060,8 @@ class ControlPlane:
     def knowledge(self) -> dict:
         """The documented-knowledge files on disk, so the room can show what Faultline can be pointed at.
 
-        One entry per `config/*_knowledge.yaml`. Each file is parsed through the same schema the
+        One entry per `*_knowledge.yaml` next to the active file, in config/ and in every targets/<name>/.
+        Each file is parsed through the same schema the
         topology mapper uses; a file that does not validate is skipped with a note rather than
         breaking the panel, because these files are hand-editable.
         """
@@ -1070,14 +1072,23 @@ class ControlPlane:
         from ..config import ROOT
         from ..schemas import RepoKnowledge
 
-        active = Path(self.s.knowledge_file)
-        cfg = active.parent if active.parent.is_dir() else ROOT / "config"
+        active = Path(self.s.knowledge_file) if self.s.knowledge_file else None
+        dirs = [ROOT / "config", *sorted(p for p in (ROOT / "targets").glob("*") if p.is_dir())]
+        if active is not None and active.parent.is_dir():
+            dirs.insert(0, active.parent)
         try:
-            active_resolved = str(active.resolve())
+            active_resolved = str(active.resolve()) if active is not None else ""
         except OSError:
             active_resolved = str(active)
         files, notes = [], []
-        for path in sorted(cfg.glob(f"*{KNOWLEDGE_SUFFIX}")):
+        seen: set[str] = set()
+        paths = []
+        for d in dirs:
+            for path in sorted(d.glob(f"*{KNOWLEDGE_SUFFIX}")):
+                if str(path.resolve()) not in seen:
+                    seen.add(str(path.resolve()))
+                    paths.append(path)
+        for path in paths:
             try:
                 k = RepoKnowledge.model_validate(yaml.safe_load(path.read_text()) or {})
             except Exception as exc:
@@ -1100,7 +1111,7 @@ class ControlPlane:
                 "mtime": mtime,
             })
         files.sort(key=lambda f: (not f["is_active"], f["slug"]))
-        return {"dir": str(cfg), "active": str(active), "files": files, "notes": notes}
+        return {"dir": str(dirs[0]), "active": str(active) if active is not None else "", "files": files, "notes": notes}
 
     # ------------------------------------------------------------------ state
     def _llm_state(self) -> dict:
@@ -1285,7 +1296,7 @@ class ControlPlane:
             "seq": self.events.seq,
             "events": self.events.since(since),
             "session": {"armed": self.session is not None, "error": self.session_error, "probe": probe,
-                        "project": self.s.compose_project, "ditto_url": self.s.ditto_url},
+                        "project": self.s.compose_project, "target_url": self.s.target_url},
             "job": job,
             "run": safe(self._run_state, {"phase": "idle"}),
             "telemetry": self.telemetry.as_dict(),

@@ -6,7 +6,8 @@ from faultline.reporting.store import ReportStore
 from faultline.topology import quality
 from faultline.topology.graph import build
 
-DITTO = ("deploy/docker-compose.yml", "ditto", "deploy/nginx/nginx.conf", "config/ditto_knowledge.yaml")
+SHOP = ("tests/fixtures/shop/docker-compose.yml", "shop", "tests/fixtures/shop/nginx/nginx.conf",
+        "tests/fixtures/shop/shop_knowledge.yaml")
 
 
 def _build(tmp_path, compose: dict):
@@ -21,10 +22,10 @@ def _has(issues, check, action, record=None):
     return any(i.check == check and i.action == action and (record is None or i.record == record) for i in issues)
 
 
-def test_ditto_compose_is_clean_and_graph_unchanged():
+def test_realistic_compose_is_clean_and_graph_unchanged():
     audit = quality.Audit()
-    with_pass = build(*DITTO, live=False, audit=audit)
-    without = build(*DITTO, live=False)
+    with_pass = build(*SHOP, live=False, audit=audit)
+    without = build(*SHOP, live=False)
     assert audit.issues == []
     assert {(e.src, e.dst, e.kind) for e in with_pass.edges} == {(e.src, e.dst, e.kind) for e in without.edges}
     assert set(with_pass.services) == set(without.services)
@@ -61,7 +62,7 @@ def test_missing_healthcheck_interval_is_defaulted_and_recorded(tmp_path):
 def test_consistency_dangling_env_and_depends_on_never_invent_edges(tmp_path):
     compose = {"services": {
         "app": {"image": "x", "depends_on": ["db", "ghost"], "environment": ["DB_HOST=db", "CACHE_HOST=redis", "API_URL=https://api.example.com"]},
-        "db": {"image": "mongo"}}}
+        "db": {"image": "postgres"}}}
     topo, issues = _build(tmp_path, compose)
     assert _has(issues, "consistency", "excluded", "app")            # depends_on ghost
     dangling = [i for i in issues if i.check == "consistency" and i.action == "flagged"]

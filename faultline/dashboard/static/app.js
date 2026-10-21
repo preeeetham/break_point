@@ -139,7 +139,7 @@ function renderHeaderRight(s) {
 
   host.appendChild(pill(s.session.armed ? `${s.session.probe.samples} samples` : "disarmed",
     s.session.armed ? "cyan" : "warn", "activity",
-    s.session.armed ? `Synthetic probe at ${s.session.probe.rps} req/s against ${s.session.ditto_url}`
+    s.session.armed ? `Synthetic probe at ${s.session.probe.rps} req/s against ${s.session.target_url}`
       : "Probes are not running. Arm them from the console on the left"));
 
   host.appendChild(el("button", {

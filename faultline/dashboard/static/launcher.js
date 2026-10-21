@@ -15,13 +15,13 @@ import {
 // ----------------------------------------------------------------- explain copy (§5)
 const EXPLAIN = {
   console: { title: "What is this panel?",
-    body: "Chaos engineering means deliberately breaking one piece of a running system to find out how it really behaves under failure. This console picks the victim, the kind of failure, and how long it lasts — then runs it against a sandboxed Eclipse Ditto IoT platform while probes measure the damage." },
+    body: "Chaos engineering means deliberately breaking one piece of a running system to find out how it really behaves under failure. This console picks the victim, the kind of failure, and how long it lasts — then runs it against the sandboxed target application while probes measure the damage." },
   mode: { title: "AI planner vs manual",
     body: "In AI PLANNER the system ranks every service/failure pair by how much we would learn, and an LLM (or a deterministic rule set when no model is reachable) picks the next experiment and writes a falsifiable hypothesis. MANUAL hands every choice to you — same safety rails either way." },
   plan: { title: "Reading the ranked plan",
     body: "The planner scores every legal service/failure pair: how critical the service is, how little we have tested it, how much the result would teach us. #1 is the pick unless the LLM argues for another of the top five. 'Deterministic' means no model was reachable and the ranking decided on its own." },
   target: { title: "Which service gets broken",
-    body: "One card per container in the sandbox, sorted by criticality: how many other services transitively depend on it. MongoDB leads because everything stores state there. Locked cards are refused by policy — a full outage of the only datastore is off the table unless you explicitly override." },
+    body: "One card per container in the sandbox, sorted by criticality: how many other services transitively depend on it. Datastores usually lead because everything stores state there. Locked cards are refused by policy — a full outage of a protected service is off the table unless you explicitly override." },
   failure: { title: "The ten failure modes",
     body: "Each card is one real-world failure: a crash, a hung process, a slow or lossy network, an overloaded database, a full disk, a traffic spike. 'Outage' takes the service away completely; 'degrade-only' leaves it running but unhealthy. Greyed-out cards say exactly why they cannot run here." },
   params: { title: "Blast radius dials",
@@ -830,7 +830,7 @@ export function createLauncher(hostEl, handlers = {}) {
       network_loss: () => `${S.params.loss_percent}% of outbound packets are dropped`,
       cpu_stress: () => `${S.params.workers} busy-loop worker(s) compete with the service for CPU`,
       disk_pressure: () => `${S.params.size_mb} MB is allocated inside the container's writable layer`,
-      db_flood: () => `${S.params.writers} parallel mongosh insert loop(s) compete with Ditto's own writes`,
+      db_flood: () => `${S.params.writers} parallel insert loop(s), through the datastore's own client, compete with the application's writes`,
       traffic_spike: () => `${S.params.rps} req/s on top of the probe traffic`,
       container_crash: () => (S.params.block_restart
         ? "Docker auto-restart is disabled, so it stays down for the whole window"
@@ -1199,7 +1199,7 @@ function plainDesc(f) {
     network_partition: "Cuts the service off the network. It is alive but unreachable: a split brain.",
     cpu_stress: "Starves the service of CPU with busy-loop workers competing for the core.",
     disk_pressure: "Fills the container's writable layer so writes and logs start failing.",
-    db_flood: "Hammers MongoDB with parallel insert loops competing with Ditto's real traffic.",
+    db_flood: "Hammers the datastore with parallel insert loops competing with the application's real traffic.",
     traffic_spike: "Blasts the API with a burst of concurrent requests on top of the probe load.",
   }[f.key];
   if (own) return own;

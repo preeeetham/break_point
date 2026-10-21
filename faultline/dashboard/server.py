@@ -23,8 +23,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # The Claude frontend (claude-frontend/, built with `npm run build`) is served at /claude/ next to
 # the control room, so it reaches /api on the same origin.
 CLAUDE_DIR = Path(__file__).resolve().parents[2] / "claude-frontend" / "dist"
-# The stage-by-stage React front end (fable/, built with base /fable/) is served the same way.
-FABLE_DIR = Path(__file__).resolve().parents[2] / "fable" / "dist"
+# A target may ship its own stage-by-stage front end (targets/<name>/fable/, built with base /fable/);
+# it is served the same way. None = the selected target's build; set it to serve another one.
+FABLE_DIR: Optional[Path] = None
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
         ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml",
@@ -113,6 +114,10 @@ class Handler(BaseHTTPRequestHandler):
             raise BadRequest("JSON body must be an object")
         return data
 
+    def _fable_dir(self) -> Path:
+        tdir = getattr(self.control.s, "target_dir", None)
+        return FABLE_DIR or (tdir / "fable" / "dist" if tdir else STATIC_DIR / "no-target-front-end")
+
     def _static(self, name: str, root: Optional[Path] = None) -> None:
         root = root or STATIC_DIR  # looked up per call so tests can repoint the module global
         path = (root / name).resolve()
@@ -135,9 +140,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/claude/"):
                 self._static(path[len("/claude/"):], CLAUDE_DIR)
             elif path in ("/fable", "/fable/"):
-                self._static("index.html", FABLE_DIR)
+                self._static("index.html", self._fable_dir())
             elif path.startswith("/fable/"):
-                self._static(path[len("/fable/"):], FABLE_DIR)
+                self._static(path[len("/fable/"):], self._fable_dir())
             elif path == "/api/state":
                 try:
                     since = int((query.get("since") or ["0"])[0] or 0)

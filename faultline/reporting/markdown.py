@@ -44,7 +44,7 @@ def experiment_markdown(r: ExperimentReport) -> str:
             f"- Docker auto-restart: {rec.auto_restarted_by_docker}", f"- remediation actions: {rec.remediation_actions or 'none'}",
             f"- data integrity: {rec.data_integrity_ok} ({rec.data_integrity_detail})", ""]
     if r.health:
-        out += ["## Health signals during the fault", "", "| Service | checks | /alive OK | /ready OK | docker unhealthy | container down |", "|---|---|---|---|---|---|"]
+        out += ["## Health signals during the fault", "", "| Service | checks | liveness OK | readiness OK | docker unhealthy | container down |", "|---|---|---|---|---|---|"]
         for h in r.health:
             out.append(f"| {h.service} | {h.ticks} | {h.alive_ok_fraction} | {h.ready_ok_fraction} | {h.docker_unhealthy_seen} | {h.container_down_seen} |")
         out.append("")

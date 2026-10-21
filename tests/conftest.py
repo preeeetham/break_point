@@ -1,4 +1,7 @@
-"""Shared fixtures. Everything here is built in code: no Docker, no network, no running Ditto."""
+"""Shared fixtures. Everything here is built in code: no Docker, no network, no running stack.
+
+The application is the invented "shop" of tests/fixtures/shop: nginx -> gateway -> auth / orders /
+orders-search / notifier, all on one cluster, every one of them reaching a single postgres through DB_HOST."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -28,7 +31,10 @@ from faultline.schemas import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-PROJECT = "bosch-ditto"
+PROJECT = "shop"
+SHOP = ROOT / "tests" / "fixtures" / "shop"
+# what the shop's knowledge file says about its five cluster services' management endpoint
+HEALTH = {"health_port": 7626, "health_path": "/alive", "ready_path": "/ready"}
 
 
 # ---------------------------------------------------------------- topology
@@ -62,14 +68,15 @@ def _criticality(services: dict[str, ServiceNode], edges: list[Edge]) -> list[Cr
 @pytest.fixture
 def topology() -> Topology:
     services = {
-        "mongodb": _node("mongodb", "mongo:7.0", "datastore", stateful=True),
-        "policies": _node("policies", "eclipse/ditto-policies:3.9.0", health_port=7626),
-        "things": _node("things", "eclipse/ditto-things:3.9.0", health_port=7626),
-        "things-search": _node("things-search", "eclipse/ditto-things-search:3.9.0", health_port=7626),
-        "connectivity": _node("connectivity", "eclipse/ditto-connectivity:3.9.0", health_port=7626),
-        "gateway": _node("gateway", "eclipse/ditto-gateway:3.9.0", entrypoint=True, health_port=7626),
+        "postgres": _node("postgres", "postgres:16", "datastore", stateful=True, engine="postgres",
+                          engine_evidence="image postgres:16"),
+        "auth": _node("auth", "example/shop-auth:1.4.0", **HEALTH),
+        "orders": _node("orders", "example/shop-orders:1.4.0", **HEALTH),
+        "orders-search": _node("orders-search", "example/shop-orders-search:1.4.0", **HEALTH),
+        "notifier": _node("notifier", "example/shop-notifier:1.4.0", **HEALTH),
+        "gateway": _node("gateway", "example/shop-gateway:1.4.0", entrypoint=True, **HEALTH),
         "nginx": _node("nginx", "nginx:1.27", "proxy", entrypoint=True),
-        "ditto-ui": _node("ditto-ui", "eclipse/ditto-ui:3.9.0", "ui", chaos_relevant=False),
+        "web-ui": _node("web-ui", "example/shop-web-ui:1.4.0", "ui", chaos_relevant=False),
     }
     edges: list[Edge] = []
 
@@ -77,21 +84,21 @@ def topology() -> Topology:
         for src, dst in pairs:
             edges.append(Edge(src=src, dst=dst, kind=kind, evidence=evidence or kind))
 
-    add("depends_on", [("things", "policies"), ("things-search", "policies"), ("connectivity", "policies"),
-                       ("gateway", "policies"), ("nginx", "gateway")])
-    add("env", [(s, "mongodb") for s in ("policies", "things", "things-search", "connectivity")],
-        "env MONGO_DB_HOSTNAME=mongodb")
-    add("proxy", [("nginx", "gateway"), ("nginx", "ditto-ui")], "proxy_pass")
-    add("documented", [("gateway", "things"), ("gateway", "things-search"), ("gateway", "connectivity"),
-                       ("things", "policies"), ("things-search", "things"), ("connectivity", "things"),
-                       ("connectivity", "policies"), ("things-search", "policies")], "Ditto architecture docs")
+    add("depends_on", [("orders", "auth"), ("orders-search", "auth"), ("notifier", "auth"),
+                       ("gateway", "auth"), ("nginx", "gateway")])
+    add("env", [(s, "postgres") for s in ("auth", "orders", "orders-search", "notifier")],
+        "env DB_HOST=postgres")
+    add("proxy", [("nginx", "gateway"), ("nginx", "web-ui")], "proxy_pass")
+    add("documented", [("gateway", "orders"), ("gateway", "orders-search"), ("gateway", "notifier"),
+                       ("orders", "auth"), ("orders-search", "orders"), ("notifier", "orders"),
+                       ("notifier", "auth"), ("orders-search", "auth")], "shop architecture docs")
     return Topology(project=PROJECT, services=services, edges=edges, criticality=_criticality(services, edges))
 
 
 # ---------------------------------------------------------------- policy / thresholds
 @pytest.fixture(scope="session")
 def policy_raw() -> dict:
-    return load_policy(str(ROOT / "config" / "thresholds.yaml"))
+    return load_policy(str(SHOP / "thresholds.yaml"))
 
 
 @pytest.fixture
@@ -112,7 +119,7 @@ def make_report(thresholds):
 
     def _make(**overrides: Any) -> ExperimentReport:
         counter["n"] += 1
-        service = overrides.pop("service", "policies")
+        service = overrides.pop("service", "auth")
         failure_type = overrides.pop("failure_type", "container_crash")
         during_success = overrides.pop("during_success", 0.1)
         after_success = overrides.pop("after_success", 1.0)

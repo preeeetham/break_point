@@ -17,8 +17,8 @@ from faultline_langgraph.planner.tools import SUBMIT
 from .conftest import LABEL, ScriptedLLM, ai, call, spec_fields, submit
 
 INVESTIGATION_TOOLS = {"inspect_service", "experiment_history", "failure_type_info", "baseline_summary", "preview_candidate"}
-FULL_HYPOTHESIS = {"statement": "mongodb under cpu starvation slows writes but the API stays up",
-                   "expected_affected": ["policies", "things", "mars"],  # "mars" is not a service: filtered
+FULL_HYPOTHESIS = {"statement": "postgres under cpu starvation slows writes but the API stays up",
+                   "expected_affected": ["auth", "orders", "mars"],  # "mars" is not a service: filtered
                    "expected_max_error_rate": 0.25, "expected_recovery_s": 40}
 
 
@@ -78,7 +78,7 @@ def test_happy_path_investigates_then_submits_clamped_plan(board, scripted):
     assert inspected["service"] == target.service and "transitive_dependents" in inspected
     hist = json.loads(answers[history["id"]].content)
     if board.name == "history":
-        assert {h["service"] for h in hist} == {"mongodb", "gateway", "things", "policies"}
+        assert {h["service"] for h in hist} == {"postgres", "gateway", "orders", "auth"}
     else:
         assert hist == "no experiments yet"
 
@@ -93,7 +93,7 @@ def test_happy_path_investigates_then_submits_clamped_plan(board, scripted):
     assert f"inspect_service({target.service})" in spec.planner_notes[-1]
     assert "experiment_history" in spec.planner_notes[-1]
     assert result.tool_calls == [f"inspect_service({target.service})", "experiment_history()"]
-    assert spec.hypothesis.expected_affected == ["policies", "things"]
+    assert spec.hypothesis.expected_affected == ["auth", "orders"]
     assert ExperimentSpec.model_validate(spec.model_dump()) == spec
 
     # ...and it is exactly what the ORIGINAL planner builds when its LLM returns the same proposal
@@ -258,7 +258,7 @@ def test_malformed_tool_calls_forever_stop_at_turn_budget(demo, scripted):
 
 # ---------------------------------------------------------------- 6. never submits
 def test_model_that_never_submits_stops_at_turn_budget(board, scripted):
-    model = scripted(ai(call("inspect_service", service="mongodb")))  # repeats forever
+    model = scripted(ai(call("inspect_service", service="postgres")))  # repeats forever
     result = run(board, model)  # a GraphRecursionError would propagate here
     assert MAX_AGENT_TURNS == 6 and len(model.invocations) == MAX_AGENT_TURNS
     assert_deterministic_fallback(board, result, f"{MAX_AGENT_TURNS}-turn budget")
@@ -267,7 +267,7 @@ def test_model_that_never_submits_stops_at_turn_budget(board, scripted):
 def test_forced_submit_binding_after_investigation_window(demo, scripted):
     """A model that keeps investigating is switched to the tool_choice=submit_plan binding from turn
     INVESTIGATE_TURNS+1 on, and is told so in the system prompt."""
-    model = scripted(ai(call("inspect_service", service="mongodb")))
+    model = scripted(ai(call("inspect_service", service="postgres")))
     result = run(demo, model)
     assert INVESTIGATE_TURNS == 3
     free, forced = INVESTIGATE_TURNS, MAX_AGENT_TURNS - INVESTIGATE_TURNS
@@ -366,7 +366,7 @@ def test_text_only_json_answer_is_accepted(board, scripted):
 
 
 def test_text_only_without_json_gets_human_feedback(demo, scripted):
-    model = scripted(ai(content="I would probably break mongodb."),
+    model = scripted(ai(content="I would probably break postgres."),
                      ai(content=json.dumps({"choice": 0, "parameters": {}, "rationale": "r", "hypothesis": FULL_HYPOTHESIS})))
     result = run(demo, model)
     feedback = model.invocations[1][-1]

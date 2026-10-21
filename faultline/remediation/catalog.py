@@ -9,13 +9,12 @@ exact text is what a human approves and what `change_hash` pins.
 Config changes go into the Faultline-owned override file (faultline/remediation/override.py), never into
 the base compose files. Runtime-only entries change no configuration at all.
 
-Every entry was checked against the real Ditto 3.9.8 stack (deploy/docker-compose.yml and the live
-`bosch-ditto` project, which runs the upstream Ditto compose file):
-  add_or_tighten_healthcheck   /alive -> /ready on port 7626 for the five Java services (a real change)
-  add_dependency_healthcheck   mongosh ping on mongodb when the base has none (the live stack has none)
-  add_healthy_dependency       depends_on mongodb: service_healthy; None until mongodb has a healthcheck
-  set_restart_policy           None on Ditto: every service already has `restart: always`
-  set_resource_limits          a CPU limit sized to the JVM's -XX:ActiveProcessorCount (Ditto sets 2)
+Nothing here names an application. Each entry decides from the compose file and the topology alone:
+  add_or_tighten_healthcheck   liveness path -> readiness path, where the knowledge file declares both
+  add_dependency_healthcheck   the datastore engine's verified ping (topology.datastores) when the base has none
+  add_healthy_dependency       depends_on <datastore>: service_healthy; None until the datastore has a healthcheck
+  set_restart_policy           restart: unless-stopped where a service has no restart policy
+  set_resource_limits          a CPU limit sized to the JVM's -XX:ActiveProcessorCount, else a default
   restart_service_now          runtime only: `docker restart <container>`
   break_healthcheck_for_test   TEST ONLY: a healthcheck that always fails, to exercise rollback
 """
@@ -30,6 +29,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from faultline.remediation import override as ov
 from faultline.schemas import ExperimentReport, Finding, Topology
+from faultline.topology import datastores
 from faultline.topology.compose import parse_env, parse_mem_limit
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -39,15 +39,6 @@ TEST_CATALOG_ENV = "FAULTLINE_TEST_CATALOG"
 SERVICE_NAMED_CODES = frozenset({"health_check_masked_failure", "dependency_blind_readiness"})
 
 HEALTHCHECK_TIMING_KEYS = ("interval", "timeout", "retries", "start_period", "start_interval")
-# The MongoDB check Faultline's own deploy/docker-compose.yml ships. mongosh is in the official mongo >= 6
-# images; verified on the live mongo 7.0.43 container (`mongosh --quiet --eval ...` printed 1).
-MONGO_HEALTHCHECK = {
-    "test": 'mongosh --quiet --eval "db.runCommand({ping:1}).ok" | grep -q 1',
-    "interval": "15s",
-    "timeout": "5s",
-    "retries": 3,
-    "start_period": "20s",
-}
 CPU_MIN, CPU_MAX, CPU_DEFAULT = 0.5, 2.0, 1.0
 ACTIVE_PROCESSORS_RE = re.compile(r"-XX:ActiveProcessorCount=(\d+)")
 BROKEN_HEALTHCHECK = {"test": ["CMD-SHELL", "exit 1"], "interval": "5s", "timeout": "2s", "retries": 1,
@@ -119,7 +110,7 @@ class CatalogFix:
         return preview(change, before_text, path_label)
 
     def requires_allow_protected(self, services: Iterable[str], protected: Optional[Iterable[str]] = None) -> bool:
-        """True when the change touches a protected service (thresholds.yaml policy.protected, e.g. mongodb)."""
+        """True when the change touches a protected service (the thresholds file's policy.protected)."""
         if self.protected_ok:
             return False
         prot = set(protected) if protected is not None else protected_services()
@@ -212,7 +203,7 @@ def _container(base: dict, topology: Topology, name: str) -> str:
 
 
 def _datastores_via_env(topology: Topology, name: str) -> list[str]:
-    """Datastores `name` reaches through an environment variable (e.g. MONGO_DB_HOSTNAME=mongodb)."""
+    """Datastores `name` reaches through an environment variable (e.g. DB_HOST=db)."""
     out = []
     for e in topology.edges:
         if e.src == name and e.kind == "env":
@@ -251,11 +242,11 @@ def _candidates(report: ExperimentReport, topology: Topology, finding: Optional[
     names = list(topology.services)
     title = finding.title or ""
     if finding.code == "dependency_blind_readiness":
-        # "Dependents stayed 'ready' while <target> was down: things (100%), gateway (100%)"
+        # "Dependents stayed 'ready' while <target> was down: orders (100%), api (100%)"
         tail = title.split(": ", 1)[1] if ": " in title else ""
         named = _names_in(tail, names) if tail else [n for n in _names_in(title, names) if n != target]
     else:
-        # "<service> kept reporting /ready=200 while the API was failing"
+        # "<service> kept reporting ready while the API was failing"
         named = _names_in(title, names)
     return sorted(named) if named else default
 
@@ -287,20 +278,26 @@ def _b_healthcheck(base: dict, override: dict, services: list[str], topology: To
     after = copy.deepcopy(override)
     changed, notes = [], []
     for s in services:
+        node = topology.services.get(s)
+        alive, ready = (node.health_path, node.ready_path) if node is not None else (None, None)
         base_hc = _svc(base, s).get("healthcheck")
         if not _has_healthcheck(_svc(base, s)):
             notes.append(f"{s}: no healthcheck in the base config; not inventing one")
             continue
+        if not alive or not ready:
+            notes.append(f"{s}: the knowledge file declares no readiness path next to its liveness path; "
+                         f"nothing this entry can point the healthcheck at")
+            continue
         cur = (_svc(after, s).get("healthcheck") or {}).get("test")
-        if cur is not None and "/ready" in _test_text(cur):
-            notes.append(f"{s}: the override already checks /ready")
+        if cur is not None and ready in _test_text(cur):
+            notes.append(f"{s}: the override already checks {ready}")
             continue
-        if "/ready" in _test_text(base_hc.get("test")):
-            notes.append(f"{s}: the base healthcheck already checks /ready")
+        if ready in _test_text(base_hc.get("test")):
+            notes.append(f"{s}: the base healthcheck already checks {ready}")
             continue
-        new_test = _swap_path(base_hc.get("test"), "/alive", "/ready")
+        new_test = _swap_path(base_hc.get("test"), alive, ready)
         if new_test is None:
-            notes.append(f"{s}: the base healthcheck does not call /alive; nothing this entry knows how to tighten")
+            notes.append(f"{s}: the base healthcheck does not call {alive}; nothing this entry knows how to tighten")
             continue
         hc = {"test": new_test}
         for k in HEALTHCHECK_TIMING_KEYS:
@@ -310,56 +307,62 @@ def _b_healthcheck(base: dict, override: dict, services: list[str], topology: To
         changed.append(s)
     if not changed:
         return None, "; ".join(notes) or "nothing to change"
+    paths = sorted({(topology.services[s].health_path, topology.services[s].ready_path) for s in changed})
+    swap = "; ".join(f"{ready} instead of {alive}" for alive, ready in paths)
     return Change(
         fix_id="add_or_tighten_healthcheck", services=changed,
         override_after=ov.with_applied(after, "add_or_tighten_healthcheck"),
-        summary=(f"Point the Docker healthcheck of {_plural(changed)} at the readiness endpoint (/ready) on the same "
-                 f"port instead of the liveness endpoint (/alive), keeping the base interval, timeout, retries and "
-                 f"start period."),
+        summary=(f"Point the Docker healthcheck of {_plural(changed)} at the readiness endpoint on the same port "
+                 f"({swap}), keeping the base interval, timeout, retries and start period."),
         expected=[("finding:health_check_masked_failure", "absent, or naming fewer services than before"),
                   ("finding:dependency_blind_readiness", "absent, or naming fewer services than before"),
                   ("during_success_rate", "no worse"), ("time_to_recover_s", "no worse")],
-        risks=("On Ditto 3.9.8 /ready answers 200 'OK' on port 7626 (checked read-only on the live stack). It is "
-               "stricter than /alive: it reports whether the node is a ready member of the Pekko cluster. It is NOT "
-               "known to reflect MongoDB/persistence health: Ditto issue #1865 says neither /alive nor /ready "
-               "considered subsystem health, and the fix (PR #1867) went into the liveness checks only, so the "
-               "masked-failure finding may survive this change; the re-run decides. A stricter check can mark a "
-               "service 'unhealthy' during a cluster rejoin. Docker never restarts an unhealthy container (restart "
-               "policies only act on exit), so the gain is visibility (docker ps, depends_on: service_healthy), not "
-               "automatic recovery. Applying recreates the listed containers; each Ditto service needs 60-120 s to "
-               "start and rejoin the cluster."),
+        risks=("Readiness is stricter than liveness: it reports whether the service considers itself ready to "
+               "serve, not merely that the process is up. It is NOT known to reflect the health of the service's "
+               "datastore or upstreams unless the service implements that, so the masked-failure finding may "
+               "survive this change; the re-run decides. A stricter check can mark a service 'unhealthy' during "
+               "start-up or a cluster rejoin. Docker never restarts an unhealthy container (restart policies only "
+               "act on exit), so the gain is visibility (docker ps, depends_on: service_healthy), not automatic "
+               "recovery. Applying recreates the listed containers; slow-starting services may take minutes to "
+               "become ready again."),
         rollback=(f"Restore the previous override file byte-for-byte from its backup and recreate {_plural(changed)}; "
-                  f"their healthcheck returns to the base /alive check."),
+                  f"their healthcheck returns to the base liveness check."),
         notes=notes,
     ), ""
 
 
 def _b_dependency_healthcheck(base: dict, override: dict, services: list[str], topology: Topology):
     after = copy.deepcopy(override)
-    changed, notes = [], []
+    changed, notes, used = [], [], []
     for s in services:
         if _has_healthcheck(_effective(base, after, s)):
             notes.append(f"{s}: already has a healthcheck")
             continue
-        image = str(_svc(base, s).get("image") or (topology.services[s].image if s in topology.services else ""))
-        if "mongo" not in image.lower():
-            notes.append(f"{s}: no verified healthcheck for image '{image}'; only MongoDB's is in the catalog")
+        node = topology.services.get(s)
+        engine = datastores.get(node.engine if node is not None else None)
+        if engine is None or not engine.healthcheck:
+            what = f"engine {engine.key}" if engine else "an unidentified engine"
+            notes.append(f"{s}: no verified healthcheck for {what}; known: "
+                         f"{', '.join(k for k, e in datastores.ENGINES.items() if e.healthcheck)}")
             continue
-        _ov_svc(after, s)["healthcheck"] = dict(MONGO_HEALTHCHECK)
+        _ov_svc(after, s)["healthcheck"] = copy.deepcopy(engine.healthcheck)
+        used.append(engine)
         changed.append(s)
     if not changed:
         return None, "; ".join(notes) or "nothing to change"
+    engines = sorted({e.title for e in used})
+    verified = sorted({e.verified for e in used if e.verified})
     return Change(
         fix_id="add_dependency_healthcheck", services=changed,
         override_after=ov.with_applied(after, "add_dependency_healthcheck"),
-        summary=(f"Give {_plural(changed)} the same mongosh ping healthcheck Faultline's own compose file uses, so "
+        summary=(f"Give {_plural(changed)} a healthcheck that runs the {'/'.join(engines)} engine's own ping, so "
                  f"its health is visible and dependents can wait for it (prerequisite for add_healthy_dependency)."),
         expected=[("docker_health:" + changed[0], "healthy at steady state"),
                   ("during_success_rate", "no worse"), ("time_to_recover_s", "no worse")],
-        risks=("Touches the protected sole datastore: applying recreates the MongoDB container, a full database "
-               "outage of a few seconds (data stays in the named volume) during which every Ditto service loses its "
-               "connection. The check itself changes no runtime behaviour: Docker does not restart an unhealthy "
-               "container. mongosh ships in the official mongo >= 6 images (verified on the live 7.0 container)."),
+        risks=("Touches a datastore, usually a protected one: applying recreates its container, a full outage of a "
+               "few seconds (data stays in its volume) during which every dependent loses its connection. The check "
+               "itself changes no runtime behaviour: Docker does not restart an unhealthy container. The command is "
+               f"the engine's own client, verified against {', '.join(verified) or 'its official image'}."),
         rollback=(f"Restore the previous override file byte-for-byte from its backup and recreate {_plural(changed)} "
                   f"without the healthcheck (another short database outage)."),
         notes=notes,
@@ -409,7 +412,7 @@ def _b_healthy_dependency(base: dict, override: dict, services: list[str], topol
                "the next `up`: these services wait for the datastore's healthcheck instead of starting into "
                "connection errors, and `up` blocks or fails if the datastore never turns healthy. Faultline recreates "
                "with --no-deps, so it does not rely on the condition being evaluated during that recreate. Applying "
-               "recreates the listed Ditto containers (60-120 s each to rejoin the cluster)."),
+               "recreates the listed containers."),
         rollback=(f"Restore the previous override file byte-for-byte from its backup and recreate {_plural(changed)}; "
                   f"depends_on returns to the base declaration."),
         notes=notes,
@@ -417,9 +420,9 @@ def _b_healthy_dependency(base: dict, override: dict, services: list[str], topol
 
 
 def _b_restart_policy(base: dict, override: dict, services: list[str], topology: Topology):
-    # On Ditto every service already has `restart: always`, so this returns None there. That is right, not a
-    # gap: restart policies only react to a process EXIT, never to `unhealthy`, so no restart policy could
-    # have fixed a hung-but-running service (the `no_automated_remediation` finding says exactly that).
+    # On a stack whose services all declare `restart: always` this returns None. That is right, not a gap:
+    # restart policies only react to a process EXIT, never to `unhealthy`, so no restart policy could have
+    # fixed a hung-but-running service (the `no_automated_remediation` finding says exactly that).
     after = copy.deepcopy(override)
     changed, notes = [], []
     for s in services:
@@ -501,7 +504,7 @@ def _b_resource_limits(base: dict, override: dict, services: list[str], topology
         expected=[("time_to_recover_s", "no worse; lower only if CPU contention from a neighbour slowed recovery"),
                   ("during_success_rate", "no worse")],
         risks=("A CPU quota isolates: a runaway or flooded service can no longer starve its neighbours. It can also "
-               "slow the limited service itself: JVM start-up and Pekko cluster rejoin get slower under a quota, so "
+               "slow the limited service itself: JVM start-up and cluster rejoin get slower under a quota, so "
                "time_to_recover_s may rise rather than fall; the re-run decides. Memory limits are never lowered. "
                "Applying recreates the listed containers."),
         rollback=(f"Restore the previous override file byte-for-byte from its backup and recreate {_plural(changed)} "
@@ -517,8 +520,8 @@ def _b_restart_now(base: dict, override: dict, services: list[str], topology: To
         action="docker restart " + " ".join(containers), runtime_only=True,
         summary=f"Restart {_plural(list(services))} now, with their existing configuration.",
         expected=[("after_success_rate", "back to baseline once the restart completes")],
-        risks=("A restart is a short outage of each listed service (a Ditto service needs 60-120 s to rejoin the "
-               "cluster). It treats the symptom, not the cause: no configuration changes, so re-running the same "
+        risks=("A restart is a short outage of each listed service (a clustered service can need minutes to rejoin "
+               "its cluster). It treats the symptom, not the cause: no configuration changes, so re-running the same "
                "experiment will most likely show the same weakness."),
         rollback="nothing to roll back; the container restarts with its existing configuration",
     ), ""
@@ -551,10 +554,10 @@ def _b_break_healthcheck(base: dict, override: dict, services: list[str], topolo
 
 # ---------------------------------------------------------------- the catalog (priority order)
 _ENTRIES: tuple[CatalogFix, ...] = (
-    CatalogFix(id="add_or_tighten_healthcheck", title="Check readiness (/ready) instead of liveness (/alive)",
+    CatalogFix(id="add_or_tighten_healthcheck", title="Check readiness instead of liveness",
                addresses=("health_check_masked_failure", "dependency_blind_readiness"), roles=("app",),
                runtime_only=False, _targets=_t_candidates, _build=_b_healthcheck),
-    CatalogFix(id="add_dependency_healthcheck", title="Give the datastore a healthcheck (mongosh ping)",
+    CatalogFix(id="add_dependency_healthcheck", title="Give the datastore a healthcheck (its engine's own ping)",
                addresses=("cascade_beyond_hypothesis", "dependency_blind_readiness"), roles=("datastore",),
                runtime_only=False, _targets=_t_datastores, _build=_b_dependency_healthcheck),
     CatalogFix(id="add_healthy_dependency", title="Wait for a healthy datastore before starting (depends_on)",

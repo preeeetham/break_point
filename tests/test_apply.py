@@ -25,21 +25,22 @@ from faultline.remediation import propose
 from faultline.schemas import Finding, WindowStats
 
 ROOT = Path(__file__).resolve().parent.parent
+SHOP = ROOT / "tests" / "fixtures" / "shop"
 PROJECT = "faultline-apply-test"     # no such compose project exists: nothing here can match a real container
 
 BASE_COMPOSE = """\
 services:
-  mongodb:
-    image: mongo:7.0
-  policies:
-    image: eclipse/ditto-policies:3.9.0
+  postgres:
+    image: postgres:16
+  auth:
+    image: example/shop-auth:1.4.0
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:7626/alive || exit 1"]
       interval: 10s
       retries: 6
-  things:
-    image: eclipse/ditto-things:3.9.0
+  orders:
+    image: example/shop-orders:1.4.0
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:7626/alive || exit 1"]
@@ -48,7 +49,7 @@ services:
       retries: 6
       start_period: 60s
   gateway:
-    image: eclipse/ditto-gateway:3.9.0
+    image: example/shop-gateway:1.4.0
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:7626/alive || exit 1"]
@@ -149,7 +150,7 @@ def env(tmp_path, tmp_store, topology, make_report, policy_raw):
     compose = deploy / "docker-compose.yml"
     compose.write_text(BASE_COMPOSE)
     s = Settings(compose_project=PROJECT, compose_file=str(compose), nginx_conf=str(deploy / "none.conf"),
-                 reports_dir=str(tmp_store.root), thresholds_file=str(ROOT / "config" / "thresholds.yaml"),
+                 reports_dir=str(tmp_store.root), thresholds_file=str(SHOP / "thresholds.yaml"),
                  knowledge_file=str(deploy / "none.yaml"),
                  remediation_override_file=str(deploy / "docker-compose.override.yml"), fix_health_timeout_s=30)
     tmp_store.write_topology(topology)
@@ -181,7 +182,7 @@ def original_experiment(env, code="health_check_masked_failure", **kw):
     """The experiment that found the problem, plus a scorecard so the proposal records a `before` score."""
     kw.setdefault("ttr", 20.0)
     kw.setdefault("during_success", 0.4)
-    r = env.make_report(experiment_id="orig0001", service="things", failure_type="container_crash",
+    r = env.make_report(experiment_id="orig0001", service="orders", failure_type="container_crash",
                         finding_codes=[code], **kw)
     env.store.write_experiment(r)
     scorecard.run(env.store, env.topology, env.s.compose_project, log=lambda m: None)
@@ -228,7 +229,7 @@ def test_stop_present_refuses_and_writes_nothing(env):
 def test_active_experiment_lock_refuses_and_is_left_alone(env):
     original_experiment(env)
     p = approved(env)
-    env.store.set_active({"experiment_id": "someone-else", "target_service": "things"})
+    env.store.set_active({"experiment_id": "someone-else", "target_service": "orders"})
     got = run(env, p)
     assert got.status == "approved" and "someone-else" in got.audit[-1].note
     assert env.store.active()["experiment_id"] == "someone-else"           # never clears another owner's lock
@@ -289,9 +290,9 @@ def test_protected_needs_allow_protected(env):
 def test_protected_target_refused_even_if_the_flag_was_not_stored(env):
     original_experiment(env)
     p = approved(env)
-    p.target_services = ["mongodb"]
+    p.target_services = ["postgres"]
     env.store.write_proposal(p)
-    assert "protected service(s) mongodb" in run(env, p).audit[-1].note
+    assert "protected service(s) postgres" in run(env, p).audit[-1].note
 
 
 def test_second_fix_in_flight_is_refused_but_a_stale_lock_is_not(env):
@@ -330,9 +331,9 @@ def test_sick_stack_fails_the_95_percent_gate(env):
     env.window.rate = 0.80
     got = run(env, p)
     assert got.status == "approved" and "95%" in got.audit[-1].note
-    env.window.rate, env.docker.down = 1.0, {"policies"}
+    env.window.rate, env.docker.down = 1.0, {"auth"}
     got = run(env, got)
-    assert got.status == "approved" and "policies is exited" in got.audit[-1].note
+    assert got.status == "approved" and "auth is exited" in got.audit[-1].note
     assert env.runner.calls == []
 
 
@@ -363,11 +364,11 @@ def test_happy_path_applies_reruns_and_verifies(env):
     # one recreate, of exactly the changed service, with the override layered last, under our lock
     assert len(env.runner.calls) == 1
     call = env.runner.calls[0]
-    assert call["cmd"][-1] == "things" and "--force-recreate" in call["cmd"] and "--no-deps" in call["cmd"]
+    assert call["cmd"][-1] == "orders" and "--force-recreate" in call["cmd"] and "--no-deps" in call["cmd"]
     assert "/ready" in call["override"] and call["lock"] == f"fix:{got.proposal_id}"
     # the SAME experiment was re-run, through plan_operator, after our experiment lock was released
     spec = env.injector.specs[0]
-    assert (spec.target_service, spec.failure_type, spec.parameters["duration_s"]) == ("things", "container_crash", 30)
+    assert (spec.target_service, spec.failure_type, spec.parameters["duration_s"]) == ("orders", "container_crash", 30)
     assert spec.planned_by == "operator" and env.injector.lock_seen is None
     # before/after
     v = got.verification
@@ -390,7 +391,7 @@ def test_happy_path_applies_reruns_and_verifies(env):
 def test_health_wait_tolerates_services_without_a_healthcheck(env):
     original_experiment(env)
     p = approved(env)
-    env.docker.health_fn = lambda svc, text: None        # e.g. the live MongoDB: no healthcheck at all
+    env.docker.health_fn = lambda svc, text: None        # e.g. a datastore with no healthcheck at all
     assert run(env, p).status == "verified"
 
 
@@ -408,7 +409,7 @@ def test_unhealthy_after_apply_restores_exact_previous_bytes(env):
     assert "unhealthy" in got.audit[-1].note and "override restored" in got.audit[-1].note
     assert Path(env.s.remediation_override_file).read_bytes() == original
     assert len(env.runner.calls) == 2                       # apply, then recreate the same services on rollback
-    assert env.runner.calls[0]["cmd"][-1] == env.runner.calls[1]["cmd"][-1] == "things"
+    assert env.runner.calls[0]["cmd"][-1] == env.runner.calls[1]["cmd"][-1] == "orders"
     assert "exit 1" in env.runner.calls[0]["override"] and env.runner.calls[1]["override"] == HAND_OVERRIDE
     assert env.injector.specs == []                          # never re-ran on an unhealthy stack
     assert env.clock.sleeps > 0                              # it waited, bounded by fix_health_timeout_s
@@ -462,7 +463,7 @@ def test_targeted_finding_getting_worse_fails_verification(env):
 
     def worse(spec):
         r = FakeInjector.__call__(env.injector, spec)
-        r.findings = [Finding(code="health_check_masked_failure", severity="critical", title="things masked",
+        r.findings = [Finding(code="health_check_masked_failure", severity="critical", title="orders masked",
                               evidence="x")]
         env.store.write_experiment(r)
         return r
@@ -583,7 +584,7 @@ def test_rollback_recreate_also_reloads_the_proxy(env):
 
 def test_no_proxy_reload_for_services_no_proxy_fronts(env):
     original_experiment(env)
-    p = approved(env)                                     # things: nginx only proxies to gateway and ditto-ui
+    p = approved(env)                                     # orders: nginx only proxies to gateway and web-ui
     docker = RecordingDocker(env.s)
     assert run(env, p, deps=make_deps(env, docker=docker)).status == "verified"
     assert docker.execs == []
@@ -690,7 +691,7 @@ def test_runtime_only_fix_restarts_and_never_touches_the_override(env):
     original_experiment(env, code="manual_restart_required")
     p = approved(env, "restart_service_now")
     got = run(env, p)
-    assert sorted(env.docker.restarts) == sorted(got.target_services) and "things" in env.docker.restarts
+    assert sorted(env.docker.restarts) == sorted(got.target_services) and "orders" in env.docker.restarts
     assert env.runner.calls == []
     assert got.override_backup is None and not Path(env.s.remediation_override_file).exists()
     assert got.status == "verified" and got.verification.targeted_metric == "time_to_recover_s"
@@ -768,10 +769,10 @@ def test_service_score_compares_the_same_service_and_scorecard_shows_the_final_s
     got = run(env, p)
     assert got.status == "verified"
     sc = env.store.scorecard()
-    things = next(r for r in sc.ranking if r.service == "things")
+    orders = next(r for r in sc.ranking if r.service == "orders")
     score = next(c for c in got.verification.comparisons if c.metric == "service_score")
-    assert score.after == things.score                       # the experiment target, not the fix's other services
-    assert any(f.proposal_id == p.proposal_id and f.state == "verified" for f in things.fixes)
+    assert score.after == orders.score                       # the experiment target, not the fix's other services
+    assert any(f.proposal_id == p.proposal_id and f.state == "verified" for f in orders.fixes)
     md = (env.store.root / "proposals" / f"{p.proposal_id}.md").read_text()
     assert "**Status:** verified" in md
 

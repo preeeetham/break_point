@@ -1,5 +1,6 @@
-"""Fix agent. Rules propose concrete Ditto remediations; the LLM may add up to two schema-validated extras.
-Everything is advisory: nothing is ever applied to the running stack."""
+"""Fix agent. Rules propose concrete remediations (the generic library plus the target's own rules.yaml);
+the LLM may add up to two schema-validated extras. Everything is advisory: nothing is ever applied to the
+running stack."""
 from __future__ import annotations
 
 import json
@@ -10,7 +11,8 @@ from pydantic import ValidationError
 
 from ..planning.llm import OllamaClient
 from ..reporting.store import ReportStore
-from ..schemas import ExperimentReport, FixRecommendation, Recommendation, RiskAssessment
+from ..schemas import ExperimentReport, FixRecommendation, Recommendation, RiskAssessment, Topology
+from ..topology.graph import system_summary
 from . import risk as risk_agent
 from .knowledge import matching_rules
 
@@ -18,10 +20,11 @@ MAX_RULE_RECS = 6
 MAX_LLM_EXTRAS = 2
 
 LLM_SYSTEM = (
-    "You are a senior SRE reviewing a chaos experiment on an Eclipse Ditto 3.9 docker-compose deployment "
-    "(nginx -> gateway -> policies/things/things-search/connectivity -> single MongoDB). "
+    "You are a senior SRE reviewing a chaos experiment on a docker-compose deployment; the facts name the "
+    "application and its tiers. "
     "Given the experiment facts and the remediations already proposed, suggest at most two ADDITIONAL, concrete, "
-    "non-overlapping remediations. Do not repeat existing titles. Be specific to Ditto/Docker/nginx/MongoDB. "
+    "non-overlapping remediations. Do not repeat existing titles. Be specific to the named application, its "
+    "datastores, Docker and the proxy in front of it. "
     'Reply with JSON only: {"additional": [{"title": str, "category": "configuration|architecture|observability|operations|code", '
     '"effort": "S|M|L", "confidence": 0..1, "rationale": str, "steps": [str], "verify": [str]}], "priority_note": str}.'
 )
@@ -50,17 +53,22 @@ def _from_rule(rule: dict[str, Any], evidence: str) -> Recommendation:
     return Recommendation.model_validate(body)
 
 
-def rule_recommendations(report: ExperimentReport, risk: Optional[RiskAssessment]) -> list[Recommendation]:
+def rule_recommendations(report: ExperimentReport, risk: Optional[RiskAssessment],
+                         rules: Optional[list[dict[str, Any]]] = None,
+                         topology: Optional[Topology] = None) -> list[Recommendation]:
     evidence = _evidence_sentence(report, risk)
-    return [_from_rule(r, evidence) for r in matching_rules(report)[:MAX_RULE_RECS]]
+    return [_from_rule(r, evidence) for r in matching_rules(report, rules, topology)[:MAX_RULE_RECS]]
 
 
 def _llm_extras(
-    llm: Optional[OllamaClient], report: ExperimentReport, risk: Optional[RiskAssessment], existing: list[Recommendation]
+    llm: Optional[OllamaClient], report: ExperimentReport, risk: Optional[RiskAssessment], existing: list[Recommendation],
+    topology: Optional[Topology] = None, app: str = "",
 ) -> tuple[list[Recommendation], Optional[str]]:
     if llm is None or not llm.available():
         return [], None
     payload = {
+        "application": app or "the application under test",
+        "tiers": system_summary(topology),
         "target": risk.target_service if risk else report.target,
         "failure_type": report.failure_type,
         "parameters": report.parameters,
@@ -97,9 +105,11 @@ def _llm_extras(
     return extras, (note.strip() if isinstance(note, str) and note.strip() else None)
 
 
-def recommend(report: ExperimentReport, risk: Optional[RiskAssessment], llm: Optional[OllamaClient]) -> FixRecommendation:
-    recs = rule_recommendations(report, risk)
-    extras, _note = _llm_extras(llm, report, risk, recs)
+def recommend(report: ExperimentReport, risk: Optional[RiskAssessment], llm: Optional[OllamaClient],
+              rules: Optional[list[dict[str, Any]]] = None, topology: Optional[Topology] = None,
+              app: str = "") -> FixRecommendation:
+    recs = rule_recommendations(report, risk, rules, topology)
+    extras, _note = _llm_extras(llm, report, risk, recs, topology, app)
     return FixRecommendation(
         experiment_id=report.experiment_id,
         target_service=risk.target_service if risk else risk_agent.target_service(report),
@@ -167,7 +177,10 @@ def run(
     only: Optional[list[str]] = None,
     force: bool = False,
     log: Callable[[str], None] = print,
+    rules: Optional[list[dict[str, Any]]] = None,
+    app: str = "",
 ) -> list[FixRecommendation]:
+    """`rules` is knowledge.rules_for(settings); None = the generic library alone."""
     topology = store.topology()
     out: list[FixRecommendation] = []
     for eid in pending_ids(store, only, force):
@@ -176,7 +189,7 @@ def run(
             log(f"[fix] {eid}: unreadable report, skipped")
             continue
         risk = store.risk(eid) or risk_agent.assess(report, topology, None)
-        fix = recommend(report, risk, llm)
+        fix = recommend(report, risk, llm, rules, topology, app)
         store.write_fix(fix)
         md = _write_markdown(store, fix, risk)
         out.append(fix)

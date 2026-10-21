@@ -2,10 +2,12 @@
 clamping logic; the actual mechanics live in actions.py."""
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..schemas import ServiceNode
+from ..schemas import ServiceNode, Topology
+from ..topology import datastores
 
 
 @dataclass(frozen=True)
@@ -85,28 +87,39 @@ CATALOG: dict[str, FailureType] = {
     ),
     "db_flood": FailureType(
         "db_flood", "Database write flood", "Overloaded database",
-        "Parallel mongosh insert loops inside the MongoDB container: real write load competing with Ditto's own traffic.",
+        "Parallel insert loops inside the datastore container, through the engine's own client: real write load "
+        "competing with the application's traffic. Only offered where the engine has a verified flood command.",
         (DUR(45, 10, 90), Param("writers", 2, 1, 4)), roles=("datastore",), degrade_only=True, severity_hint=0.3,
         expected_recovery_s=15,
     ),
     "traffic_spike": FailureType(
         "traffic_spike", "Traffic spike", "Sudden traffic spike",
-        "Burst of concurrent API requests against nginx -> gateway from the host, on top of the probe traffic.",
+        "Burst of concurrent requests against the entry point from the host (the probe spec's spike operation), "
+        "on top of the probe traffic.",
         (DUR(30, 10, 90), Param("rps", 150, 20, 600, "req/s")), roles=("proxy", "app"), degrade_only=True,
         severity_hint=0.2, expected_recovery_s=10,
     ),
 }
 
-TRAFFIC_TARGETS = ("nginx", "gateway")
+def entry_tier(topology: Topology) -> set[str]:
+    """Where outside traffic lands: published proxies and apps, plus the apps a published proxy forwards to."""
+    services = topology.services
+    entry = {n for n, s in services.items() if s.entrypoint and s.role in ("proxy", "app")}
+    proxies = {n for n in entry if services[n].role == "proxy"}
+    entry |= {e.dst for e in topology.edges
+              if e.src in proxies and e.dst in services and services[e.dst].role == "app"}
+    return entry
 
 
-def applicable(ft: FailureType, node: ServiceNode) -> bool:
+def applicable(ft: FailureType, node: ServiceNode, topology: Topology | None = None) -> bool:
     if not node.chaos_relevant or node.role not in ft.roles:
         return False
     if ft.key == "traffic_spike":
-        return node.name in TRAFFIC_TARGETS
+        # a spike is sent from outside, so it can only be "on" a service outside traffic reaches first
+        return node.name in entry_tier(topology) if topology is not None else node.entrypoint
     if ft.key == "db_flood":
-        return "mongo" in node.image
+        engine = datastores.get(node.engine)
+        return engine is not None and engine.can_flood
     return True
 
 
@@ -136,7 +149,8 @@ def clamp(ft: FailureType, params: dict[str, Any]) -> tuple[dict[str, Any], list
     return out, notes
 
 
-def reproduce_commands(ft_key: str, container: str, params: dict[str, Any], network: str, pumba: str, tc: str) -> list[str]:
+def reproduce_commands(ft_key: str, container: str, params: dict[str, Any], network: str, pumba: str, tc: str,
+                       engine: str | None = None) -> list[str]:
     d = params.get("duration_s", 30)
     if ft_key == "container_crash":
         pre = [f"docker update --restart=no {container}"] if params.get("block_restart") else []
@@ -159,7 +173,12 @@ def reproduce_commands(ft_key: str, container: str, params: dict[str, Any], netw
     if ft_key == "disk_pressure":
         return [f"docker exec {container} fallocate -l {params.get('size_mb')}M /tmp/fill", f"sleep {d}", f"docker exec {container} rm /tmp/fill"]
     if ft_key == "db_flood":
-        return [f"docker exec -d {container} sh -c 'timeout {d} mongosh --quiet --eval \"while(true){{db.flood.insertOne({{x:Math.random()}})}}\"'  # x{params.get('writers')}"]
+        eng = datastores.get(engine)
+        if eng is None or not eng.can_flood:
+            return [f"# no verified write flood for engine {engine or 'unknown'}"]
+        return [f"docker exec -d {container} sh -c {shlex.quote(datastores.flood_command(eng, d, 'faultline-repro'))}"
+                f"  # x{params.get('writers')}"]
     if ft_key == "traffic_spike":
-        return [f"# {params.get('rps')} req/s for {d}s against $DITTO_URL/api/2/things/faultline.probe:canary (e.g. hey -z {d}s -q {params.get('rps')} -c 16)"]
+        return [f"# {params.get('rps')} req/s for {d}s against $TARGET_URL, the probe spec's spike operation "
+                f"(e.g. hey -z {d}s -q {params.get('rps')} -c 16)"]
     return []

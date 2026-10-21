@@ -27,13 +27,13 @@ def test_topology_and_baseline_round_trip(tmp_store, topology, thresholds):
     assert back is not None
     assert set(back.services) == set(topology.services)
     assert len(back.edges) == len(topology.edges)
-    assert back.criticality_of("mongodb") == topology.criticality_of("mongodb")
+    assert back.criticality_of("postgres") == topology.criticality_of("postgres")
 
-    b = Baseline(captured_at=utcnow(), duration_s=30, ditto_url="http://x", api=WindowStats(sample_count=3, success_rate=1.0),
-                 health_availability={"things": 1.0, "mongodb": None}, thresholds=thresholds, notes=["n"])
+    b = Baseline(captured_at=utcnow(), duration_s=30, target_url="http://x", api=WindowStats(sample_count=3, success_rate=1.0),
+                 health_availability={"orders": 1.0, "postgres": None}, thresholds=thresholds, notes=["n"])
     tmp_store.write_baseline(b)
     back_b = tmp_store.baseline()
-    assert back_b.thresholds == thresholds and back_b.health_availability == {"things": 1.0, "mongodb": None}
+    assert back_b.thresholds == thresholds and back_b.health_availability == {"orders": 1.0, "postgres": None}
 
 
 def test_experiment_round_trip_and_ordering(tmp_store, make_report):
@@ -60,15 +60,15 @@ def test_corrupt_json_reads_as_none(tmp_store):
 
 def test_risk_fix_scorecard_round_trip(tmp_store, make_report):
     report = make_report(experiment_id="e1")
-    risk = RiskAssessment(experiment_id="e1", target_service="policies", failure_type="container_crash", severity=4.4,
+    risk = RiskAssessment(experiment_id="e1", target_service="auth", failure_type="container_crash", severity=4.4,
                           level="medium", blast_radius=2, user_impact=0.9, recovery_s=14.0, factors={"impact": 3.6},
                           findings=[], summary="s", production_implication="p", generated_by="rules")
-    fix = FixRecommendation(experiment_id="e1", target_service="policies", failure_type="container_crash", risk_level="medium",
+    fix = FixRecommendation(experiment_id="e1", target_service="auth", failure_type="container_crash", risk_level="medium",
                             recommendations=[Recommendation(title="t", category="operations", effort="S", confidence=0.5,
                                                             rationale="r", steps=["a"], verify=["b"])],
                             generated_by="rules")
     sc = Scorecard(project="p", overall_score=61.7, experiments_total=1, summary="s",
-                   ranking=[ServiceScore(service="policies", score=61.7, grade="D", experiments=1)])
+                   ranking=[ServiceScore(service="auth", score=61.7, grade="D", experiments=1)])
     tmp_store.write_experiment(report)
     tmp_store.write_risk(risk)
     tmp_store.write_fix(fix)

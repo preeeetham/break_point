@@ -16,9 +16,9 @@ class FakeHealth:
 def _window(ok: int, bad: int, latency: float = 20.0, t0: float = 1000.0) -> SampleWindow:
     w = SampleWindow()
     for i in range(ok):
-        w.add(Sample(ts=t0 + i, op="get_thing", status=200, latency_ms=latency))
+        w.add(Sample(ts=t0 + i, op="get_order", status=200, latency_ms=latency))
     for i in range(bad):
-        w.add(Sample(ts=t0 + ok + i, op="get_thing", status=503, latency_ms=5.0))
+        w.add(Sample(ts=t0 + ok + i, op="get_order", status=503, latency_ms=5.0))
     return w
 
 
@@ -72,17 +72,17 @@ def test_samples_before_injection_are_ignored(thresholds):
 
 
 def test_abort_on_blast_radius(thresholds):
-    health = FakeHealth({"things": 3, "gateway": 1})
-    out = _monitor(thresholds, _window(10, 0), health, protected=["gateway", "things"]).evaluate()
-    assert out.abort and out.reason == "blast_radius:things"
+    health = FakeHealth({"orders": 3, "gateway": 1})
+    out = _monitor(thresholds, _window(10, 0), health, protected=["gateway", "orders"]).evaluate()
+    assert out.abort and out.reason == "blast_radius:orders"
     assert out.detail["consecutive_failures"] == 3
-    ok = _monitor(thresholds, _window(10, 0), FakeHealth({"things": 2}), protected=["things"]).evaluate()
+    ok = _monitor(thresholds, _window(10, 0), FakeHealth({"orders": 2}), protected=["orders"]).evaluate()
     assert ok.abort is False
 
 
 def test_operator_stop_takes_precedence(thresholds):
-    health = FakeHealth({"things": 5})
-    out = _monitor(thresholds, _window(0, 10), health, protected=["things"], stop=True).evaluate()
+    health = FakeHealth({"orders": 5})
+    out = _monitor(thresholds, _window(0, 10), health, protected=["orders"], stop=True).evaluate()
     assert out.abort and out.reason == "operator_stop"
 
 

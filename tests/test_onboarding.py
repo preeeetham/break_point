@@ -20,21 +20,22 @@ from faultline.schemas import OnboardingReport, RepoKnowledge
 from faultline.topology.compose import service_nodes, static_edges
 
 ROOT = Path(__file__).resolve().parent.parent
-DITTO_KNOWLEDGE = ROOT / "config" / "ditto_knowledge.yaml"
+SHOP = ROOT / "tests" / "fixtures" / "shop"
+EXAMPLE = ROOT / "config" / "examples" / "knowledge.example.yaml"   # the worked example core ships
 
 
 # ---------------------------------------------------------------- fixtures / helpers
 COMPOSE_YAML = """\
 services:
-  mongodb:
-    image: mongo:7.0
+  postgres:
+    image: postgres:16
     volumes: ["app_data:/data/db"]
   api:
     build: {context: ../..}
-    depends_on: [mongodb]
+    depends_on: [postgres]
     environment:
-      - MONGO_DB_HOSTNAME=mongodb
-      - MONGO_DB_PASSWORD=hunter2
+      - DB_HOST=postgres
+      - DB_PASSWORD=hunter2
     healthcheck: {test: "curl --fail http://localhost:7626/alive || exit 1"}
     networks: {app: {aliases: [api-cluster]}}
   worker:
@@ -83,7 +84,7 @@ Read the [architecture guide](https://docs.example.test/arch) before touching th
 print("secret code block")
 ```
 
-The api stores orders in mongodb and the worker drains the queue.
+The api stores orders in postgres and the worker drains the queue.
 """
 
 FILLER = "The gateway fans out to the downstream services over the cluster. "
@@ -162,17 +163,17 @@ def _ex_from(compose: dict, nginx: str | None = None) -> A.Extraction:
 
 # ================================================================ source.parse_reference
 def test_parse_reference_shorthand_becomes_github_url():
-    assert S.parse_reference("eclipse-ditto/ditto") == ("git", "https://github.com/eclipse-ditto/ditto.git")
+    assert S.parse_reference("acme-corp/shop-platform") == ("git", "https://github.com/acme-corp/shop-platform.git")
 
 
 @pytest.mark.parametrize("ref", [
-    "https://github.com/eclipse-ditto/ditto",
-    "https://github.com/eclipse-ditto/ditto.git",
-    "http://github.com/eclipse-ditto/ditto/",
-    "www.github.com/eclipse-ditto/ditto",
+    "https://github.com/acme-corp/shop-platform",
+    "https://github.com/acme-corp/shop-platform.git",
+    "http://github.com/acme-corp/shop-platform/",
+    "www.github.com/acme-corp/shop-platform",
 ])
 def test_parse_reference_normalises_full_github_urls(ref):
-    assert S.parse_reference(ref) == ("git", "https://github.com/eclipse-ditto/ditto.git")
+    assert S.parse_reference(ref) == ("git", "https://github.com/acme-corp/shop-platform.git")
 
 
 def test_parse_reference_existing_local_path_is_absolute(fake_repo: Path, monkeypatch):
@@ -197,9 +198,9 @@ def test_parse_reference_rejects_empty_string():
 
 # ================================================================ source.slugify
 @pytest.mark.parametrize("raw,expected", [
-    ("Eclipse_Ditto", "eclipse-ditto"),
+    ("Acme_Platform", "acme-platform"),
     ("Acme.Shop.v2", "acme-shop-v2"),
-    ("  Ditto--Thing!!  ", "ditto-thing"),
+    ("  Shop--Order!!  ", "shop-order"),
     ("###", "repo"),
     ("", "repo"),
 ])
@@ -330,10 +331,10 @@ def test_resolve_rejects_file_instead_of_directory(tmp_path: Path):
 
 # ================================================================ agent.extract
 def test_extract_finds_services_and_structural_edges(ex: A.Extraction):
-    assert ex.names == ["api", "frontend", "grafana", "mongodb", "nginx", "worker"]
+    assert ex.names == ["api", "frontend", "grafana", "nginx", "postgres", "worker"]
     kinds = {(e.src, e.dst, e.kind) for e in ex.edges}
-    assert ("api", "mongodb", "depends_on") in kinds          # depends_on
-    assert ("api", "mongodb", "env") in kinds                 # MONGO_DB_HOSTNAME
+    assert ("api", "postgres", "depends_on") in kinds          # depends_on
+    assert ("api", "postgres", "env") in kinds                 # DB_HOST
     assert ("worker", "api", "env") in kinds                  # API_URL
     assert ("nginx", "api", "proxy") in kinds                 # nginx proxy_pass
     assert ("nginx", "frontend", "proxy") in kinds             # second proxy_pass location
@@ -354,8 +355,8 @@ def test_service_facts_shape(ex: A.Extraction):
     assert facts["api"]["image"] == "(built from source)"
     assert facts["api"]["healthcheck_port"] == 7626
     assert facts["api"]["network_aliases"] == ["api-cluster"]
-    assert facts["mongodb"]["stateful"] is True
-    assert "MONGO_DB_HOSTNAME" in facts["api"]["env_keys"]
+    assert facts["postgres"]["stateful"] is True
+    assert "DB_HOST" in facts["api"]["env_keys"]
 
 
 # ================================================================ agent.infer_health_port
@@ -486,7 +487,7 @@ def test_build_user_prompt_contains_services_known_edges_and_example(ex: A.Extra
     assert "APPLICATION: acme-shop" in prompt
     for name in ex.names:
         assert name in prompt
-    assert "api -> mongodb (depends_on)" in prompt
+    assert "api -> postgres (depends_on)" in prompt
     assert "readme text" in prompt and "docs text" in prompt and "example: yaml" in prompt
 
 
@@ -543,7 +544,7 @@ def test_validate_tolerates_junk_in_the_edge_list(ex: A.Extraction):
 
 def test_validate_restated_structural_edge_needs_a_new_reason(ex: A.Extraction):
     raw = {"documented_edges": [
-        {"src": "api", "dst": "mongodb"},                                           # default evidence
+        {"src": "api", "dst": "postgres"},                                           # default evidence
         {"src": "worker", "dst": "api", "evidence": "the worker polls the api for new jobs"},
     ]}
     k, rejected = A.validate(raw, ex)
@@ -559,8 +560,8 @@ def test_validate_drops_role_for_unknown_service_and_unknown_role(ex: A.Extracti
 
 
 def test_validate_drops_role_that_merely_agrees_with_the_guess(ex: A.Extraction):
-    assert ex.nodes["mongodb"].role == "datastore" and ex.nodes["nginx"].role == "proxy"
-    k, rejected = A.validate({"roles": {"mongodb": "datastore", "nginx": "PROXY"}}, ex)
+    assert ex.nodes["postgres"].role == "datastore" and ex.nodes["nginx"].role == "proxy"
+    k, rejected = A.validate({"roles": {"postgres": "datastore", "nginx": "PROXY"}}, ex)
     assert k.roles == {}
     assert rejected == []  # agreement is not an error, it is simply not an override
 
@@ -641,12 +642,12 @@ def test_validate_caps_the_edge_list_at_max_edges():
 
 def test_validate_always_returns_a_valid_repo_knowledge(ex: A.Extraction):
     raw = {"health_port": "7626", "cluster_alias": 12345, "roles": {"frontend": "ui", "x": "y"},
-           "documented_edges": [None, {"src": "api", "dst": "nope"}, {"src": " worker ", "dst": "mongodb",
+           "documented_edges": [None, {"src": "api", "dst": "nope"}, {"src": " worker ", "dst": "postgres",
                                                                       "evidence": "worker persists results"}],
            "references": ["nope", "https://ok.test/a"]}
     k, rejected = A.validate(raw, ex)
     assert RepoKnowledge.model_validate(k.model_dump()) == k
-    assert [(e.src, e.dst) for e in k.documented_edges] == [("worker", "mongodb")]
+    assert [(e.src, e.dst) for e in k.documented_edges] == [("worker", "postgres")]
     assert rejected
 
 
@@ -666,7 +667,7 @@ def test_validate_tolerates_roles_that_are_not_a_mapping(ex: A.Extraction):
 # ================================================================ agent.render_yaml
 def test_render_yaml_round_trips_and_omits_empty_keys(src: S.RepoSource):
     k = RepoKnowledge(health_port=7626, cluster_alias="api-cluster", roles={"grafana": "other"},
-                      documented_edges=[{"src": "worker", "dst": "mongodb", "evidence": "worker writes results"}],
+                      documented_edges=[{"src": "worker", "dst": "postgres", "evidence": "worker writes results"}],
                       references=["https://example.test/arch"])
     text = A.render_yaml(k, src, "llm", "stub:model-1")
     data = yaml.safe_load(text)
@@ -723,13 +724,13 @@ GOOD_PAYLOAD = {
 def test_onboard_writes_the_knowledge_file_and_reports(src: S.RepoSource, tmp_path: Path):
     llm = StubLLM(GOOD_PAYLOAD)
     out_dir = tmp_path / "out"
-    report = A.onboard(src, llm, DITTO_KNOWLEDGE, out_dir, log=_silent)
+    report = A.onboard(src, llm, EXAMPLE, out_dir, log=_silent)
 
     assert isinstance(report, OnboardingReport)
     assert OnboardingReport.model_validate(report.model_dump()) == report
     assert report.slug == "acme-shop"
     assert report.generated_by == "llm" and report.model == "stub:model-1"
-    assert report.services == ["api", "frontend", "grafana", "mongodb", "nginx", "worker"]
+    assert report.services == ["api", "frontend", "grafana", "nginx", "postgres", "worker"]
     assert report.structural_edges == 6
     assert report.compose_path == str(src.compose_path)
     assert report.readme_path == str(src.readme_path)
@@ -749,13 +750,29 @@ def test_onboard_writes_the_knowledge_file_and_reports(src: S.RepoSource, tmp_pa
     assert len(llm.calls) == 1
     call = llm.calls[0]
     assert call["max_tokens"] == 2600
-    assert "ditto-cluster" in call["user"] and "worker" in call["user"]
+    assert "quill-cluster" in call["user"] and "worker" in call["user"]
     assert call["system"] == A.SYSTEM
+
+
+def test_onboarding_into_targets_scaffolds_a_target_without_clobbering_it(src: S.RepoSource, tmp_path: Path,
+                                                                         monkeypatch):
+    monkeypatch.setattr(A, "TARGETS_DIR", tmp_path / "targets")
+    out_dir = tmp_path / "targets" / "shop"
+    A.onboard(src, StubLLM(GOOD_PAYLOAD), EXAMPLE, out_dir, log=_silent)
+    stub = yaml.safe_load((out_dir / "target.yaml").read_text())
+    assert stub == {"app_name": "acme-shop", "compose_file": str(src.compose_path),
+                    "nginx_conf": str(src.nginx_conf_path), "compose_project": "acme-shop"}
+    (out_dir / "target.yaml").write_text("compose_project: edited-by-hand\n")
+    A.onboard(src, StubLLM(GOOD_PAYLOAD), EXAMPLE, out_dir, log=_silent)
+    assert (out_dir / "target.yaml").read_text() == "compose_project: edited-by-hand\n"
+    # anywhere else (config/, a scratch directory) it is just a knowledge file
+    A.onboard(src, StubLLM(GOOD_PAYLOAD), EXAMPLE, tmp_path / "scratch", log=_silent)
+    assert not (tmp_path / "scratch" / "target.yaml").exists()
 
 
 def test_onboard_dry_run_writes_nothing(src: S.RepoSource, tmp_path: Path):
     out_dir = tmp_path / "out"
-    report = A.onboard(src, StubLLM(GOOD_PAYLOAD), DITTO_KNOWLEDGE, out_dir, log=_silent, write=False)
+    report = A.onboard(src, StubLLM(GOOD_PAYLOAD), EXAMPLE, out_dir, log=_silent, write=False)
     assert not out_dir.exists()
     assert not Path(report.output_path).exists()
     assert report.knowledge.documented_edges  # the work still happened, it just was not persisted
@@ -763,7 +780,7 @@ def test_onboard_dry_run_writes_nothing(src: S.RepoSource, tmp_path: Path):
 
 def test_onboard_without_a_model_is_structural_only(src: S.RepoSource, tmp_path: Path):
     llm = StubLLM(GOOD_PAYLOAD, ok=False, error="ollama is not running")
-    report = A.onboard(src, llm, DITTO_KNOWLEDGE, tmp_path / "out", log=_silent)
+    report = A.onboard(src, llm, EXAMPLE, tmp_path / "out", log=_silent)
     assert report.generated_by == "structural-only" and report.model == ""
     assert report.knowledge == RepoKnowledge()
     assert report.rejected == []
@@ -773,7 +790,7 @@ def test_onboard_without_a_model_is_structural_only(src: S.RepoSource, tmp_path:
 
 
 def test_onboard_with_no_llm_object_at_all(src: S.RepoSource, tmp_path: Path):
-    report = A.onboard(src, None, DITTO_KNOWLEDGE, tmp_path / "out", log=_silent)
+    report = A.onboard(src, None, EXAMPLE, tmp_path / "out", log=_silent)
     assert report.generated_by == "structural-only"
     assert any("no client" in n for n in report.notes)
 
@@ -783,7 +800,7 @@ def test_onboard_with_unparseable_model_answer_is_structural_only(src: S.RepoSou
     # agent retries before giving up. Zero the backoff so the suite stays fast.
     monkeypatch.setattr(A, "RETRY_BACKOFF_S", 0)
     llm = StubLLM(None, error="invalid JSON in response")
-    report = A.onboard(src, llm, DITTO_KNOWLEDGE, tmp_path / "out", log=_silent)
+    report = A.onboard(src, llm, EXAMPLE, tmp_path / "out", log=_silent)
     assert report.generated_by == "structural-only"
     assert report.knowledge == RepoKnowledge()
     assert any("no usable JSON" in n and "invalid JSON in response" in n for n in report.notes)
@@ -800,7 +817,7 @@ def test_onboard_with_entirely_invalid_model_answer_still_writes_valid_output(sr
         "references": ["not a url"],
     }
     out_dir = tmp_path / "out"
-    report = A.onboard(src, StubLLM(payload), DITTO_KNOWLEDGE, out_dir, log=_silent)
+    report = A.onboard(src, StubLLM(payload), EXAMPLE, out_dir, log=_silent)
     k = report.knowledge
     assert report.generated_by == "llm"
     assert k.documented_edges == [] and k.roles == {} and k.references == [] and k.cluster_alias is None
@@ -814,7 +831,7 @@ def test_onboard_notes_when_no_architecture_docs_exist(tmp_path: Path):
     root = tmp_path / "bare-app"
     _write(root / "docker-compose.yml", COMPOSE_YAML)
     bare = S.resolve(str(root), tmp_path / "cache", log=_silent)
-    report = A.onboard(bare, StubLLM({"documented_edges": []}), DITTO_KNOWLEDGE, tmp_path / "out", log=_silent)
+    report = A.onboard(bare, StubLLM({"documented_edges": []}), EXAMPLE, tmp_path / "out", log=_silent)
     assert any("no architecture documentation" in n for n in report.notes)
 
 
@@ -830,11 +847,11 @@ TRUTH_YAML = """\
 health_port: 7626
 cluster_alias: api-cluster
 roles:
-  mongodb: datastore
+  postgres: datastore
   nginx: proxy
 documented_edges:
-  - {src: worker, dst: mongodb, evidence: "the worker persists job results"}
-  - {src: api, dst: mongodb, evidence: "the api stores orders"}
+  - {src: worker, dst: postgres, evidence: "the worker persists job results"}
+  - {src: api, dst: postgres, evidence: "the api stores orders"}
   - {src: frontend, dst: api, evidence: "the storefront calls the api"}
 """
 
@@ -846,33 +863,33 @@ def truth_path(tmp_path: Path) -> Path:
 
 def test_compare_precision_recall_f1_on_a_known_overlap(truth_path: Path, ex: A.Extraction):
     generated = RepoKnowledge(documented_edges=[
-        {"src": "worker", "dst": "mongodb", "evidence": "hit"},
+        {"src": "worker", "dst": "postgres", "evidence": "hit"},
         {"src": "grafana", "dst": "api", "evidence": "extra"},
     ])
     edges = A.compare(generated, truth_path, ex)["edges"]
     assert edges == {
         "generated": 2, "truth": 3, "matched": 1,
         "precision": 0.5, "recall": 0.333, "f1": 0.4,
-        "matched_pairs": ["worker -> mongodb"],
-        "missed": ["api -> mongodb", "frontend -> api"],
+        "matched_pairs": ["worker -> postgres"],
+        "missed": ["api -> postgres", "frontend -> api"],
         "extra": ["grafana -> api"],
     }
 
 
 def test_compare_final_graph_coverage_counts_structural_edges(truth_path: Path, ex: A.Extraction):
-    generated = RepoKnowledge(documented_edges=[{"src": "worker", "dst": "mongodb", "evidence": "hit"}])
+    generated = RepoKnowledge(documented_edges=[{"src": "worker", "dst": "postgres", "evidence": "hit"}])
     cov = A.compare(generated, truth_path, ex)["final_graph_coverage"]
-    # api -> mongodb is a *structural* edge (depends_on + env), so the human's edge is not a miss
+    # api -> postgres is a *structural* edge (depends_on + env), so the human's edge is not a miss
     assert cov == {"truth_relationships": 3, "covered_by_generated_or_structural": 2,
                    "coverage": 0.667, "uncovered": ["frontend -> api"]}
-    assert "api -> mongodb" in A.compare(generated, truth_path, ex)["edges"]["missed"]
+    assert "api -> postgres" in A.compare(generated, truth_path, ex)["edges"]["missed"]
 
 
 def test_compare_effective_roles_score_one_when_the_guesser_already_agrees(truth_path: Path, ex: A.Extraction):
     roles = A.compare(RepoKnowledge(), truth_path, ex)["roles"]
     assert roles["compared"] == len(ex.nodes)
     assert roles["accuracy"] == 1.0 and roles["disagreed"] == []
-    assert roles["overrides_generated"] == {} and roles["overrides_truth"] == {"mongodb": "datastore",
+    assert roles["overrides_generated"] == {} and roles["overrides_truth"] == {"postgres": "datastore",
                                                                               "nginx": "proxy"}
 
 
@@ -891,12 +908,12 @@ def test_compare_scalar_fields_and_empty_generated(truth_path: Path, ex: A.Extra
 
 
 def test_compare_without_an_extraction_compares_raw_overrides(truth_path: Path):
-    generated = RepoKnowledge(roles={"mongodb": "datastore"},
+    generated = RepoKnowledge(roles={"postgres": "datastore"},
                               documented_edges=[{"src": "frontend", "dst": "api", "evidence": "x"}])
     result = A.compare(generated, truth_path, None)
     assert result["roles"] == {"compared": 1, "agreed": 1, "accuracy": 1.0,
-                               "overrides_generated": {"mongodb": "datastore"},
-                               "overrides_truth": {"mongodb": "datastore", "nginx": "proxy"},
+                               "overrides_generated": {"postgres": "datastore"},
+                               "overrides_truth": {"postgres": "datastore", "nginx": "proxy"},
                                "disagreed": []}
     # with no structural edges to fall back on, coverage is only what the model produced
     assert result["final_graph_coverage"]["coverage"] == 0.333
@@ -910,14 +927,22 @@ def test_compare_against_an_empty_truth_file_does_not_divide_by_zero(tmp_path: P
 
 
 # ================================================================ the hand-authored contract
-def test_shipped_ditto_knowledge_file_validates_against_repo_knowledge():
-    """The contract between the hand-written knowledge file and every generated one."""
-    data = yaml.safe_load(DITTO_KNOWLEDGE.read_text())
-    k = RepoKnowledge.model_validate(data)
-    assert k.health_port == 7626 and k.cluster_alias == "ditto-cluster"
-    assert k.roles["mongodb"] == "datastore" and k.roles["nginx"] == "proxy"
+@pytest.mark.parametrize("path", [EXAMPLE, SHOP / "shop_knowledge.yaml"], ids=["worked-example", "shop-fixture"])
+def test_hand_written_knowledge_files_validate_against_repo_knowledge(path):
+    """The contract between hand-written knowledge files and every generated one."""
+    k = RepoKnowledge.model_validate(yaml.safe_load(path.read_text()))
+    assert k.health_port and k.cluster_alias and k.health_paths and k.health_paths.ready
+    assert "datastore" in k.roles.values()
     assert all(e.src and e.dst and e.evidence for e in k.documented_edges)
     assert all(r.startswith("http") for r in k.references)
+
+
+def test_worked_example_is_an_invented_application():
+    """The prompt's example must never be a real project: whatever it says leaks into answers about
+    thin repositories, and the validator can only strip what is distinctive enough to recognise."""
+    vocab = A.example_vocabulary(EXAMPLE.read_text())
+    assert {"quillstack", "quill-api", "doc-store"} <= vocab
+    assert all(".example.invalid/" in u for u in A.URL_RE.findall(EXAMPLE.read_text()))
 
 
 # ================================================================ the CLI's destructive-flag guard
@@ -925,7 +950,7 @@ def test_compare_to_the_runs_own_output_path_is_refused_without_writing(tmp_path
     """`--compare-to` the file this run would write scores it against itself, after clobbering it.
 
     `onboard` writes before `cmd_onboard` compares, so without this guard the obvious invocation
-    (`onboard eclipse-ditto/ditto --compare-to config/ditto_knowledge.yaml`, whose slug is `ditto`)
+    (`onboard acme/shop --out targets/shop --compare-to targets/shop/shop_knowledge.yaml`)
     destroys the hand-authored ground truth and then reports a perfect score against the wreckage.
     """
     from faultline.cli import main

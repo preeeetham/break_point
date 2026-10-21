@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import requests
 
+from ..topology import datastores
 from .docker_ctl import DockerController
 
 Log = Callable[[str], None]
@@ -23,6 +24,8 @@ class Context:
     params: dict[str, Any]
     settings: Any
     log: Log
+    engine: str | None = None   # the target's datastore engine (topology.datastores), for engine-specific faults
+    probe: Any = None           # the running HttpApiProbe, whose spike operation traffic_spike repeats
 
 
 class Handle:
@@ -172,9 +175,24 @@ def apply_network_loss(ctx: Context) -> Handle:
 
 
 # ---------------------------------------------------------------------- in-container resource faults
+def kill_marked_script(marker: str) -> str:
+    """Kill every process whose command line carries `marker`, and their direct children.
+
+    Three things this has to get right, each verified against real containers: skip its own shell (whose
+    command line contains the marker too, and which would otherwise kill itself first); collect every pid
+    before killing any (a killed parent re-parents its child before the loop reaches it); and read the
+    parent pid after the last `)` of /proc/<pid>/stat, because some database clients rewrite their process
+    title to something with spaces. Children matter because a flood runs as `timeout N <client>`, and only
+    `timeout` carries the marker."""
+    return ("m=''; for p in /proc/[0-9]*; do i=${p#/proc/}; [ \"$i\" = \"$$\" ] && continue; "
+            "if tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q '%s'; then m=\"$m $i\"; fi; done; "
+            "c=''; for p in /proc/[0-9]*; do s=$(cat $p/stat 2>/dev/null) || continue; set -- ${s##*) }; "
+            "for x in $m; do [ \"$2\" = \"$x\" ] && c=\"$c ${p#/proc/}\"; done; done; "
+            "for x in $c $m; do kill -9 $x 2>/dev/null; done; true" % marker)
+
+
 def _kill_marked(ctx: Context, marker: str) -> None:
-    script = ("for p in /proc/[0-9]*; do if tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q '%s'; then "
-              "kill -9 ${p#/proc/} 2>/dev/null; fi; done; true" % marker)
+    script = kill_marked_script(marker)
     try:
         ctx.docker.shell(ctx.service, script)
     except Exception as exc:
@@ -205,14 +223,15 @@ def apply_cpu_stress(ctx: Context) -> Handle:
 
 
 def apply_db_flood(ctx: Context) -> Handle:
+    engine = datastores.get(ctx.engine)
+    if engine is None or not engine.can_flood:
+        raise RuntimeError(f"no verified write flood for {ctx.service} (engine {ctx.engine or 'unknown'})")
     marker = f"faultline-{ctx.experiment_id[:8]}"
     d, n = int(ctx.params["duration_s"]), int(ctx.params["writers"])
-    js = (f"var marker='{marker}'; var s='x'.repeat(2048); "
-          "while(true){db.getSiblingDB('faultline').flood.insertOne({t:new Date(),x:Math.random(),s:s})}")
     for _ in range(n):
-        ctx.docker.shell(ctx.service, f"timeout {d + 5} mongosh --quiet --eval \"{js}\" >/dev/null 2>&1", detach=True)
-    return MarkedProcessHandle(ctx, f"{n} mongosh write-flood loops in {ctx.container} for {d}s", marker,
-                               extra_cleanup="mongosh --quiet --eval \"db.getSiblingDB('faultline').flood.drop()\" >/dev/null 2>&1")
+        ctx.docker.shell(ctx.service, datastores.flood_command(engine, d + 5, marker), detach=True)
+    return MarkedProcessHandle(ctx, f"{n} {engine.title} write-flood loops in {ctx.container} for {d}s", marker,
+                               extra_cleanup=engine.flood_cleanup)
 
 
 class DiskHandle(Handle):
@@ -258,18 +277,21 @@ def apply_traffic_spike(ctx: Context) -> Handle:
     stop = threading.Event()
     counters: dict[str, int] = {"sent": 0, "ok": 0}
     lock = threading.Lock()
-    url = f"{s.ditto_url.rstrip('/')}/api/2/things/{s.probe_namespace}:canary"
+    if ctx.probe is not None:
+        method, url, kwargs = ctx.probe.spike_request()
+    else:
+        method, url = "GET", s.target_url.rstrip("/") + "/"
+        kwargs = {"auth": (s.target_user, s.target_password) if s.target_user else None}
     deadline = time.time() + d
 
     def worker():
         sess = requests.Session()
-        sess.auth = (s.ditto_user, s.ditto_password)
         interval = workers / rps
         nxt = time.time()
         while not stop.is_set() and time.time() < deadline:
             try:
-                r = sess.get(url, timeout=5)
-                ok = r.status_code == 200
+                r = sess.request(method, url, timeout=5, **kwargs)
+                ok = 200 <= r.status_code < 300
             except requests.RequestException:
                 ok = False
             with lock:

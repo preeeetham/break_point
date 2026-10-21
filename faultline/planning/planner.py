@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..chaos.catalog import CATALOG, FailureType, applicable, clamp, reproduce_commands
+from ..topology.compose import load_knowledge
+from ..topology.graph import system_summary
 from ..schemas import (
     PREDICTED_LABEL,
     ExperimentReport,
@@ -25,8 +27,8 @@ from ..schemas import (
 )
 from .llm import LLMClient
 
-SYSTEM = """You are the planning brain of Faultline, a chaos-engineering agent for Eclipse Ditto (an IoT digital-twin
-platform: nginx -> gateway -> policies/things/things-search/connectivity -> MongoDB, all on one Pekko cluster).
+SYSTEM = """You are the planning brain of Faultline, a chaos-engineering agent for docker-compose applications. The
+user message names the application and its tiers (proxy -> entry services -> services -> datastores).
 You choose the single most informative next experiment from a ranked candidate list produced by code.
 Rules: you may only pick a listed candidate index; parameters must stay inside the given bounds (code clamps
 them anyway); prefer untested, high-criticality targets; prefer shorter/lighter when the system looked fragile
@@ -81,6 +83,12 @@ class Policy:
         return True, ""
 
 
+def application_line(settings, topo: Topology | None) -> str:
+    """What the planner is told about the system under test: its name and tiers, both from data."""
+    app = getattr(settings, "app_label", None) or "the application under test"
+    return f"Application: {app}. Tiers: {system_summary(topo)}."
+
+
 class Planner:
     def __init__(self, topology: Topology, policy: Policy, history: list[ExperimentReport], llm: LLMClient | None,
                  settings, available_images: set[str] | None = None, allow_protected: bool = False,
@@ -99,6 +107,8 @@ class Planner:
         # Day-1 protected policy decides what may be proposed at all, and a gate on who authorises a
         # specific experiment is not a licence to reopen that policy for the planner.
         self.approval_gate = approval_gate
+        knowledge = load_knowledge(getattr(settings, "knowledge_file", "") or None)
+        self.outage_error_rates: dict[str, float] = dict(knowledge.get("outage_error_rates") or {})
 
     # ------------------------------------------------------------------ ranking
     def candidates(self) -> list[Candidate]:
@@ -118,7 +128,7 @@ class Planner:
                 continue
             crit = self.topo.criticality_of(name)
             for ft in CATALOG.values():
-                if not applicable(ft, node):
+                if not applicable(ft, node, self.topo):
                     continue
                 ok, why = self.policy.allows(name, ft.key, self.allow_protected)
                 if not ok:
@@ -156,12 +166,14 @@ class Planner:
         node = self.topo.services[service]
         full_outage = not ft.degrade_only
         if full_outage:
-            rate = {"things-search": 0.3, "connectivity": 0.05}.get(service, 1.0)
-            if node.role == "datastore":
-                rate = 1.0
+            # A full outage is assumed to fail every request unless the target's knowledge file documents
+            # that less of the traffic depends on this service (`outage_error_rates`). A datastore is
+            # always assumed total: everything reads through it.
+            rate = 1.0 if node.role == "datastore" else float(self.outage_error_rates.get(service, 1.0))
         else:
             rate = ft.severity_hint
-        affected = dependents if full_outage else [d for d in dependents if d != "nginx"]
+        affected = dependents if full_outage else [
+            d for d in dependents if d in self.topo.services and self.topo.services[d].role != "proxy"]
         d = params.get("duration_s", 30)
         verb = "taking away" if full_outage else "degrading"
         statement = (f"{verb} {service} ({ft.title.lower()}) for {d}s will push the synthetic API error rate to at most "
@@ -200,7 +212,7 @@ class Planner:
         ft = CATALOG.get(failure_type)
         if not ft:
             raise ValueError(f"unknown failure type {failure_type}; known: {sorted(CATALOG)}")
-        if not applicable(ft, self.topo.services[service]):
+        if not applicable(ft, self.topo.services[service], self.topo):
             raise ValueError(f"{failure_type} does not apply to {service} (role {self.topo.services[service].role})")
         notes: list[str] = []
         ok, why = self.policy.allows(service, failure_type, self.allow_protected)
@@ -227,7 +239,7 @@ class Planner:
             parameters=params, rationale=rationale, hypothesis=hyp, criticality_score=self.topo.criticality_of(service),
             planned_by=by, planner_notes=notes,
             reproduce=reproduce_commands(ft.key, container, params, self.settings.compose_network,
-                                         self.settings.pumba_image, self.settings.tc_image),
+                                         self.settings.pumba_image, self.settings.tc_image, node.engine),
             requires_approval=requires_approval, approval_reason=approval_reason,
         )
 
@@ -242,7 +254,8 @@ class Planner:
         hist = [f"- {r.target['service']}/{r.failure_type}: success during {r.during.success_rate}, recovered in "
                 f"{r.recovery.time_to_recover_s}s, findings {[f.code for f in r.findings]}" for r in self.history[-5:]] or ["- none yet"]
         topo = [f"- {n}: dependents {self.topo.transitive_dependents(n) or []}" for n in self.topo.relevant_services()]
-        user = ("Topology (service: who breaks if it breaks):\n" + "\n".join(topo) +
+        user = (application_line(self.settings, self.topo) + "\n\n" +
+                "Topology (service: who breaks if it breaks):\n" + "\n".join(topo) +
                 "\n\nCandidates (pick exactly one index):\n" + "\n".join(lines) +
                 "\n\nHistory of this session:\n" + "\n".join(hist) + "\n\nReturn the JSON object now.")
         data = self.llm.chat_json(SYSTEM, user)

@@ -1,0 +1,29 @@
+# Test fixture: documented knowledge about the invented shop that compose alone cannot show.
+health_port: 7626
+health_paths:
+  alive: /alive
+  ready: /ready
+cluster_alias: shop-cluster
+roles:
+  postgres: datastore
+  nginx: proxy
+  web-ui: ui
+  prometheus: other
+  grafana: other
+  cadvisor: other
+  blackbox: other
+documented_edges:
+  - {src: gateway, dst: auth, evidence: "gateway asks auth to authorise every request"}
+  - {src: gateway, dst: orders, evidence: "gateway forwards order commands to orders over the cluster"}
+  - {src: gateway, dst: orders-search, evidence: "gateway forwards /search to orders-search"}
+  - {src: gateway, dst: notifier, evidence: "gateway forwards subscription management to notifier"}
+  - {src: orders, dst: auth, evidence: "orders checks permissions on every command"}
+  - {src: orders-search, dst: auth, evidence: "search results are filtered by permission checks"}
+  - {src: orders-search, dst: orders, evidence: "the search index is built from order events (eventually consistent)"}
+  - {src: notifier, dst: orders, evidence: "notifications publish order events"}
+  - {src: notifier, dst: auth, evidence: "notifier checks permissions for outbound messages"}
+outage_error_rates:
+  orders-search: 0.3
+  notifier: 0.05
+references:
+  - https://shop.example.invalid/docs/architecture

@@ -20,8 +20,8 @@ def test_risk_severity_and_level_bands(make_report, topology):
         assert 0 <= a.severity <= 10
         assert a.level == _level_for(a.severity)
         assert a.generated_by == "rules"
-        assert a.target_service == "policies" and a.failure_type == "container_crash"
-        assert "policies" in a.summary
+        assert a.target_service == "auth" and a.failure_type == "container_crash"
+        assert "auth" in a.summary
     worst = risk.assess(make_report(during_success=0.0, recovered=False, remediation=["docker restart"],
                                     affected=list(topology.relevant_services()),
                                     finding_codes=["health_check_masked_failure", "manual_restart_required"]), topology, None)
@@ -64,7 +64,7 @@ def test_fix_is_advisory_with_recommendations(make_report, topology):
     assert out.advisory_only is True
     assert len(out.recommendations) >= 1
     assert out.generated_by == "rules"
-    assert out.risk_level == rk.level and out.target_service == "policies"
+    assert out.risk_level == rk.level and out.target_service == "auth"
     titles = [r.title for r in out.recommendations]
     assert len(titles) == len(set(titles))
     for r in out.recommendations:
@@ -73,11 +73,11 @@ def test_fix_is_advisory_with_recommendations(make_report, topology):
     assert fix.recommend(report, None, None).risk_level == "unknown"
 
 
-def test_fix_health_check_masked_failure_references_issue_1865(make_report, topology):
+def test_fix_health_check_masked_failure_leads_with_the_readiness_rule(make_report, topology):
     fix = pytest.importorskip("faultline.agents.fix")
     report = make_report(finding_codes=["health_check_masked_failure"])
     out = fix.recommend(report, None, None)
-    assert any("1865" in " ".join([r.rationale, *r.references]) for r in out.recommendations)
+    assert out.recommendations[0].title.startswith("Make readiness reflect dependency health")
     md = fix.render_markdown(out, None)
     assert "Advisory only" in md and report.experiment_id in md
 
@@ -86,24 +86,24 @@ def test_fix_health_check_masked_failure_references_issue_1865(make_report, topo
 def test_scorecard_untested_and_ranking(make_report, topology):
     scorecard = pytest.importorskip("faultline.agents.scorecard")
     reports = [
-        make_report(service="policies", during_success=0.1),
-        make_report(service="things", during_success=0.9, failure_type="network_delay"),
+        make_report(service="auth", during_success=0.1),
+        make_report(service="orders", during_success=0.9, failure_type="network_delay"),
         make_report(service="gateway", during_success=0.5, status="failed"),  # not scored
     ]
     sc = scorecard.compute(reports, {}, topology, "p")
     by = {s.service: s for s in sc.ranking}
     assert set(by) == set(topology.relevant_services())
-    assert by["mongodb"].score is None and by["mongodb"].grade == "—" and by["mongodb"].experiments == 0
+    assert by["postgres"].score is None and by["postgres"].grade == "—" and by["postgres"].experiments == 0
     assert by["gateway"].score is None  # failed experiments do not count
-    assert by["policies"].score < by["things"].score
-    assert sc.ranking[0].service == "policies"
+    assert by["auth"].score < by["orders"].score
+    assert sc.ranking[0].service == "auth"
     tested = [s for s in sc.ranking if s.score is not None]
     assert [s.score for s in tested] == sorted(s.score for s in tested)
     assert all(s.score is None for s in sc.ranking[len(tested):])
     assert sc.experiments_total == 3
-    assert sc.overall_score == pytest.approx((by["policies"].score + by["things"].score) / 2, abs=0.1)
-    assert "policies" in sc.summary
-    assert by["things"].worst_success_rate == 0.9 and "tested: network_delay" in by["things"].notes
+    assert sc.overall_score == pytest.approx((by["auth"].score + by["orders"].score) / 2, abs=0.1)
+    assert "auth" in sc.summary
+    assert by["orders"].worst_success_rate == 0.9 and "tested: network_delay" in by["orders"].notes
 
 
 def test_scorecard_grades_and_empty(topology):
@@ -127,4 +127,4 @@ def test_narrator_mentions_target(make_report, topology):
     lines = narrator.narrate(report, rk, fx, None, False)
     assert isinstance(lines, list) and lines
     assert all(isinstance(line, str) for line in lines)
-    assert any("policies" in line for line in lines)
+    assert any("auth" in line for line in lines)

@@ -15,7 +15,7 @@ import pytest
 from faultline.config import Settings
 from faultline.schemas import ExperimentSpec, Hypothesis
 
-from .conftest import PROJECT, ROOT
+from .conftest import PROJECT, ROOT, SHOP
 from .fakemail import FakeIMAPServer, FakeMailbox, FakeSMTPServer
 
 ADMIN = "admin@example.invalid"
@@ -39,7 +39,7 @@ def settings(tmp_path, mail) -> Settings:
     smtp, imap = mail
     return Settings(
         compose_project=PROJECT, reports_dir=str(tmp_path / "reports"),
-        thresholds_file=str(ROOT / "config" / "thresholds.yaml"), llm_enabled=False,
+        thresholds_file=str(SHOP / "thresholds.yaml"), llm_enabled=False,
         admin_email=ADMIN, smtp_host=smtp.host, smtp_port=smtp.port, smtp_user="faultline",
         smtp_password="secret", smtp_from="faultline@example.invalid", smtp_starttls=False,
         imap_host=imap.host, imap_port=imap.port, imap_user="faultline", imap_password="secret",
@@ -57,13 +57,13 @@ def agent(settings, tmp_store):
 
 def _spec(**kw: Any) -> ExperimentSpec:
     fields: dict[str, Any] = dict(
-        experiment_id="exp-approval", target_service="mongodb", container=f"{PROJECT}-mongodb-1",
+        experiment_id="exp-approval", target_service="postgres", container=f"{PROJECT}-postgres-1",
         failure_type="container_crash", parameters={"duration_s": 45, "block_restart": False},
-        rationale="mongodb is the sole datastore and has never been crashed",
-        hypothesis=Hypothesis(statement="everything breaks", expected_affected=["things"],
+        rationale="postgres is the sole datastore and has never been crashed",
+        hypothesis=Hypothesis(statement="everything breaks", expected_affected=["orders"],
                               expected_max_error_rate=1.0, expected_recovery_s=90.0),
         criticality_score=9.5, planned_by="operator", requires_approval=True,
-        approval_reason="mongodb is protected: only degrade-only failures are allowed",
+        approval_reason="postgres is protected: only degrade-only failures are allowed",
     )
     fields.update(kw)
     return ExperimentSpec(**fields)
@@ -124,10 +124,10 @@ def test_request_sends_a_real_email_carrying_every_planner_fact(agent, mailbox, 
     assert msg["To"] == ADMIN and msg["Message-ID"]
     body = msg.get_payload(decode=True).decode()
     # the planner's own rationale, hypothesis and parameters, not a re-derivation
-    assert "mongodb is the sole datastore and has never been crashed" in body
+    assert "postgres is the sole datastore and has never been crashed" in body
     assert "everything breaks" in body
     assert "duration_s=45" in body
-    assert "mongodb is protected" in body
+    assert "postgres is protected" in body
     for option in ("APPROVE", "APPROVE REDUCED", "SKIP", "STOP RUN"):
         assert option in body
     assert "SKIP is applied" in body                 # the timeout default is stated up front
@@ -196,7 +196,7 @@ def test_quoted_original_text_is_not_read_as_an_answer(agent, mailbox):
 
 @pytest.mark.parametrize("reply", [
     "yes do it",
-    "APPROVE the mongodb one please",
+    "APPROVE the postgres one please",
     "STOP",                                   # not STOP RUN
     "FIX 1",                                  # the other scenario's vocabulary
     "",
@@ -310,7 +310,7 @@ def test_pending_file_is_written_while_waiting_and_cleared_after(agent, mailbox,
 
 def test_resend_keeps_the_same_token(agent, mailbox, tmp_store, settings):
     approval = pytest.importorskip("faultline.agents.approval")
-    req = agent._open("pre_injection", "exp-approval", "mongodb", "container_crash")
+    req = agent._open("pre_injection", "exp-approval", "postgres", "container_crash")
     req.subject, req.sent = f"[Faultline {req.token}] approval needed", True
     tmp_store.set_pending_approval(req)
     assert agent.resend(req.approval_id) is True
@@ -377,7 +377,7 @@ def test_problem_trigger_fires_on_severity_and_on_remediation(make_report, topol
     assert fire is True and "Risk agent scored this" in reason
 
     # a quiet experiment the recovery ladder still had to rescue
-    rescued = make_report(during_success=1.0, remediation=["restart things (no recovery after 50% of timeout)"])
+    rescued = make_report(during_success=1.0, remediation=["restart orders (no recovery after 50% of timeout)"])
     fire, reason = approval.problem_occurred(rescued, risk_agent.assess(rescued, topology, None))
     assert fire is True and "recovery ladder had to intervene" in reason
 
@@ -483,7 +483,7 @@ def test_run_post_experiment_fires_without_the_risk_agent_having_run(settings, t
 
 # ---------------------------------------------------------------- the Weakness Scout hook
 class _ScoutSuggestion:
-    target_service = "mongodb"
+    target_service = "postgres"
     failure_type = "container_crash"
 
 
@@ -521,10 +521,10 @@ def test_scout_hook_reads_the_real_weakness_report(tmp_store):
     approval = pytest.importorskip("faultline.agents.approval")
     tmp_store.write_weaknesses(WeaknessReport(project=PROJECT, compose_file="docker-compose.yml", weaknesses=[
         PredictedWeakness(
-            weakness_id="w1", category="no_redundancy", services=["mongodb"], title="single datastore",
-            evidence="one mongodb service, no replica set", predicted_severity=8.6, predicted_level="critical",
+            weakness_id="w1", category="no_redundancy", services=["postgres"], title="single datastore",
+            evidence="one postgres service, no replica set", predicted_severity=8.6, predicted_level="critical",
             factors={"criticality": 0.95},
-            suggested_experiment=SuggestedExperiment(failure_type="container_crash", target_service="mongodb"),
+            suggested_experiment=SuggestedExperiment(failure_type="container_crash", target_service="postgres"),
             confirming_finding_codes=["manual_restart_required"], why_it_matters="every service stores state there",
         ),
     ]))

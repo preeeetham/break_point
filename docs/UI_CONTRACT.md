@@ -6,7 +6,7 @@ is missing, add it here first.
 
 ## 0. Product
 
-An operator control room for AI-driven chaos engineering against Eclipse Ditto. Shown on a
+An operator control room for AI-driven chaos engineering against a docker-compose application (the selected target). Shown on a
 projector to hackathon judges. It must, at a glance, answer: what is the system, what is the AI
 about to break, what is happening right now, did it survive, and what should we fix.
 
@@ -55,22 +55,23 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
                "source":"system|topology|scout|planner|injector|guardian|risk|fix|scorecard|probe|approval",
                "text":"...", "data":{} } ],   // only events with seq > `since`, max 300
   "session": { "armed": false, "error": null, "probe": {"running":false,"rps":4.0,
-               "canary":"faultline.probe:canary","samples":0} },
+               "canary":"faultline.probe:canary","samples":0},
+               "project":"shop", "target_url":"http://127.0.0.1:8080" },
   "job": { "id":"j7", "kind":"run|topology|scout|baseline|analyze|heal|plan|onboard|reconcile|fix", "status":"running|done|failed|cancelled",
-           "label":"Crash things", "started_at":..., "ended_at":null, "error":null } ,  // or null
+           "label":"Crash orders", "started_at":..., "ended_at":null, "error":null } ,  // or null
   "run": {                          // live experiment state; phase "idle" when nothing is running
     "phase":"idle|preflight|injecting|rollback|recovering|soaking|analyzing",
-    "experiment_id":"ab12...", "target_service":"things", "failure_type":"container_crash",
+    "experiment_id":"ab12...", "target_service":"orders", "failure_type":"container_crash",
     "parameters":{...}, "rationale":"...", "hypothesis":"...", "planned_by":"llm|deterministic|operator",
     "elapsed_s":12.4, "deadline_in_s":17.6, "max_s":30,
     "success_rate":0.12, "p95_ms":1800, "sample_count":20,
-    "health": {"things":{"alive":null,"ready":null,"status":"exited"}, ...},
+    "health": {"orders":{"alive":null,"ready":null,"status":"exited"}, ...},
     "timeline":[{"t_plus_s":0.7,"event":"injected","detail":"SIGKILL ..."}],
     "safety":{"abort_reason":null,"detail":{}},
-    "blast":{"expected":["gateway"],"observed":["gateway","things-search"],
+    "blast":{"expected":["gateway"],"observed":["gateway","orders-search"],
              // cascade attribution so far, straight from live.json; [] when the injector wrote none
              // (older injectors, or nothing attributed yet). See §2.3.
-             "cascade_edges":[{"src":"gateway","dst":"things","mechanism":"dependency_timeout",
+             "cascade_edges":[{"src":"gateway","dst":"orders","mechanism":"dependency_timeout",
                                "confidence":"ordered","lag_s":4.0}],
              "cascade_hops":[{"service":"gateway","mechanism":"dependency_timeout","path_confidence":"ordered",
                               "masked_by_health_check":true,"beyond_hypothesis":false}]}
@@ -82,7 +83,7 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
     "approval_id":"7f3c1a9b4d02", "scenario":"pre_injection|problem_occurred",
     "experiment_id":"ab12...", "token":"FL-1a2b3c4d", "message_id":"<...@faultline.local>",
     "subject":"[Faultline FL-1a2b3c4d] approval needed: ...", "to":"admin@example.com",
-    "target_service":"mongodb", "failure_type":"container_crash",
+    "target_service":"postgres", "failure_type":"container_crash",
     "created_at":"ISO", "deadline":"ISO", "timeout_s":120.0,
     "seconds_left":84.3,         // computed per poll; negative once the deadline has passed
     "options":["APPROVE","APPROVE REDUCED","SKIP","STOP RUN"], "default_on_timeout":"skip",
@@ -95,18 +96,18 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
               "risk":{...}, "fix":{...}, "scorecard":{...} },   // pipeline order, see §4
   "llm": {"provider":"ollama","model":"phi4-mini","available":true,"enabled":true,"error":""},
   "topology": {
-    "services": {"things":{"role":"app","stateful":false,"entrypoint":false,"container":"...",
+    "services": {"orders":{"role":"app","stateful":false,"entrypoint":false,"container":"...",
                            "state":"running","health":"healthy","chaos_relevant":true,
                            "criticality":4.0,"mem_limit_mb":512,"image":"..."}},
-    "edges":[{"src":"things","dst":"mongodb","kind":"env"}],
-    "criticality":[{"service":"mongodb","score":9.5,"fan_in":4,
+    "edges":[{"src":"orders","dst":"postgres","kind":"env"}],
+    "criticality":[{"service":"postgres","score":9.5,"fan_in":4,
                     "transitive_dependents":[...],"reasons":[...]}],
     "findings":["..."], "generated_at":"..."
   } | null,
   "baseline": {"captured_at":"...","api":{"success_rate":1.0,"p50_ms":22,"p95_ms":44,"p99_ms":128,
                "sample_count":453},"thresholds":{...},"notes":[...]} | null,
   "experiments": [ <ExperimentSummary>, ... ],   // newest first, see §2.1
-  "scorecard": {"overall_score":61.7,"summary":"...","ranking":[{"service":"things","score":24.9,
+  "scorecard": {"overall_score":61.7,"summary":"...","ranking":[{"service":"orders","score":24.9,
                 "grade":"F","experiments":1,"worst_success_rate":0.0,"slowest_recovery_s":30.5,
                 "findings":6,"notes":[]}]} | null,
   // PREDICTED, never measured. Read straight off reports/weaknesses.json (the Weakness Scout's
@@ -115,8 +116,8 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
   // the UI must render that label (or an equally explicit text marker) next to every predicted
   // severity: a prediction may never read like a measured Finding or a measured RiskAssessment.
   "weaknesses": {
-    "generated_at":"ISO", "project":"ditto", "compose_file":"deploy/ditto/docker-compose.yml",
-    "knowledge_file":"config/knowledge.ditto.yaml" | null,
+    "generated_at":"ISO", "project":"shop", "compose_file":"targets/shop/deploy/docker-compose.yml",
+    "knowledge_file":"targets/shop/shop_knowledge.yaml" | null,
     "label":"[predicted, unconfirmed]",
     "checks_run":["shallow_health_check", ...], "notes":[...],
     "generated_by":"rules|llm+rules",
@@ -130,7 +131,7 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
 ### 2.1 `ExperimentSummary`
 ```jsonc
 {"experiment_id":"...","status":"completed|aborted|failed|skipped","started_at":"ISO","ended_at":"ISO",
- "target_service":"things","failure_type":"container_crash","parameters":{...},"rationale":"...",
+ "target_service":"orders","failure_type":"container_crash","parameters":{...},"rationale":"...",
  "planned_by":"llm|deterministic|operator","criticality_score":4.0,
  "hypothesis":{"statement":"...","expected_affected":[...],"expected_max_error_rate":1.0,
                "expected_recovery_s":90},
@@ -141,9 +142,9 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
  "auto_restarted_by_docker":true,"remediation_actions":[],
  "data_integrity_ok":true,"data_integrity_detail":"...",
  "aborted_early":true,"abort_reason":"error_rate","watchdog_fired":false,"operator_stop":false,
- "affected_services_observed":["things"],
+ "affected_services_observed":["orders"],
  "cascade_hops_beyond_hypothesis":1 | null,   // null = report has no cascade attribution (older reports)
- "cascade_beyond":["connectivity"],            // services the cascade reached outside the hypothesis, [] if none
+ "cascade_beyond":["notifier"],            // services the cascade reached outside the hypothesis, [] if none
  "findings":[{"code":"health_check_masked_failure","severity":"high","title":"...","evidence":"..."}],
  "risk":{"severity":5.8,"level":"high","summary":"...","production_implication":"...",
          "blast_radius":1,"factors":{"impact":4.0,"blast":0.3,...},"generated_by":"rules"} | null,
@@ -161,12 +162,12 @@ row whose provenance channel is `data-tone="violet"` (= AI-authored / not measur
 ```jsonc
 {"weakness_id":"w1","category":"shallow_health_check|missing_health_check|no_redundancy|
    no_resource_limits|weak_restart_policy|no_retry_or_backoff|port_beyond_ingress|no_rate_limiting",
- "services":["things"], "title":"...",
+ "services":["orders"], "title":"...",
  "evidence":"healthcheck: curl -f http://localhost:8080/alive",   // quotes a real compose field, mono
  "predicted_severity":7.4, "predicted_level":"high",              // PREDICTED, 0-10, not measured
  "factors":{"criticality":0.8,"blast":0.4},
- "suggested_experiment":{"failure_type":"container_crash","target_service":"mongodb",
-                         "reason":"...","policy_note":"mongodb is protected; ..."},
+ "suggested_experiment":{"failure_type":"container_crash","target_service":"postgres",
+                         "reason":"...","policy_note":"postgres is protected; ..."},
  "confirming_finding_codes":["health_check_masked_failure"],      // which measured Finding would confirm it
  "why_it_matters":"...",
  "status":"predicted|confirmed|cleared",
@@ -198,15 +199,15 @@ injector writes the attribution so far into `live.json`, surfaced as `run.blast.
   cascade also replays it on the map (`topology.showCascade`) while nothing is live; a live run always
   takes the map back.
 ```jsonc
-{"method":"timing+topology v1","origin":"things","health_interval_s":3.0,
+{"method":"timing+topology v1","origin":"orders","health_interval_s":3.0,
  "window_start_s":0.0,"window_end_s":30.0,
  "hops":[{"service":"gateway","onset_earliest_s":0.0,"onset_latest_s":3.1,
           "onset_source":"injection|health_probe|api_probe","phase":"during_fault|after_rollback",
           "mechanism":"dependency_timeout","mechanism_evidence":"...","masked_by_health_check":true,
-          "upstream":"things","edge_kinds":["env"],"lag_s":3.1,"path":["gateway","things"],
-          "candidate_paths":[["gateway","things"],["gateway","things-search","things"]],
+          "upstream":"orders","edge_kinds":["env"],"lag_s":3.1,"path":["gateway","orders"],
+          "candidate_paths":[["gateway","orders"],["gateway","orders-search","orders"]],
           "path_confidence":"ambiguous","hops_from_origin":1,"beyond_hypothesis":false,"note":""}],
- "edges":[{"src":"gateway","dst":"things","mechanism":"dependency_timeout","confidence":"ambiguous","lag_s":3.1}],
+ "edges":[{"src":"gateway","dst":"orders","mechanism":"dependency_timeout","confidence":"ambiguous","lag_s":3.1}],
  "transitions":[...], "operations":[...],
  "hops_beyond_hypothesis":0, "beyond_hypothesis":[], "unattributed":[],
  "summary":"...", "notes":["..."]}
@@ -230,16 +231,16 @@ How one pending decision ended. `answered: false` means nobody replied and the s
   "expected_recovery_s":90,"requires_images":["pumba"],"available":true,"unavailable_reason":null,
   "params":[{"name":"duration_s","default":30,"lo":10,"hi":90,"unit":"s","desc":"...","type":"number"},
             {"name":"block_restart","default":false,"type":"bool","desc":"..."}],
-  "applies_to":["things","policies","gateway","nginx","mongodb"],
-  "policy_blocked_on":["mongodb"]}],
- "protected":{"mongodb":{"reason":"...","allowed_failure_types":[...]}},
+  "applies_to":["orders","auth","gateway","nginx","postgres"],
+  "policy_blocked_on":["postgres"]}],
+ "protected":{"postgres":{"reason":"...","allowed_failure_types":[...]}},
  "thresholds":{...}}
 ```
 
 ### GET `/api/plan?llm=0|1`
 Ranked candidates plus the next pick. Never runs anything.
 ```jsonc
-{"candidates":[{"service":"mongodb","failure_type":"network_delay","priority":13.75,
+{"candidates":[{"service":"postgres","failure_type":"network_delay","priority":13.75,
                 "reasons":["criticality 9.5","untested"],"criticality":9.5}],
  "pick":{"target_service":"...","failure_type":"...","parameters":{...},"rationale":"...",
          "hypothesis":{"statement":"...","expected_affected":[...],"expected_max_error_rate":0.3,
@@ -255,7 +256,7 @@ the same object as `state.pending_approval`; `decided` is the newest 20 closed r
 ```jsonc
 {"pending": <pending_approval> | null,
  "decided":[{"approval_id":"7f3c1a9b4d02","scenario":"pre_injection","experiment_id":"ab12...",
-             "token":"FL-1a2b3c4d","to":"admin@example.com","target_service":"mongodb",
+             "token":"FL-1a2b3c4d","to":"admin@example.com","target_service":"postgres",
              "failure_type":"container_crash","created_at":"ISO","deadline":"ISO","timeout_s":120.0,
              "options":[...],"default_on_timeout":"skip","sent":true,"send_error":"","resends":0,
              "status":"answered|timed_out|failed","decision":{...}}]}
@@ -278,7 +279,7 @@ Exactly one job runs at a time.
 | `/api/jobs/topology` | `{}` | rebuild the map from compose + env + nginx + live docker |
 | `/api/jobs/scout` | `{"llm":true}` | static-analysis pass: writes `reports/weaknesses.json` (predicted weaknesses). Runs with nothing armed and breaks nothing |
 | `/api/jobs/baseline` | `{"duration":60}` | 20–300 s |
-| `/api/jobs/run` | `{"mode":"auto"\|"manual","target":"things","failure":"container_crash","params":{"duration_s":30},"experiments":1,"llm":true,"allow_protected":false,"analyze":true}` | `auto` = planner picks |
+| `/api/jobs/run` | `{"mode":"auto"\|"manual","target":"orders","failure":"container_crash","params":{"duration_s":30},"experiments":1,"llm":true,"allow_protected":false,"analyze":true}` | `auto` = planner picks |
 | `/api/jobs/analyze` | `{"llm":true}` | risk → fix → scorecard over all experiments |
 | `/api/jobs/heal` | `{"restart":false}` | remove chaos leftovers, optionally restart cluster |
 | `/api/stop` | `{}` | **kill switch**, always 200, never queued, never blocked |
@@ -294,7 +295,7 @@ The Narrator's play-by-play for one experiment as JSON (missing risk/fix compute
 `{"header","timeline":[str],"impact","cascade":[str],"recovery","hypothesis","safety":str|null,"findings":[str],"risk","fix","error":str|null,"llm":str|null}`; 404 for an unknown id. `cascade` is the hop-by-hop section (header line, one line per hop, optional timing caveat), `[]` when the report has no cascade attribution. `llm` defaults off: it costs one model call per request. After every control-room run the same lines also land in the event log with `source:"narrator"`.
 
 ### POST `/api/target` `{"compose": path|null, "knowledge": path|null}`
-Points the room at another compose and/or knowledge file (e.g. one `onboard` just wrote). Paths must resolve under `deploy/`, `config/` or `.cache/onboarding/` (or be the files configured at startup), else 400. Disarms first; rebuild the map next. Returns the new `target`.
+Points the room at another compose and/or knowledge file (e.g. one `onboard` just wrote). Paths must resolve under `targets/`, `config/` or `.cache/onboarding/` (or be the files configured at startup), else 400. Disarms first; rebuild the map next. Returns the new `target`.
 
 ### Additions to `/api/state` and jobs
 - `"target": {"compose_file","knowledge_file","project"}` and `"reconciliation": <WeaknessReconciliation> | null` (reports/weaknesses_reconcile.json; severities inside are still predictions, only `state` per outcome is measured).
@@ -302,7 +303,7 @@ Points the room at another compose and/or knowledge file (e.g. one `onboard` jus
 - `POST /api/jobs/reconcile` `{}`: scores predictions against experiments; fails with a clear error if the Scout has not run. `analyze` also reconciles at its end when predictions exist, and never fails because of it.
 - `POST /api/jobs/topology` accepts `{"compose","knowledge","live"}` (same path rules as `/api/target`); `live` defaults to false when `compose` differs from the configured file.
 - `run.timeline` and `run.safety.detail` are filled from `live.json` when the injector writes them.
-- `/fable/` serves the Fable front end build (`fable/dist`), next to `/` (control room) and `/site/`.
+- `/fable/` serves the selected target's own front end build (`targets/<name>/fable/dist`) when it ships one, next to `/` (control room) and `/site/`; 404 otherwise.
 - `"proposals": {"open","pending","total","latest":[<ProposalSummary>]}`: fix proposals waiting on or
   decided by a human, see §2.5. Event `source` adds `fix` (apply progress) for the apply engine.
 
@@ -317,11 +318,11 @@ approved by default. Lifecycle: `pending → approved | rejected | expired`, `ap
 `ProposalSummary` (what `state.proposals.latest` and `GET /api/proposals` carry):
 ```jsonc
 {"id":"fx-1a2b3c4d5e", "experiment_id":"ab12...", "finding_code":"health_check_masked_failure",
- "catalog_fix_id":"add_or_tighten_healthcheck", "target_services":["things"],
+ "catalog_fix_id":"add_or_tighten_healthcheck", "target_services":["orders"],
  "status":"pending|approved|rejected|expired|applying|applied|verified|verification_failed|rolled_back",
  "created_at":"ISO", "expires_at":"ISO",
  "seconds_left":1712.4,               // computed per request; <= 0 on an open record means overdue
- "requires_allow_protected":false,    // touches a protected service (MongoDB)
+ "requires_allow_protected":false,    // touches a protected service (the target's thresholds policy.protected)
  "explanation":{"problem":"...","change":"...","expected_improvement":"...","risks":"...",
                 "rollback":"...","generated_by":"template|llm"},
  "change_preview":"--- ...\n+++ ...\n...",   // the exact change, generated by code; render verbatim

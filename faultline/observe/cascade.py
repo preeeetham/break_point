@@ -4,11 +4,11 @@ changes what the injector does, and no LLM decides a path or a mechanism.
 
 Two evidence sources, because one of them lies:
 
-* the health probe (/alive, /ready, docker state, every `health_interval_s`). In every real Ditto run
-  only the injected target ever flipped; dependents kept answering 200 while serving nothing
-  (Ditto #1865). So health onsets alone would show no cascade at all.
-* the API probe (~4 req/s through nginx -> gateway -> things / things-search). Its routes are in
-  `probes.OP_ROUTES`; a service on the route of an operation that failed is implicated, but only if
+* the health probe (liveness, readiness, docker state, every `health_interval_s`). In real runs
+  often only the injected target ever flips; dependents keep answering 200 while serving nothing,
+  because their health checks ignore their dependencies. So health onsets alone can show no cascade.
+* the API probe (~4 req/s through the entry point). Each operation's route comes from the target's
+  probe spec (`routes`); a service on the route of an operation that failed is implicated, but only if
   the topology says it transitively depends on the origin (a failed request does not prove it ever
   reached a service that has nothing to do with the broken one).
 
@@ -31,7 +31,7 @@ from ..schemas import (
     Topology,
     WindowStats,
 )
-from .probes import OP_ROUTES, HealthSample
+from .probes import HealthSample
 from .window import Sample, percentile
 
 # Plain-English verb phrase per mechanism. `{upstream}` is filled with the hop's upstream service.
@@ -39,8 +39,8 @@ MECHANISM_TEXT: dict[str, str] = {
     "injected_fault": "had the fault injected",
     "process_down": "went down (container not running)",
     "process_paused": "froze (container paused)",
-    "liveness_failed": "failed its liveness check (/alive, or mongosh ping for MongoDB)",
-    "readiness_failed": "kept answering /alive but failed /ready (a subsystem failed)",
+    "liveness_failed": "failed its liveness check (or its datastore engine's ping)",
+    "readiness_failed": "kept passing its liveness check but failed readiness (a subsystem failed)",
     "dependency_timeout": "had requests time out waiting on {upstream}",
     "dependency_unreachable": "could not connect to {upstream}",
     "dependency_error": "answered with server errors while {upstream} was unavailable",
@@ -185,7 +185,7 @@ class _OpOnset:
 
 # ---------------------------------------------------------------------------------------------- API
 def _operations(api: list[Sample], injected_at: float, window_end: float, services: set[str],
-                baseline: Optional[WindowStats]
+                baseline: Optional[WindowStats], routes: dict[str, list[str]]
                 ) -> tuple[list[OperationSignal], dict[str, _OpOnset], list[str], dict[str, float]]:
     """OperationSignals for every op seen in the window, the significant ones with their onset, noise
     notes, and the typical gap between consecutive requests per op (the timing resolution of API onsets)."""
@@ -199,7 +199,7 @@ def _operations(api: list[Sample], injected_at: float, window_end: float, servic
     gaps: dict[str, float] = {}
     for op in sorted(by_op):
         items = sorted(by_op[op], key=lambda s: s.ts)
-        route = [svc for svc in OP_ROUTES.get(op, []) if svc in services]
+        route = [svc for svc in routes.get(op, []) if svc in services]
         fails = [s for s in items if not s.ok]
         kinds: dict[str, int] = {}
         for s in fails:
@@ -333,10 +333,13 @@ def attribute(
     window_end: float,
     health_interval_s: float = 3.0,
     baseline: Optional[WindowStats] = None,
+    routes: Optional[dict[str, list[str]]] = None,
 ) -> CascadeAttribution:
     """Deterministic hop-by-hop attribution. Never raises on odd input (empty samples, unknown target,
-    unknown ops); see the module docstring for what the evidence can and cannot say."""
+    unknown ops); see the module docstring for what the evidence can and cannot say. `routes` is the
+    probe spec's operation -> services map (HttpApiProbe.routes); without it no op implicates anyone."""
     services = set(topology.services)
+    routes = routes or {}
     expected = set(expected_affected or [])
     notes: list[str] = []
 
@@ -398,7 +401,7 @@ def attribute(
             break
 
     # ---- 3. API operations
-    operations, sig_ops, op_notes, gaps = _operations(api_samples or [], injected_at, window_end, services, baseline)
+    operations, sig_ops, op_notes, gaps = _operations(api_samples or [], injected_at, window_end, services, baseline, routes)
     notes.extend(op_notes)
 
     # ---- origin
@@ -410,7 +413,7 @@ def attribute(
         origin_ev = f"health probe saw {_health_state(first_bad)} at {_s(rel(first_bad.ts))}"
     elif per_svc.get(target):
         origin_ev = "its own health check never showed a failure during the window"
-        through = [o for o in sig_ops.values() if target in OP_ROUTES.get(o.op, [])]
+        through = [o for o in sig_ops.values() if target in routes.get(o.op, [])]
         if through:
             origin_ev += "; traffic through it: " + "; ".join(o.evidence for o in sorted(through, key=lambda o: o.op))
     else:
@@ -443,7 +446,7 @@ def attribute(
             if svc == target or svc in pre_existing:
                 continue
             h = health_onsets.get(svc)
-            ops = [o for o in sig_ops.values() if svc in OP_ROUTES.get(o.op, []) and svc in dependents]
+            ops = [o for o in sig_ops.values() if svc in routes.get(o.op, []) and svc in dependents]
             a = api_onset(svc, ops) if ops else None
             if h and a:
                 use = a if a.latest < h.latest else h
@@ -456,7 +459,7 @@ def attribute(
 
         # (c) a significant op the graph cannot explain: nothing on its route depends on the origin
         for o in sorted(sig_ops.values(), key=lambda o: o.op):
-            route = [svc for svc in OP_ROUTES.get(o.op, []) if svc in services]
+            route = [svc for svc in routes.get(o.op, []) if svc in services]
             if target in route or any(svc in dependents for svc in route):
                 continue
             if not route:
@@ -562,13 +565,12 @@ def attribute(
     notes.append(f"Timing resolution: a health-probe onset is only known to within one polling interval "
                  f"({health_interval_s:.1f} s); an API onset to within the gap between consecutive probe requests of "
                  f"that operation{gap_txt}. Onsets whose intervals overlap are reported as same_interval, never as an order.")
-    notes.append("Route attribution uses the probe's fixed operation routes (OP_ROUTES): it says traffic through a "
+    notes.append("Route attribution uses the probe spec's operation routes: it says traffic through a "
                  "service failed, not that the service's own health check failed, and implicates a service only if "
                  f"topology.json says it depends on {target}.")
     masked_names = [h.service for h in hops if h.masked_by_health_check]
     if masked_names:
-        notes.append(f"Health checks stayed green while traffic through them failed: {', '.join(masked_names)} "
-                     f"(cf. Ditto #1865).")
+        notes.append(f"Health checks stayed green while traffic through them failed: {', '.join(masked_names)}.")
 
     first_health = min((s.ts for items in per_svc.values() for s in items), default=injected_at)
     return CascadeAttribution(

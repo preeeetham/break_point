@@ -15,7 +15,7 @@ from ..chaos.actions import ACTIONS, Context, Handle
 from ..chaos.catalog import CATALOG
 from ..chaos.docker_ctl import DockerController
 from ..observe.cascade import attribute, flow
-from ..observe.probes import HealthProbe, ThingsApiProbe, summarize_health
+from ..observe.probes import HealthProbe, HttpApiProbe, summarize_health
 from ..observe.window import SampleWindow
 from ..reporting.store import ReportStore
 from ..safety.monitor import SafetyMonitor, Watchdog
@@ -34,7 +34,7 @@ def _utc(ts: float) -> datetime:
 
 class Injector:
     def __init__(self, settings, store: ReportStore, topology: Topology, docker: DockerController, window: SampleWindow,
-                 api: ThingsApiProbe, health: HealthProbe, thresholds: Thresholds, policy, log: Log = print):
+                 api: HttpApiProbe, health: HealthProbe, thresholds: Thresholds, policy, log: Log = print):
         self.s = settings
         self.store = store
         self.topo = topology
@@ -116,7 +116,9 @@ class Injector:
 
         wd = Watchdog(max_s + self.t.watchdog_grace_seconds, emergency)
         wd.arm()
-        ctx = Context(self.docker, spec.target_service, spec.container, spec.experiment_id, spec.parameters, self.s, self.log)
+        node = self.topo.services.get(spec.target_service)
+        ctx = Context(self.docker, spec.target_service, spec.container, spec.experiment_id, spec.parameters, self.s, self.log,
+                      engine=node.engine if node is not None else None, probe=self.api)
         injected_at = time.time()
         first_error_at: float | None = None
         condition_at: float | None = None
@@ -246,7 +248,7 @@ class Injector:
             elif escalation == 1 and frac >= esc_deps:
                 escalation = 2
                 deps = self.topo.direct_dependents(spec.target_service)
-                remediation.append(f"restart dependents {deps} (Ditto #1861 pattern: clients did not reconnect)")
+                remediation.append(f"restart dependents {deps} (clients did not reconnect after the dependency returned)")
                 ev("escalation", remediation[-1])
                 for d in deps:
                     self._safe_restart(d)
@@ -255,7 +257,7 @@ class Injector:
                                outage_duration_s=round(time.time() - (first_error_at or injected_at), 1))
 
     def _soak(self, spec, injected_at: float, since: float) -> bool:
-        """Keep watching after a recovery candidate: Pekko clusters can look healed for a few seconds and then stall."""
+        """Keep watching after a recovery candidate: clustered services can look healed for a few seconds and then stall."""
         from ..observe.window import stats as _stats
         while time.time() - since < self.soak_s:
             time.sleep(2)
@@ -305,9 +307,9 @@ class Injector:
                     continue
                 if h.service == spec.target_service or not target_gone:
                     out.append(Finding(code="health_check_masked_failure", severity="high",
-                                       title=f"{h.service} kept reporting /ready=200 while the API was failing",
-                                       evidence=f"/ready OK {green:.0%} of {h.ticks} checks while API success was {sr:.0%}; "
-                                                f"cf. Ditto issue #1865 (health checks ignore subsystem health)"))
+                                       title=f"{h.service} kept reporting ready while the API was failing",
+                                       evidence=f"readiness OK {green:.0%} of {h.ticks} checks while API success was {sr:.0%}; "
+                                                f"the health check does not reflect what the service needs to serve"))
                 else:
                     blind.append(f"{h.service} ({green:.0%})")
             if blind:
@@ -336,8 +338,8 @@ class Injector:
         if self._relapses:
             out.append(Finding(code="relapse_after_recovery", severity="high",
                                title=f"API recovered and then degraded again ({len(self._relapses)}x)",
-                               evidence=f"relapses at +{self._relapses}s after rollback; typical of a Pekko cluster that re-admitted the restarted node "
-                                        f"but left the old incarnation unreachable (no downing provider configured in compose)"))
+                               evidence=f"relapses at +{self._relapses}s after rollback; typical of a cluster that re-admitted the restarted node "
+                                        f"but left its old incarnation unreachable (no downing / split-brain strategy configured)"))
         if rec.data_integrity_ok is False:
             out.append(Finding(code="data_loss_suspected", severity="critical", title="An acknowledged write was lost",
                                evidence=rec.data_integrity_detail))
@@ -364,7 +366,7 @@ class Injector:
             health_samples=self.health.between(injected_at - 2 * interval, window_end),
             api_samples=self.window.between(injected_at, window_end),
             injected_at=injected_at, revert_at=revert_at, window_end=window_end,
-            health_interval_s=interval, baseline=pre_stats)
+            health_interval_s=interval, baseline=pre_stats, routes=dict(getattr(self.api, "routes", {}) or {}))
         if not isinstance(result, CascadeAttribution):
             raise TypeError(f"attribute() returned {type(result).__name__}, expected CascadeAttribution")
         return result

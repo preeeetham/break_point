@@ -30,13 +30,14 @@ from faultline.topology import graph
 from faultline.topology.compose import documented_edges, service_nodes, static_edges
 
 ROOT = Path(__file__).resolve().parent.parent
-REAL_COMPOSE = ROOT / "deploy" / "docker-compose.yml"
-REAL_NGINX = ROOT / "deploy" / "nginx" / "nginx.conf"
-REAL_KNOWLEDGE = ROOT / "config" / "ditto_knowledge.yaml"
-REAL_THRESHOLDS = ROOT / "config" / "thresholds.yaml"
+SHOP = ROOT / "tests" / "fixtures" / "shop"
+REAL_COMPOSE = SHOP / "docker-compose.yml"
+REAL_NGINX = SHOP / "nginx" / "nginx.conf"
+REAL_KNOWLEDGE = SHOP / "shop_knowledge.yaml"
+REAL_THRESHOLDS = SHOP / "thresholds.yaml"
 
-# The five Ditto application services that share the `x-ditto-healthcheck` anchor in the real file.
-DITTO_APPS = ("policies", "things", "things-search", "connectivity", "gateway")
+# The five application services that share the `x-shop-healthcheck` anchor in the fixture.
+SHOP_APPS = ("auth", "orders", "orders-search", "notifier", "gateway")
 
 
 # ---------------------------------------------------------------- stubs
@@ -157,7 +158,7 @@ def only(raws: list[S._Raw], category: str) -> S._Raw:
 
 
 def _stateful_db(**extra) -> dict:
-    svc = {"image": "mongo:7.0", "volumes": ["dbdata:/data/db"]}
+    svc = {"image": "postgres:16", "volumes": ["dbdata:/data/db"]}
     svc.update(extra)
     return svc
 
@@ -192,16 +193,16 @@ def test_missing_health_check_silent_on_a_non_critical_service():
 def test_shallow_health_check_fires_on_liveness_only_probe_and_quotes_it():
     ctx = make_ctx({
         "db": _stateful_db(healthcheck={"test": "nc -z localhost 27017"}),
-        "app": {"image": "eclipse/ditto-things:3.9.0", "environment": ["MONGO_DB_HOSTNAME=db"],
+        "app": {"image": "example/shop-orders:1.4.0", "environment": ["DB_HOST=db"],
                 "healthcheck": {"test": "curl --fail `hostname`:7626/alive || exit 1"}},
     }, volumes={"dbdata": {}})
     raw = only(S.check_health_checks(ctx), "shallow_health_check")
     assert raw.services == ["app"]
-    # the evidence quotes the REAL healthcheck command, names the dependency it cannot see, and cites
-    # the empirical precedent the prediction is modelled on
+    # the evidence quotes the REAL healthcheck command, names the dependency it cannot see, and names
+    # the empirical finding the prediction is modelled on
     assert "healthcheck test `curl --fail `hostname`:7626/alive || exit 1`" in raw.evidence
     assert "It never touches db" in raw.evidence
-    assert "Ditto issue #1865" in raw.evidence
+    assert "static shape of `health_check_masked_failure`" in raw.evidence
     assert "health_check_masked_failure" in raw.evidence
     # the suggested experiment breaks the DEPENDENCY, not the weak service
     assert raw.experiment_prefs[0][1] == "db"
@@ -225,14 +226,14 @@ def test_shallow_health_check_recognises_every_liveness_only_shape(test_cmd):
 
 @pytest.mark.parametrize("test_cmd", [
     "nc -z db 27017",                  # names the dependency by compose service name
-    "nc -z mongo-primary 27017",       # ... or by its network alias
+    "nc -z db-primary 5432",          # ... or by its network alias
 ])
 def test_shallow_health_check_silent_when_the_probe_names_the_dependency(test_cmd):
     ctx = make_ctx({
-        "db": _stateful_db(networks={"default": {"aliases": ["mongo-primary"]}}),
+        "db": _stateful_db(networks={"default": {"aliases": ["db-primary"]}}),
         "app": {"image": "app:1", "environment": ["DB_HOSTNAME=db"], "healthcheck": {"test": test_cmd}},
     }, volumes={"dbdata": {}})
-    assert ctx.topology.services["db"].aliases == ["mongo-primary"]
+    assert ctx.topology.services["db"].aliases == ["db-primary"]
     assert cat(S.check_health_checks(ctx), "shallow_health_check") == []
 
 
@@ -250,11 +251,11 @@ def test_shallow_health_check_silent_when_the_probe_looks_past_the_process(test_
 
 
 def test_shallow_health_check_never_fires_on_a_service_with_no_dependencies():
-    """The deliberate mongodb carve-out.
+    """The deliberate postgres carve-out.
 
-    `mongosh ping` / `nc -z localhost` looks liveness-only, but a service with nothing to depend on
-    cannot have a dependency-aware health check -- and a mongosh ping genuinely exercises its own
-    storage engine. Firing here would be a false positive on the most critical service in the graph.
+    `pg_isready` / `nc -z localhost` looks liveness-only, but a service with nothing to depend on
+    cannot have a dependency-aware health check -- and an engine's own ping genuinely exercises its
+    storage. Firing here would be a false positive on the most critical service in the graph.
     """
     ctx = make_ctx({
         "db": _stateful_db(healthcheck={"test": "nc -z localhost 27017"}),
@@ -433,10 +434,10 @@ def test_retry_backoff_fires_once_per_dependency_not_per_dependent():
 
 
 @pytest.mark.parametrize("token", [
-    "DB_URI=mongodb://db:27017/?serverSelectionTimeoutMS=2000",
-    "DB_URI=mongodb://db:27017/?retryWrites=true",
-    "DB_URI=mongodb://db:27017/?maxPoolSize=20",
-    "DB_URI=mongodb://db:27017/?replicaSet=rs0",
+    "DB_URI=postgres://db:27017/?serverSelectionTimeoutMS=2000",
+    "DB_URI=postgres://db:27017/?retryWrites=true",
+    "DB_URI=postgres://db:27017/?maxPoolSize=20",
+    "DB_URI=postgres://db:27017/?replicaSet=rs0",
 ])
 def test_retry_backoff_silent_when_a_resilience_token_names_the_dependency(token):
     ctx = _retry_ctx(["DB_HOSTNAME=db", token], ["DB_HOSTNAME=db", token])
@@ -452,24 +453,24 @@ def test_retry_backoff_silent_with_fewer_than_two_dependents():
 
 def test_retry_backoff_silent_when_only_one_edge_is_bare():
     # `a` is covered, `b` is not -> one bare edge, which is below the two-dependent bar
-    ctx = _retry_ctx(["DB_HOSTNAME=db", "DB_URI=mongodb://db:27017/?retryWrites=true"], ["DB_HOSTNAME=db"])
+    ctx = _retry_ctx(["DB_HOSTNAME=db", "DB_URI=postgres://db:27017/?retryWrites=true"], ["DB_HOSTNAME=db"])
     assert cat(S.check_retry_backoff(ctx), "no_retry_or_backoff") == []
 
 
 def test_retry_backoff_notes_resilience_settings_that_are_not_on_this_edge():
     """The "sets X elsewhere, but nothing on this edge" aside.
 
-    A service can show plenty of resilience thinking in a global setting (Ditto tunes the Pekko
-    failure detector) and still say nothing about THIS dependency. The check must still fire, and the
-    evidence must be fair about what it found. Unexercised on the real Ditto compose file, so this
-    test is the only coverage of the branch.
+    A service can show plenty of resilience thinking in a global setting (a tuned cluster failure
+    detector) and still say nothing about THIS dependency. The check must still fire, and the
+    evidence must be fair about what it found. Unexercised on the shop fixture, so this test is the
+    only coverage of the branch.
     """
-    ctx = _retry_ctx(["DB_HOSTNAME=db", "PEKKO_RETRY_LIMIT=5"])
+    ctx = _retry_ctx(["DB_HOSTNAME=db", "CLUSTER_RETRY_LIMIT=5"])
     raw = only(S.check_retry_backoff(ctx), "no_retry_or_backoff")
-    assert "`a`: DB_HOSTNAME=db (sets PEKKO_RETRY_LIMIT elsewhere, but nothing on this edge)" in raw.evidence
+    assert "`a`: DB_HOSTNAME=db (sets CLUSTER_RETRY_LIMIT elsewhere, but nothing on this edge)" in raw.evidence
     # ... and `b`, which sets nothing of the kind, gets no aside
     assert "`b`: DB_HOSTNAME=db" in raw.evidence
-    assert "PEKKO" not in raw.evidence.split("`b`:")[1]
+    assert "CLUSTER_RETRY" not in raw.evidence.split("`b`:")[1]
 
 
 def test_retry_backoff_aside_lists_at_most_two_settings():
@@ -648,11 +649,11 @@ def test_score_factor_names_and_bounds():
 
 
 def test_protected_factor_is_set_from_the_safety_policy(policy_raw):
-    ctx = make_ctx({"mongodb": _stateful_db(), "a": {"image": "a:1", "environment": ["MONGO_DB_HOSTNAME=mongodb"]}},
+    ctx = make_ctx({"postgres": _stateful_db(), "a": {"image": "a:1", "environment": ["DB_HOST=postgres"]}},
                    volumes={"dbdata": {}}, policy=policy_raw)
-    assert ctx.is_protected("mongodb") is True
+    assert ctx.is_protected("postgres") is True
     raw = only(S.check_redundancy(ctx), "no_redundancy")
-    assert S.score(raw, ctx, {"mongodb": 1})["protected"] == 0.5
+    assert S.score(raw, ctx, {"postgres": 1})["protected"] == 0.5
 
 
 def test_severity_is_the_clamped_sum_of_the_named_factors():
@@ -723,24 +724,24 @@ def test_resolve_experiment_always_returns_a_catalog_type_applicable_to_the_targ
         assert se.reason
 
 
-def test_mongodb_no_redundancy_resolves_to_a_degrade_only_experiment(policy_raw):
-    """MongoDB is protected and degrade-only in config/thresholds.yaml.
+def test_datastore_no_redundancy_resolves_to_a_degrade_only_experiment(policy_raw):
+    """The datastore is protected and degrade-only in the target's thresholds file.
 
     A `no_redundancy` prediction prefers `container_stop` first -- which the policy forbids. The
     prediction must still nominate something RUNNABLE, which is what makes it actionable.
     """
-    ctx = make_ctx({"mongodb": _stateful_db(),
-                    "a": {"image": "a:1", "environment": ["MONGO_DB_HOSTNAME=mongodb"]},
-                    "b": {"image": "b:1", "environment": ["MONGO_DB_HOSTNAME=mongodb"]}},
+    ctx = make_ctx({"postgres": _stateful_db(),
+                    "a": {"image": "a:1", "environment": ["DB_HOST=postgres"]},
+                    "b": {"image": "b:1", "environment": ["DB_HOST=postgres"]}},
                    volumes={"dbdata": {}}, policy=policy_raw)
     raw = only(S.check_redundancy(ctx), "no_redundancy")
-    assert raw.experiment_prefs[0] == ("container_stop", "mongodb")   # the preference IS the outage
+    assert raw.experiment_prefs[0] == ("container_stop", "postgres")   # the preference IS the outage
     se = S.resolve_experiment(raw, ctx)
-    assert se.target_service == "mongodb"
+    assert se.target_service == "postgres"
     assert se.failure_type != "container_stop"
     assert se.failure_type == "network_delay"
     assert CATALOG[se.failure_type].degrade_only is True
-    assert se.failure_type in policy_raw["policy"]["protected"]["mongodb"]["allowed_failure_types"]
+    assert se.failure_type in policy_raw["policy"]["protected"]["postgres"]["allowed_failure_types"]
     # It resolved to a runnable experiment, but a substitution is not a clean resolution: the note
     # must say that the direct test was refused, or the record would read "take the single instance
     # away" next to a latency injection that deliberately leaves it running.
@@ -749,14 +750,14 @@ def test_mongodb_no_redundancy_resolves_to_a_degrade_only_experiment(policy_raw)
 
 
 def test_resolve_experiment_explains_a_policy_that_blocks_everything(policy_raw):
-    ctx = make_ctx({"mongodb": _stateful_db(), "a": {"image": "a:1", "environment": ["MONGO_DB_HOSTNAME=mongodb"]}},
+    ctx = make_ctx({"postgres": _stateful_db(), "a": {"image": "a:1", "environment": ["DB_HOST=postgres"]}},
                    volumes={"dbdata": {}}, policy=policy_raw)
-    raw = S._Raw(category="no_redundancy", services=["mongodb"], title="t", evidence="e",
-                 experiment_prefs=[("container_stop", "mongodb"), ("container_crash", "mongodb")],
+    raw = S._Raw(category="no_redundancy", services=["postgres"], title="t", evidence="e",
+                 experiment_prefs=[("container_stop", "postgres"), ("container_crash", "postgres")],
                  experiment_reason="take it away")
     se = S.resolve_experiment(raw, ctx)
     assert se.failure_type == "container_stop"     # falls back to the first preference...
-    assert "mongodb is protected" in se.policy_note
+    assert "postgres is protected" in se.policy_note
     assert "--allow-protected" in se.policy_note   # ... but says plainly that it cannot be run
 
 
@@ -836,7 +837,7 @@ def test_llm_cannot_add_a_weakness_however_it_answers(llm_ctx):
     # a canned answer replayed to every prose chunk, carrying ids the checks never produced
     llm = FakeLLM({"explanations": {
         **{wid: f"prose for {wid}" for wid in real_ids},
-        "no_redundancy:does-not-exist": "mongodb has no replica set",
+        "no_redundancy:does-not-exist": "postgres has no replica set",
         "missing_health_check:ghost-service": "a service that is not in the compose file",
         "totally_made_up_category:db": "a category that is not even in CATEGORY_WEIGHT",
     }})
@@ -1259,7 +1260,7 @@ def test_markdown_of_a_clean_deployment_says_so():
     assert "No predicted weaknesses: every deterministic check passed on this deployment." in md
 
 
-# ================================================================ the real Ditto file (regression)
+# ================================================================ a realistic compose file (regression)
 @pytest.fixture(scope="module")
 def real_ctx() -> S.ScoutContext:
     """A ScoutContext over the real deployment: enough weaknesses to need several prose chunks."""
@@ -1270,7 +1271,7 @@ def real_ctx() -> S.ScoutContext:
 
 @pytest.fixture(scope="module")
 def real_report() -> WeaknessReport:
-    """The scout against the REAL deploy/docker-compose.yml, with no LLM and no Docker.
+    """The scout against the shop fixture's realistic compose file, with no LLM and no Docker.
 
     `live=False` keeps the topology purely static, so this test needs nothing running. The values
     pinned below were verified by hand against the compose file.
@@ -1280,15 +1281,15 @@ def real_report() -> WeaknessReport:
     return S.scout(S.build_context(settings, topology), None)
 
 
-def test_real_ditto_highest_severity_prediction_is_mongodb_redundancy(real_report):
-    """The scout rediscovers "run MongoDB as a replica set" from the compose file alone.
+def test_shop_highest_severity_prediction_is_datastore_redundancy(real_report):
+    """The scout rediscovers "replicate the single datastore" from the compose file alone.
 
     That is exactly the remediation the Fix agent's knowledge library recommends AFTER an experiment
     proves it; here it is predicted before anything has been broken.
     """
     top = real_report.weaknesses[0]
-    assert (top.category, top.services) == ("no_redundancy", ["mongodb"])
-    assert top.weakness_id == "no_redundancy:mongodb"
+    assert (top.category, top.services) == ("no_redundancy", ["postgres"])
+    assert top.weakness_id == "no_redundancy:postgres"
     assert top.predicted_level == "critical"
     # strictly the highest, not merely tied for first
     assert top.predicted_severity > real_report.weaknesses[1].predicted_severity
@@ -1298,36 +1299,36 @@ def test_real_ditto_highest_severity_prediction_is_mongodb_redundancy(real_repor
     assert "It also holds the only copy of its state." in top.evidence
 
 
-def test_real_ditto_predicts_a_second_policies_instance(real_report):
-    """The library's other post-hoc fix -- "run >= 2 policies instances" -- also falls out statically."""
-    pol = real_report.by_id("no_redundancy:policies")
+def test_shop_predicts_a_second_auth_instance(real_report):
+    """The library's other post-hoc fix -- "run >= 2 auth instances" -- also falls out statically."""
+    pol = real_report.by_id("no_redundancy:auth")
     assert pol is not None
     assert pol.predicted_level in ("high", "critical")
     assert "no `deploy.replicas` and no `scale:`" in pol.evidence
-    # policies is the single point of failure for the rest of the Ditto cluster
-    assert "things" in pol.evidence and "gateway" in pol.evidence
-    mongo = real_report.by_id("no_redundancy:mongodb")
-    assert mongo.predicted_severity > pol.predicted_severity
+    # auth is the single point of failure for the rest of the cluster
+    assert "orders" in pol.evidence and "gateway" in pol.evidence
+    db = real_report.by_id("no_redundancy:postgres")
+    assert db.predicted_severity > pol.predicted_severity
 
 
-def test_real_ditto_shallow_health_check_quotes_the_alive_probe_and_cites_1865(real_report):
+def test_shop_shallow_health_check_quotes_the_alive_probe_and_names_the_finding(real_report):
     hits = {w.services[0]: w for w in real_report.weaknesses if w.category == "shallow_health_check"}
-    assert set(hits) == set(DITTO_APPS)
+    assert set(hits) == set(SHOP_APPS)
     for svc, w in hits.items():
         assert "7626/alive" in w.evidence
         assert "curl --fail `hostname`:7626/alive || exit 1" in w.evidence
-        assert "Ditto issue #1865" in w.evidence
+        assert "static shape of `health_check_masked_failure`" in w.evidence
         assert "health_check_masked_failure" in w.confirming_finding_codes
-    # the datastore is deliberately NOT flagged: `mongosh ping` is a genuine subsystem check and
-    # mongodb depends on nothing, so a dependency-aware probe is not even possible
-    assert "mongodb" not in hits
+    # the datastore is deliberately NOT flagged: `pg_isready` is a genuine subsystem check and
+    # postgres depends on nothing, so a dependency-aware probe is not even possible
+    assert "postgres" not in hits
 
 
-def test_real_ditto_weak_restart_policy_produces_zero_predictions(real_report):
+def test_shop_weak_restart_policy_produces_zero_predictions(real_report):
     """The silence IS the point.
 
-    Every service in deploy/docker-compose.yml declares `restart: always`, which is part of why
-    Ditto's crash recovery works cleanly. A check that fires on everything is a broken check, so this
+    Every service in the fixture declares `restart: always`, as a well-run stack does. A check that
+    fires on everything is a broken check, so this
     assertion guards against the restart check degenerating into noise.
     """
     assert [w.weakness_id for w in real_report.weaknesses if w.category == "weak_restart_policy"] == []
@@ -1335,11 +1336,11 @@ def test_real_ditto_weak_restart_policy_produces_zero_predictions(real_report):
     assert all((svc or {}).get("restart") == "always" for svc in compose["services"].values())
 
 
-def test_real_ditto_mongodb_experiment_is_degrade_only(real_report):
-    """The protected-policy path, on the real config/thresholds.yaml."""
-    top = real_report.by_id("no_redundancy:mongodb")
+def test_real_shop_db_experiment_is_degrade_only(real_report):
+    """The protected-policy path, on the target's own thresholds file."""
+    top = real_report.by_id("no_redundancy:postgres")
     se = top.suggested_experiment
-    assert se.target_service == "mongodb"
+    assert se.target_service == "postgres"
     assert se.failure_type in CATALOG
     assert CATALOG[se.failure_type].degrade_only is True
     assert se.failure_type not in ("container_stop", "container_crash", "container_pause",
@@ -1349,7 +1350,7 @@ def test_real_ditto_mongodb_experiment_is_degrade_only(real_report):
     assert "container_stop" in se.policy_note and "--allow-protected" in se.policy_note
 
 
-def test_real_ditto_every_prediction_is_labelled_and_sane(real_report):
+def test_shop_every_prediction_is_labelled_and_sane(real_report):
     assert real_report.project == "faultline"
     assert real_report.compose_file == str(REAL_COMPOSE)
     assert real_report.knowledge_file == str(REAL_KNOWLEDGE)
@@ -1366,18 +1367,18 @@ def test_real_ditto_every_prediction_is_labelled_and_sane(real_report):
         assert w.services
 
 
-def test_real_ditto_other_categories_land_where_expected(real_report):
+def test_shop_other_categories_land_where_expected(real_report):
     by_cat: dict[str, set[str]] = {}
     for w in real_report.weaknesses:
         by_cat.setdefault(w.category, set()).update(w.services)
 
     # nginx is the one service in the file without a healthcheck block
     assert by_cat["missing_health_check"] == {"nginx"}
-    # mongodb sets a memory limit but no cpus; no service in the file sets a CPU limit
-    assert "mongodb" in by_cat["no_resource_limits"]
-    mongo_limits = real_report.by_id("no_resource_limits:mongodb")
-    assert "no `deploy.resources.limits.cpus` (it does set memory limit `256m`)" in mongo_limits.evidence
-    assert mongo_limits.factors["category"] == 0.5     # half-covered, half-weighted
+    # postgres sets a memory limit but no cpus; no service in the file sets a CPU limit
+    assert "postgres" in by_cat["no_resource_limits"]
+    db_limits = real_report.by_id("no_resource_limits:postgres")
+    assert "no `deploy.resources.limits.cpus` (it does set memory limit `256m`)" in db_limits.evidence
+    assert db_limits.factors["category"] == 0.5     # half-covered, half-weighted
     # nginx is the only ingress and the real nginx.conf has no limit_req/limit_conn
     assert by_cat["no_rate_limiting"] == {"nginx"}
     assert "limit_req" not in REAL_NGINX.read_text()
@@ -1390,15 +1391,15 @@ def test_real_ditto_other_categories_land_where_expected(real_report):
         assert "cannot be confirmed by an experiment" in w.suggested_experiment.policy_note
     # one retry/backoff finding per dependency edge target, never one per caller
     retry_targets = [w for w in real_report.weaknesses if w.category == "no_retry_or_backoff"]
-    assert any("depend on `mongodb`" in w.evidence for w in retry_targets)
+    assert any("depend on `postgres`" in w.evidence for w in retry_targets)
     assert all(len(w.services) >= 2 for w in retry_targets)
 
 
-def test_real_ditto_markdown_is_self_describing(real_report):
+def test_shop_markdown_is_self_describing(real_report):
     md = S.render_markdown(real_report)
     assert PREDICTED_LABEL in md
     assert "predicted, not measured" in md
-    assert "no_redundancy" in md and "mongodb" in md
+    assert "no_redundancy" in md and "postgres" in md
     assert "weak_restart_policy" not in md     # nothing fired, so nothing is rendered
 
 
@@ -1412,14 +1413,14 @@ def test_build_context_reads_compose_knowledge_policy_and_proxy_text(policy_raw)
     assert ctx.knowledge["health_port"] == 7626
     assert ctx.nginx_text == REAL_NGINX.read_text()
     assert ctx.policy.protected.keys() == policy_raw["policy"]["protected"].keys()
-    assert ctx.raw("mongodb")["image"].endswith("mongo:7.0")
+    assert ctx.raw("postgres")["image"].endswith("postgres:16-alpine")
     assert "prometheus" not in ctx.candidates()      # tagged `other` in the knowledge file
-    assert "mongodb" in ctx.candidates()
+    assert "postgres" in ctx.candidates()
 
 
 def test_build_context_tolerates_missing_knowledge_and_nginx(tmp_path):
     compose = tmp_path / "compose.yml"
-    compose.write_text("services:\n  db:\n    image: mongo:7.0\n")
+    compose.write_text("services:\n  db:\n    image: postgres:16\n")
     settings = FakeSettings(compose, tmp_path / "nope.conf", tmp_path / "nope.yaml", REAL_THRESHOLDS)
     topology = graph.build(str(compose), "p", None, None, live=False)
     ctx = S.build_context(settings, topology)
@@ -1496,7 +1497,7 @@ def test_run_logs_systemic_patterns_and_marks_the_report_llm_assisted(tmp_store)
     topo = _seed_topology(tmp_store)
     settings = _real_settings()
     ids = [w.weakness_id for w in S.scout(S.build_context(settings, topo), None).weaknesses]
-    llm = FakeLLM({"explanations": {ids[0]: "mongodb is the whole system's single point of failure"},
+    llm = FakeLLM({"explanations": {ids[0]: "postgres is the whole system's single point of failure"},
                    "systemic_patterns": [{"title": "Unbounded CPU everywhere",
                                           "weakness_ids": ids[:3], "narrative": "one story"}]})
     lines: list[str] = []
@@ -1504,6 +1505,6 @@ def test_run_logs_systemic_patterns_and_marks_the_report_llm_assisted(tmp_store)
 
     assert report.generated_by == "llm+rules"
     assert any("systemic pattern: Unbounded CPU everywhere (3 predictions)" in ln for ln in lines)
-    assert report.by_id(ids[0]).why_it_matters == "mongodb is the whole system's single point of failure"
+    assert report.by_id(ids[0]).why_it_matters == "postgres is the whole system's single point of failure"
     assert report.by_id(ids[0]).generated_by == "llm+rules"
     assert tmp_store.weaknesses() == report

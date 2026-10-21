@@ -10,7 +10,7 @@ from faultline.schemas import (
     WeaknessReport,
 )
 
-PROJECT = "bosch-ditto"
+PROJECT = "shop"
 
 
 def _weakness(
@@ -25,13 +25,13 @@ def _weakness(
     return PredictedWeakness(
         weakness_id=weakness_id,
         category=category,  # type: ignore[arg-type]
-        services=services if services is not None else ["policies"],
-        title=f"{category} on {services or ['policies']}",
+        services=services if services is not None else ["auth"],
+        title=f"{category} on {services or ['auth']}",
         evidence="healthcheck in docker-compose.yml probes /alive only",
         predicted_severity=severity,
         predicted_level=level,  # type: ignore[arg-type]
         factors={"criticality": 1.0},
-        suggested_experiment=SuggestedExperiment(failure_type="container_stop", target_service="policies"),
+        suggested_experiment=SuggestedExperiment(failure_type="container_stop", target_service="auth"),
         confirming_finding_codes=codes if codes is not None else ["health_check_masked_failure"],
         why_it_matters="an orchestrator would never restart the container",
     )
@@ -46,7 +46,7 @@ def test_confirmed_quotes_the_live_finding(make_report):
     w = _weakness("wk-001")
     exp = make_report(
         experiment_id="3f9a1c2b7d4e",
-        service="policies",
+        service="auth",
         failure_type="container_stop",
         finding_codes=["health_check_masked_failure"],
     )
@@ -57,7 +57,7 @@ def test_confirmed_quotes_the_live_finding(make_report):
     assert o.state == "confirmed"
     assert o.confirming_findings == ["3f9a1c2b7d4e:health_check_masked_failure"]
     assert o.experiments == ["3f9a1c2b7d4e"]
-    assert "3f9a1c2b7d4e" in o.detail and "container_stop on policies" in o.detail
+    assert "3f9a1c2b7d4e" in o.detail and "container_stop on auth" in o.detail
     assert "health_check_masked_failure" in o.detail
     assert rec.predicted_total == 1
 
@@ -65,31 +65,31 @@ def test_confirmed_quotes_the_live_finding(make_report):
 def test_confirmed_via_observed_collateral(make_report):
     """A weakness on `gateway` is confirmed by an experiment that merely cascaded into it."""
     w = _weakness("wk-collateral", services=["gateway"], codes=["cascade_beyond_hypothesis"])
-    exp = make_report(service="policies", affected=["gateway"], finding_codes=["cascade_beyond_hypothesis"])
+    exp = make_report(service="auth", affected=["gateway"], finding_codes=["cascade_beyond_hypothesis"])
     rec = agent.reconcile(_report([w]), [exp], PROJECT)
     assert rec.outcomes[0].state == "confirmed"
 
 
 def test_cleared_by_completed_clean_experiments(make_report):
-    w = _weakness("wk-002", services=["mongodb"], codes=["health_check_masked_failure"])
+    w = _weakness("wk-002", services=["postgres"], codes=["health_check_masked_failure"])
     exps = [
-        make_report(service="mongodb", failure_type="network_delay", finding_codes=[], affected=[]),
-        make_report(service="mongodb", failure_type="db_flood", finding_codes=[], affected=[]),
+        make_report(service="postgres", failure_type="network_delay", finding_codes=[], affected=[]),
+        make_report(service="postgres", failure_type="db_flood", finding_codes=[], affected=[]),
     ]
     rec = agent.reconcile(_report([w]), exps, PROJECT)
 
     assert (rec.confirmed, rec.cleared, rec.untested) == (0, 1, 0)
     o = rec.outcomes[0]
     assert o.state == "cleared"
-    assert "2 completed experiments on mongodb" in o.detail
+    assert "2 completed experiments on postgres" in o.detail
     assert "db_flood, network_delay" in o.detail  # failure types sorted, so the string is deterministic
     assert o.confirming_findings == []
 
 
 def test_high_severity_other_finding_is_not_cleared(make_report):
     """A clean run clears; a run that produced an unrelated high-severity finding does not."""
-    w = _weakness("wk-003", services=["policies"], codes=["health_check_masked_failure"])
-    exp = make_report(service="policies", finding_codes=["data_loss_suspected"])
+    w = _weakness("wk-003", services=["auth"], codes=["health_check_masked_failure"])
+    exp = make_report(service="auth", finding_codes=["data_loss_suspected"])
     rec = agent.reconcile(_report([w]), [exp], PROJECT)
 
     o = rec.outcomes[0]
@@ -98,19 +98,19 @@ def test_high_severity_other_finding_is_not_cleared(make_report):
 
 
 def test_confirming_code_about_another_service_is_explained_as_such(make_report):
-    """The masked-failure finding from crashing `things` names things-search, not `things`: the detail must
+    """The masked-failure finding from crashing `orders` names orders-search, not `orders`: the detail must
     say the finding was about other services, never that the code is not a confirming code."""
-    w = _weakness("shallow_health_check:things", services=["things"],
+    w = _weakness("shallow_health_check:orders", services=["orders"],
                   codes=["dependency_blind_readiness", "health_check_masked_failure"])
     findings = [Finding(code="health_check_masked_failure", severity="high",
                         title=f"{svc} answered /ready=200 while the API failed", evidence=f"{svc}: ready_ok_fraction=1.0")
-                for svc in ("things-search", "gateway")]
+                for svc in ("orders-search", "gateway")]
     findings.append(Finding(code="api_impact", severity="high", title="API failed", evidence="0% success"))
-    exp = make_report(service="things", affected=["things"], findings=findings)
+    exp = make_report(service="orders", affected=["orders"], findings=findings)
     o = agent.reconcile(_report([w]), [exp], PROJECT).outcomes[0]
 
     assert o.state == "untested"
-    assert "health_check_masked_failure about other services, not things" in o.detail
+    assert "health_check_masked_failure about other services, not orders" in o.detail
     assert o.detail.count("health_check_masked_failure about") == 1  # two findings, one phrase
     assert "api_impact, which is not one of this prediction's confirming codes" in o.detail
 
@@ -142,19 +142,19 @@ def test_same_code_at_high_severity_does_confirm(make_report):
 
 
 def test_untested_when_nothing_bears_on_it(make_report):
-    w = _weakness("wk-004", services=["connectivity"])
-    exp = make_report(service="mongodb", affected=["gateway"])
+    w = _weakness("wk-004", services=["notifier"])
+    exp = make_report(service="postgres", affected=["gateway"])
     rec = agent.reconcile(_report([w]), [exp], PROJECT)
 
     o = rec.outcomes[0]
     assert o.state == "untested"
     assert o.experiments == []
-    assert "no experiment targeted connectivity" in o.detail
+    assert "no experiment targeted notifier" in o.detail
 
 
 def test_skipped_only_proves_nothing(make_report):
-    w = _weakness("wk-005", services=["policies"])
-    exp = make_report(experiment_id="skip01", service="policies", status="skipped", affected=[])
+    w = _weakness("wk-005", services=["auth"])
+    exp = make_report(experiment_id="skip01", service="auth", status="skipped", affected=[])
     rec = agent.reconcile(_report([w]), [exp], PROJECT)
 
     o = rec.outcomes[0]
@@ -165,8 +165,8 @@ def test_skipped_only_proves_nothing(make_report):
 
 
 def test_aborted_only_is_untested_not_cleared(make_report):
-    w = _weakness("wk-006", services=["policies"])
-    exp = make_report(experiment_id="ab01", service="policies", status="aborted", finding_codes=[], affected=[])
+    w = _weakness("wk-006", services=["auth"])
+    exp = make_report(experiment_id="ab01", service="auth", status="aborted", finding_codes=[], affected=[])
     rec = agent.reconcile(_report([w]), [exp], PROJECT)
 
     o = rec.outcomes[0]
@@ -178,13 +178,13 @@ def test_aborted_only_is_untested_not_cleared(make_report):
 
 def test_aborted_can_still_confirm(make_report):
     """Cut short or not, a finding that fired is evidence."""
-    w = _weakness("wk-007", services=["policies"])
-    exp = make_report(service="policies", status="aborted", finding_codes=["health_check_masked_failure"])
+    w = _weakness("wk-007", services=["auth"])
+    exp = make_report(service="auth", status="aborted", finding_codes=["health_check_masked_failure"])
     assert agent.reconcile(_report([w]), [exp], PROJECT).outcomes[0].state == "confirmed"
 
 
 def test_empty_store_leaves_everything_untested():
-    rec = agent.reconcile(_report([_weakness("wk-a"), _weakness("wk-b", services=["things"])]), [], PROJECT)
+    rec = agent.reconcile(_report([_weakness("wk-a"), _weakness("wk-b", services=["orders"])]), [], PROJECT)
 
     assert (rec.predicted_total, rec.confirmed, rec.cleared, rec.untested) == (2, 0, 0, 2)
     assert rec.experiments_considered == 0
@@ -201,13 +201,13 @@ def test_no_weaknesses_at_all():
 # ---------------------------------------------------------------- aggregation
 def test_sort_order_confirmed_first_then_descending_severity(make_report):
     weaknesses = [
-        _weakness("wk-low-untested", services=["connectivity"], severity=2.0, level="low"),
-        _weakness("wk-high-untested", services=["things-search"], severity=9.0, level="critical"),
-        _weakness("wk-confirmed-mild", services=["policies"], severity=3.0, level="low"),
+        _weakness("wk-low-untested", services=["notifier"], severity=2.0, level="low"),
+        _weakness("wk-high-untested", services=["orders-search"], severity=9.0, level="critical"),
+        _weakness("wk-confirmed-mild", services=["auth"], severity=3.0, level="low"),
         _weakness("wk-confirmed-bad", services=["gateway"], severity=8.0, level="high"),
     ]
     exps = [
-        make_report(service="policies", finding_codes=["health_check_masked_failure"], affected=[]),
+        make_report(service="auth", finding_codes=["health_check_masked_failure"], affected=[]),
         make_report(service="gateway", finding_codes=["health_check_masked_failure"], affected=[]),
     ]
     rec = agent.reconcile(_report(weaknesses), exps, PROJECT)
@@ -222,13 +222,13 @@ def test_sort_order_confirmed_first_then_descending_severity(make_report):
 
 def test_summary_counts_and_precision_phrasing(make_report):
     weaknesses = [
-        _weakness("wk-c", services=["policies"]),
-        _weakness("wk-cl", services=["mongodb"]),
-        _weakness("wk-u", services=["connectivity"]),
+        _weakness("wk-c", services=["auth"]),
+        _weakness("wk-cl", services=["postgres"]),
+        _weakness("wk-u", services=["notifier"]),
     ]
     exps = [
-        make_report(service="policies", finding_codes=["health_check_masked_failure"], affected=[]),
-        make_report(service="mongodb", finding_codes=[], affected=[]),
+        make_report(service="auth", finding_codes=["health_check_masked_failure"], affected=[]),
+        make_report(service="postgres", finding_codes=[], affected=[]),
     ]
     rec = agent.reconcile(_report(weaknesses), exps, PROJECT)
 
@@ -241,7 +241,7 @@ def test_summary_counts_and_precision_phrasing(make_report):
 def test_input_report_is_not_mutated(make_report):
     w = _weakness("wk-008")
     report = _report([w])
-    agent.reconcile(report, [make_report(service="policies", finding_codes=["health_check_masked_failure"])], PROJECT)
+    agent.reconcile(report, [make_report(service="auth", finding_codes=["health_check_masked_failure"])], PROJECT)
     assert report.weaknesses[0].status == "predicted"
     assert report.weaknesses[0].label == PREDICTED_LABEL
 
@@ -254,9 +254,9 @@ def test_predicted_at_comes_from_the_scout_report(make_report):
 
 def test_experiments_considered_excludes_skipped(make_report):
     exps = [
-        make_report(service="policies", status="completed"),
-        make_report(service="policies", status="skipped"),
-        make_report(service="mongodb", status="aborted"),
+        make_report(service="auth", status="completed"),
+        make_report(service="auth", status="skipped"),
+        make_report(service="postgres", status="aborted"),
     ]
     rec = agent.reconcile(_report([_weakness("wk-010")]), exps, PROJECT)
     assert rec.experiments_considered == 2
@@ -264,8 +264,8 @@ def test_experiments_considered_excludes_skipped(make_report):
 
 # ---------------------------------------------------------------- markdown
 def test_markdown_labels_every_predicted_severity(make_report):
-    weaknesses = [_weakness("wk-conf", services=["policies"]), _weakness("wk-open", services=["connectivity"])]
-    exp = make_report(service="policies", finding_codes=["health_check_masked_failure"], affected=[])
+    weaknesses = [_weakness("wk-conf", services=["auth"]), _weakness("wk-open", services=["notifier"])]
+    exp = make_report(service="auth", finding_codes=["health_check_masked_failure"], affected=[])
     md = agent.render_markdown(agent.reconcile(_report(weaknesses), [exp], PROJECT))
 
     assert md.startswith(f"# Weakness reconciliation — {PROJECT}")
@@ -288,9 +288,9 @@ def test_markdown_survives_no_outcomes():
 
 def test_markdown_escapes_pipes_in_evidence(make_report):
     w = _weakness("wk-pipe")
-    exp = make_report(service="policies", findings=[
+    exp = make_report(service="auth", findings=[
         Finding(code="health_check_masked_failure", severity="high", title="masked",
-                evidence="things kept reporting /ready=200 | while the API failed"),
+                evidence="orders kept reporting /ready=200 | while the API failed"),
     ])
     md = agent.render_markdown(agent.reconcile(_report([w]), [exp], PROJECT))
     row = next(line for line in md.splitlines() if "`wk-pipe`" in line)
@@ -307,8 +307,8 @@ def test_run_without_weaknesses_file(tmp_store):
 
 
 def test_run_writes_json_and_markdown(tmp_store, make_report):
-    tmp_store.write_weaknesses(_report([_weakness("wk-011"), _weakness("wk-012", services=["connectivity"])]))
-    tmp_store.write_experiment(make_report(service="policies", finding_codes=["health_check_masked_failure"], affected=[]))
+    tmp_store.write_weaknesses(_report([_weakness("wk-011"), _weakness("wk-012", services=["notifier"])]))
+    tmp_store.write_experiment(make_report(service="auth", finding_codes=["health_check_masked_failure"], affected=[]))
 
     logs: list[str] = []
     rec = agent.run(tmp_store, PROJECT, log=logs.append)

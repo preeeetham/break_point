@@ -1,6 +1,6 @@
 import pytest
 
-from faultline.chaos.catalog import CATALOG, applicable, clamp, reproduce_commands
+from faultline.chaos.catalog import CATALOG, applicable, clamp, entry_tier, reproduce_commands
 from faultline.schemas import ServiceNode
 
 
@@ -40,42 +40,51 @@ def test_clamp_ignores_unknown_params_with_note():
     assert any("ignored unknown parameters" in n and "bogus" in n for n in notes)
 
 
-def _node(name, image, role, chaos_relevant=True):
-    return ServiceNode(name=name, image=image, role=role, chaos_relevant=chaos_relevant)
+def _node(name, image, role, chaos_relevant=True, engine=None, entrypoint=False):
+    return ServiceNode(name=name, image=image, role=role, chaos_relevant=chaos_relevant, engine=engine,
+                       entrypoint=entrypoint)
 
 
-def test_applicable_traffic_spike_only_on_nginx_or_gateway():
+def test_applicable_traffic_spike_only_on_the_entry_tier(topology):
     ft = CATALOG["traffic_spike"]
-    assert applicable(ft, _node("nginx", "nginx:1.27", "proxy"))
-    assert applicable(ft, _node("gateway", "eclipse/ditto-gateway", "app"))
-    assert not applicable(ft, _node("things", "eclipse/ditto-things", "app"))
+    # with a topology: the published proxy and the app it forwards to, nothing deeper
+    assert {n for n, node in topology.services.items() if applicable(ft, node, topology)} == {"nginx", "gateway"}
+    assert entry_tier(topology) == {"nginx", "gateway"}
+    # without one, only a published service can be the landing point of outside traffic
+    assert applicable(ft, _node("edge", "nginx:1.27", "proxy", entrypoint=True))
+    assert not applicable(ft, _node("orders", "example/shop-orders", "app"))
 
 
-def test_applicable_db_flood_only_on_mongo_image():
+def test_applicable_db_flood_only_where_the_engine_has_a_verified_flood():
     ft = CATALOG["db_flood"]
-    assert applicable(ft, _node("mongodb", "mongo:7.0", "datastore"))
-    assert not applicable(ft, _node("pg", "postgres:16", "datastore"))
-    assert not applicable(ft, _node("things", "eclipse/ditto-things", "app"))
+    assert applicable(ft, _node("postgres", "postgres:16", "datastore", engine="postgres"))
+    assert applicable(ft, _node("cache", "redis:7", "datastore", engine="redis"))
+    # recognised engine without a verified command, unknown engine, and a non-datastore: never
+    assert not applicable(ft, _node("legacy", "mysql:8", "datastore", engine="mysql"))
+    assert not applicable(ft, _node("store", "acme/store:1", "datastore"))
+    assert not applicable(ft, _node("orders", "example/shop-orders", "app", engine="postgres"))
 
 
 def test_applicable_never_targets_ui_and_datastore_crash_is_policy_gated():
-    ui = _node("ditto-ui", "eclipse/ditto-ui", "ui", chaos_relevant=False)
+    ui = _node("web-ui", "example/shop-web-ui", "ui", chaos_relevant=False)
     assert not any(applicable(ft, ui) for ft in CATALOG.values())
-    mongo = _node("mongodb", "mongo:7.0", "datastore")
-    # the catalog allows it; the Day-1 policy (config/thresholds.yaml) is what blocks it unless --allow-protected
-    assert applicable(CATALOG["container_crash"], mongo)
-    assert applicable(CATALOG["network_delay"], mongo)
-    assert not applicable(CATALOG["traffic_spike"], mongo)
+    db = _node("postgres", "postgres:16", "datastore", engine="postgres")
+    # the catalog allows it; the target's protected policy (its thresholds file) blocks it unless --allow-protected
+    assert applicable(CATALOG["container_crash"], db)
+    assert applicable(CATALOG["network_delay"], db)
+    assert not applicable(CATALOG["traffic_spike"], db)
 
 
 def test_reproduce_commands_for_every_type_mention_container():
     for key, ft in CATALOG.items():
         params, _ = clamp(ft, {"block_restart": True})
-        cmds = reproduce_commands(key, "bosch-ditto-x-1", params, "bosch-ditto_default", "pumba:img", "tc:img")
+        cmds = reproduce_commands(key, "shop-x-1", params, "shop_default", "pumba:img", "tc:img", engine="postgres")
         assert cmds, key
         joined = "\n".join(cmds)
         if key != "traffic_spike":  # runs from the host against the public URL, not a container
-            assert "bosch-ditto-x-1" in joined, key
+            assert "shop-x-1" in joined, key
     assert reproduce_commands("does_not_exist", "c", {}, "n", "p", "t") == []
+    unknown = reproduce_commands("db_flood", "c", {"duration_s": 30, "writers": 2}, "n", "p", "t", engine=None)
+    assert unknown == ["# no verified write flood for engine unknown"]
     crash = reproduce_commands("container_crash", "c1", {"duration_s": 30, "block_restart": True}, "n", "p", "t")
     assert crash[0] == "docker update --restart=no c1"

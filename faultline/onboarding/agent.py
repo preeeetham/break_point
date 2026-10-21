@@ -3,8 +3,9 @@
 The structural parsers in `faultline.topology.compose` already see `depends_on`, env-var hostnames
 and nginx `proxy_pass`. What they cannot see is the relationships a project only states in prose:
 cluster membership, "A asks B to authorise every request", "the search index is fed by events".
-For Ditto a human wrote those down in `config/ditto_knowledge.yaml`. This agent does that job for
-any repository, in one bounded LLM pass, and validates the result before anything hits disk.
+A human can write those down in a knowledge file by hand; this agent does that job for any
+repository, in one bounded LLM pass, and validates the result before anything hits disk. Which
+datastore engine a service runs is decided from code alone (onboarding.code_evidence), never asked.
 
 Code decides what is admissible (which services exist, which roles are legal, which edges survive);
 the model only proposes. Same contract as the rest of Faultline.
@@ -21,6 +22,8 @@ from typing import Any, Callable
 import yaml
 
 from faultline.schemas import ROLES, DocumentedEdge, Edge, OnboardingReport, RepoKnowledge, ServiceNode
+from faultline.config import TARGET_FILE, TARGETS_DIR
+from faultline.onboarding import code_evidence
 from faultline.onboarding.source import RepoSource
 from faultline.topology.compose import load_compose, parse_env, service_nodes, static_edges
 
@@ -277,7 +280,7 @@ def build_user_prompt(ex: Extraction, readme: str, docs: str, example_yaml: str,
             "ARCHITECTURE DOCUMENTATION shipped in the repository (may be truncated):",
             docs_t or "(none found)",
             "",
-            "WORKED EXAMPLE — this is a DIFFERENT application (Eclipse Ditto). It shows the required",
+            "WORKED EXAMPLE — this is a DIFFERENT, invented application. It shows the required",
             "shape and the level of detail expected. Do not copy its service names or its content:",
             example_yaml,
             "",
@@ -343,7 +346,7 @@ def infer_health_port(ex: Extraction) -> int | None:
 def example_vocabulary(example_yaml: str) -> set[str]:
     """Identifiers that belong to the worked example and could not belong to anything else.
 
-    The prompt carries `config/ditto_knowledge.yaml` so the model can see the required shape. A
+    The prompt carries a worked example (settings.onboarding_example) so the model can see the required shape. A
     model short of material sometimes answers *about the example* instead. Its service names are
     already rejected for not existing in this repository, but an evidence string citing the
     example's technology ("over the Pekko cluster") would otherwise survive untouched.
@@ -374,8 +377,8 @@ def foreign_example_urls(example_yaml: str, own: set[str]) -> set[str]:
     """URLs the worked example cites that have nothing to do with this repository.
 
     A URL is this repository's own if any word in it -- a host label, a path segment -- is a word
-    the repository uses about itself. That keeps Ditto's own links when Ditto is the target and
-    drops them from everybody else's knowledge file.
+    the repository uses about itself. That keeps the example's own links when the example's
+    application is the target and drops them from everybody else's knowledge file.
     """
     return {u for u in URL_RE.findall(example_yaml)
             if not ({w.lower() for w in WORD_RE.findall(u)} - URL_NOISE) & own}
@@ -531,16 +534,39 @@ def render_yaml(k: RepoKnowledge, src: RepoSource, generated_by: str, model: str
     body: dict[str, Any] = {}
     if k.health_port is not None:
         body["health_port"] = k.health_port
+    if k.health_paths is not None and (k.health_paths.alive or k.health_paths.ready):
+        body["health_paths"] = k.health_paths.model_dump(exclude_none=True)
     if k.cluster_alias:
         body["cluster_alias"] = k.cluster_alias
     if k.roles:
         body["roles"] = dict(sorted(k.roles.items()))
+    if k.datastores:
+        body["datastores"] = {n: f.model_dump() for n, f in sorted(k.datastores.items())}
     if k.documented_edges:
         body["documented_edges"] = [{"src": e.src, "dst": e.dst, "evidence": e.evidence} for e in k.documented_edges]
     if k.references:
         body["references"] = k.references
     text = yaml.safe_dump(body, sort_keys=False, default_flow_style=False, width=120, allow_unicode=True)
     return "\n".join(head) + "\n" + (text if body else "{}\n")
+
+
+def write_target_stub(src: RepoSource, out_dir: Path) -> Path | None:
+    """Onboarding into targets/<name>/ makes it a target: point a target.yaml at the repository's own
+    compose file. Never overwrites one, because a human edits it afterwards."""
+    path = out_dir / TARGET_FILE
+    if path.exists():
+        return None
+    nginx = f"nginx_conf: {src.nginx_conf_path}\n" if src.nginx_conf_path else ""
+    path.write_text(
+        f"# Target settings for {src.slug}, written by `faultline onboard` from {src.reference}.\n"
+        "# Layered under .env: anything here can be overridden by the environment. Review every line.\n"
+        f"app_name: {src.slug}\n"
+        f"compose_file: {src.compose_path}\n"
+        f"{nginx}"
+        f"compose_project: {src.slug}\n"
+        "# target_url: http://127.0.0.1:8080       # the published entry point, as seen from the host\n"
+        "# thresholds_file: thresholds.yaml        # copy config/thresholds.yaml and protect your datastores\n")
+    return path
 
 
 # ---------------------------------------------------------------- orchestration
@@ -586,9 +612,19 @@ def onboard(src: RepoSource, llm, example_path: Path, out_dir: Path, log: Log = 
         for r in rejected:
             log(f"  rejected: {r}")
 
+    # Engines are code's call: the image, else the Dockerfile, else the drivers dependents declare.
+    ev = code_evidence.detect(ex.nodes, ex.edges, ex.compose, src.compose_path.parent)
+    for name, fact in sorted(ev.datastores.items()):
+        log(f"datastore {name}: {fact.engine} ({fact.evidence})")
+    knowledge.datastores.update(ev.datastores)
+    knowledge.roles.update(ev.roles)
+    notes.extend(ev.notes)
+
     out_path = out_dir / f"{src.slug}_knowledge.yaml"
     if write:
-        degraded = generated_by == "structural-only" and not knowledge.documented_edges and not knowledge.roles
+        # Only the model writes documented edges; roles may also come from code evidence, which a
+        # failed model run still produces, so they do not make a structural-only file substantive.
+        degraded = generated_by == "structural-only" and not knowledge.documented_edges
         if degraded and out_path.is_file() and _is_substantive(out_path) and not force:
             msg = (f"refusing to overwrite {out_path} with an empty file: the model failed and the "
                    f"existing file has content (pass --force to overwrite anyway)")
@@ -598,6 +634,10 @@ def onboard(src: RepoSource, llm, example_path: Path, out_dir: Path, log: Log = 
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path.write_text(render_yaml(knowledge, src, generated_by, model))
             log(f"wrote {out_path}")
+        if out_dir.resolve().parent == TARGETS_DIR.resolve():
+            stub = write_target_stub(src, out_dir)
+            if stub is not None:
+                log(f"wrote {stub}: a starting target.yaml; review it, then FAULTLINE_TARGET={out_dir.name}")
 
     return OnboardingReport(
         slug=src.slug, source=src.reference, resolved_path=str(src.root),
@@ -610,7 +650,7 @@ def onboard(src: RepoSource, llm, example_path: Path, out_dir: Path, log: Log = 
 
 # ---------------------------------------------------------------- acceptance comparison
 def compare(generated: RepoKnowledge, truth_path: Path, ex: Extraction | None = None) -> dict[str, Any]:
-    """Overlap against a hand-authored file. Ditto is the one case with ground truth.
+    """Overlap against a hand-authored knowledge file: the ground truth when a human wrote one.
 
     Roles are compared as *effective* roles (structural guess + override), because a knowledge file
     only needs to carry the overrides -- agreeing with the guesser by staying silent is correct.

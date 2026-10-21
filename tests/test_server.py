@@ -19,7 +19,7 @@ from faultline.schemas import ApprovalDecision
 
 from .test_control import STATE_KEYS, block_handler, make_approval_request, make_session_cls, wait_job  # noqa: F401
 from .test_control import PREVIEW, PROPOSAL_SUMMARY_KEYS, make_proposal
-from .test_control import fake_apply, sessions, settings  # noqa: F401  (fixtures)
+from .test_control import fake_apply, repo, sessions, settings  # noqa: F401  (fixtures)
 
 
 @pytest.fixture
@@ -274,13 +274,13 @@ def test_narrative_over_http(base, tmp_store, make_report):
     assert call(base, "GET", "/api/narrative/")[0] == 404
 
 
-def test_target_over_http(base, control):
+def test_target_over_http(base, control, repo):  # noqa: F811
     status, out, _ = call(base, "POST", "/api/target", {"compose": "README.md"})
     assert status == 400 and "must live under" in out["error"]
     status, out, _ = call(base, "POST", "/api/target", {})
     assert status == 400
-    status, out, _ = call(base, "POST", "/api/target", {"compose": "deploy/docker-compose.yml"})
-    assert status == 200 and out["compose_file"].endswith("deploy/docker-compose.yml")
+    status, out, _ = call(base, "POST", "/api/target", {"compose": "targets/shop/docker-compose.yml"})
+    assert status == 200 and out["compose_file"].endswith("targets/shop/docker-compose.yml")
     assert call(base, "GET", "/api/state")[1]["target"] == out
 
 
@@ -438,7 +438,7 @@ def test_apply_endpoint_needs_approval_and_a_free_slot(base, control, tmp_store,
 
 
 def test_protected_fix_is_not_approved_without_allow_protected(base, tmp_store, fake_apply):
-    tmp_store.write_proposal(make_proposal(target_services=["mongodb"], requires_allow_protected=True))
+    tmp_store.write_proposal(make_proposal(target_services=["postgres"], requires_allow_protected=True))
     status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/approve", {"change_hash": _hash(PREVIEW)})
     assert status == 409 and "protected service" in out["error"]
     assert tmp_store.proposal("fx-0123456789").status == "pending" and fake_apply == []

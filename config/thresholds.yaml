@@ -15,15 +15,19 @@ recovery:
   p95_latency_ms_floor: 300
   consecutive_checks: 3               # checks are 2 s apart
   soak_seconds: 20                    # keep watching after a recovery candidate; a relapse resets the wait
-  timeout_seconds: 300                # Java services need 60-120 s to cold start and rejoin the cluster
+  timeout_seconds: 300                # generous on purpose: clustered JVM services can need minutes to rejoin
   escalate_restart_target_at: 0.5     # fraction of timeout after which the target is restarted
-  escalate_restart_dependents_at: 0.8 # ... and then its direct dependents (Ditto discussion #1861)
+  escalate_restart_dependents_at: 0.8 # ... and then its direct dependents (clients that never reconnected)
 
 policy:
-  protected:
-    mongodb:
-      reason: "sole datastore for every service; Day-1 policy is degrade-only, never a full outage"
-      allowed_failure_types: [network_delay, network_loss, cpu_stress, disk_pressure, db_flood]
+  # Services that may only be degraded, never taken fully offline, keyed by compose service name.
+  # Empty here because the core names no application: a target protects its own services in its own
+  # thresholds file (targets/<name>/target.yaml -> thresholds_file). `faultline setup` warns about every
+  # datastore in the topology that is not protected. Shape of an entry:
+  #   <service>:
+  #     reason: "sole datastore for every service; degrade-only, never a full outage"
+  #     allowed_failure_types: [network_delay, network_loss, cpu_stress, disk_pressure, db_flood]
+  protected: {}
   skip_roles: [ui]
   max_experiments_per_run: 10
   pause_between_experiments_s: 30

@@ -9,10 +9,10 @@ from faultline.reporting.store import ReportStore
 from faultline.schemas import FixProposal, ProposalExplanation
 
 
-def _proposal(status="pending", preview="services:\n  things:\n    healthcheck: {}\n", **kw):
+def _proposal(status="pending", preview="services:\n  orders:\n    healthcheck: {}\n", **kw):
     return FixProposal(
         proposal_id=kw.pop("proposal_id", P.new_proposal_id()), experiment_id="e1", finding_code="health_check_masked_failure",
-        catalog_fix_id="add_or_tighten_healthcheck", target_services=["things"], change_preview=preview,
+        catalog_fix_id="add_or_tighten_healthcheck", target_services=["orders"], change_preview=preview,
         change_hash=P.change_hash(preview),
         explanation=ProposalExplanation(problem="p", change="c", expected_improvement="i", risks="r", rollback="b"),
         status=status, expires_at=kw.pop("expires_at", P.expires_at(1800)), **kw)

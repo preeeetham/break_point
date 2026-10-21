@@ -1,0 +1,202 @@
+# Test fixture: an INVENTED order-processing shop, shaped like a realistic sandbox so the parsers, the
+# Scout and the remediation catalog meet every structure they handle in the wild. Never deployed: the
+# example/shop-* images do not exist. Five JVM services on one cluster alias behind nginx, one postgres
+# that no depends_on mentions (reached only through DB_HOST), a UI, and an observability stack.
+name: faultline
+
+x-shop-java-opts: &shop-java-opts
+  JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -XX:+UseContainerSupport -XX:MaxRAMPercentage=50 -XX:+UseG1GC -Dcluster.failure-detector.threshold=15.0 -Dcluster.failure-detector.acceptable-heartbeat-pause=20s
+
+x-shop-healthcheck: &shop-healthcheck
+  test: curl --fail `hostname`:7626/alive || exit 1
+  interval: 30s
+  timeout: 15s
+  retries: 4
+  start_period: 120s
+
+x-logging: &default-logging
+  options:
+    max-size: 50m
+
+services:
+  postgres:
+    image: docker.io/postgres:16-alpine
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    environment:
+      - TZ=Europe/Berlin
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-shop}
+    networks:
+      default:
+        aliases:
+          - postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER:-postgres}\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  auth:
+    image: docker.io/example/shop-auth:${SHOP_VERSION:-1.4.0}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - shop-cluster
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - DB_HOST=postgres
+      - *shop-java-opts
+    healthcheck: *shop-healthcheck
+    logging: *default-logging
+
+  orders:
+    image: docker.io/example/shop-orders:${SHOP_VERSION:-1.4.0}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - shop-cluster
+    depends_on:
+      - auth
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - DB_HOST=postgres
+      - *shop-java-opts
+    healthcheck: *shop-healthcheck
+    logging: *default-logging
+
+  orders-search:
+    image: docker.io/example/shop-orders-search:${SHOP_VERSION:-1.4.0}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - shop-cluster
+    depends_on:
+      - auth
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - DB_HOST=postgres
+      - *shop-java-opts
+    healthcheck: *shop-healthcheck
+    logging: *default-logging
+
+  notifier:
+    image: docker.io/example/shop-notifier:${SHOP_VERSION:-1.4.0}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    networks:
+      default:
+        aliases:
+          - shop-cluster
+    depends_on:
+      - auth
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - DB_HOST=postgres
+      - *shop-java-opts
+    healthcheck: *shop-healthcheck
+    logging: *default-logging
+
+  gateway:
+    image: docker.io/example/shop-gateway:${SHOP_VERSION:-1.4.0}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      default:
+        aliases:
+          - shop-cluster
+    depends_on:
+      - auth
+    # Deliberately no published ports: nginx is the only entry point.
+    environment:
+      - TZ=Europe/Berlin
+      - BIND_HOSTNAME=0.0.0.0
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-foobar}
+      - *shop-java-opts
+    healthcheck: *shop-healthcheck
+    logging: *default-logging
+
+  web-ui:
+    image: docker.io/example/shop-web-ui:${SHOP_VERSION:-1.4.0}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 32m
+    logging: *default-logging
+
+  nginx:
+    image: docker.io/nginx:1.27-alpine
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 32m
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "127.0.0.1:${SHOP_PORT:-8080}:80"
+    depends_on:
+      - gateway
+    logging: *default-logging
+
+  prometheus:
+    image: docker.io/prom/prometheus:v2.55.1
+    restart: always
+    ports:
+      - "127.0.0.1:9090:9090"
+    logging: *default-logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: always
+    privileged: true
+    logging: *default-logging
+
+  blackbox:
+    image: docker.io/prom/blackbox-exporter:v0.25.0
+    restart: always
+    logging: *default-logging
+
+  grafana:
+    image: docker.io/grafana/grafana:11.3.0
+    restart: always
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    logging: *default-logging
+
+volumes:
+  postgres_data: {}

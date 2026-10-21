@@ -1,10 +1,10 @@
 """Static topology extraction from docker-compose + nginx.
 
-The point of this module is to see dependencies that `depends_on` does not declare. In the Ditto
-compose file nothing formally depends on mongodb, yet every Ditto service reaches it through
-`MONGO_DB_HOSTNAME=mongodb`. So besides `depends_on` we scan environment variables for hostnames
-that resolve to other services, parse nginx `proxy_pass` targets, and layer documented knowledge
-about the Pekko cluster on top.
+The point of this module is to see dependencies that `depends_on` does not declare. A typical compose
+file declares nothing on its database, yet every service reaches it through an environment variable
+such as `DB_HOST=db` or `DATABASE_URL=postgres://db:5432/app`. So besides `depends_on` we scan
+environment variables for hostnames that resolve to other services, parse nginx `proxy_pass` targets,
+and layer documented knowledge (a cluster, prose-only relationships, datastore engines) on top.
 """
 from __future__ import annotations
 
@@ -15,10 +15,12 @@ from typing import Any, Iterable
 import yaml
 
 from faultline.schemas import Edge, ServiceNode
+from faultline.topology import datastores
 
 HOST_KEY_RE = re.compile(r"(_HOSTNAME|_HOST|_URI|_URL|_ADDR|_ADDRESS|_ENDPOINT|_SEED_NODES)$")
 SECRET_KEY_RE = re.compile(r"PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 HEALTH_PORT_RE = re.compile(r":(\d+)/")
+HEALTH_PATH_RE = re.compile(r":\d+(/[^\s'\"|;&)`]*)")
 PROXY_PASS_RE = re.compile(r"proxy_pass\s+https?://([A-Za-z0-9_.-]+)")
 URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 HEX12_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -87,6 +89,16 @@ def parse_health_port(healthcheck: Any) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def parse_health_path(healthcheck: Any) -> str | None:
+    """The path the healthcheck calls on its port (`curl -f localhost:8080/healthz` -> `/healthz`)."""
+    if not isinstance(healthcheck, dict) or healthcheck.get("disable") or healthcheck.get("test") is None:
+        return None
+    test = healthcheck["test"]
+    text = " ".join(str(t) for t in test) if isinstance(test, (list, tuple)) else str(test)
+    m = HEALTH_PATH_RE.search(text)
+    return m.group(1) if m else None
+
+
 def parse_aliases(networks: Any) -> list[str]:
     """`networks` may be a list of names (no aliases) or a mapping {net: {aliases: [...]}}."""
     if not isinstance(networks, dict):
@@ -102,7 +114,7 @@ def parse_aliases(networks: Any) -> list[str]:
 
 def _guess_role(name: str, image: str) -> str:
     hay = f"{name} {image}".lower()
-    if re.search(r"mongo|postgres|redis|mysql|mariadb|cassandra", hay):
+    if datastores.from_image(hay) is not None:
         return "datastore"
     if re.search(r"nginx|traefik|haproxy|envoy", image.lower()) or name.lower() == "nginx":
         return "proxy"
@@ -134,6 +146,8 @@ def service_nodes(compose: dict, knowledge: dict | None = None) -> dict[str, Ser
     knowledge = knowledge or {}
     role_overrides = {str(k): str(v) for k, v in (knowledge.get("roles") or {}).items()}
     default_health_port = knowledge.get("health_port")
+    paths = knowledge.get("health_paths") or {}
+    known_engines = {str(k): v for k, v in (knowledge.get("datastores") or {}).items() if isinstance(v, dict)}
     top_volumes = list((compose.get("volumes") or {}).keys())
     nodes: dict[str, ServiceNode] = {}
     for name, svc in (compose.get("services") or {}).items():
@@ -146,8 +160,20 @@ def service_nodes(compose: dict, knowledge: dict | None = None) -> dict[str, Ser
         if mem is None:
             mem = parse_mem_limit(svc.get("mem_limit"))
         health_port = parse_health_port(svc.get("healthcheck"))
-        if health_port is None and default_health_port and role == "app" and "ditto-" in image:
+        health_path = parse_health_path(svc.get("healthcheck"))
+        if health_port is None and default_health_port and role == "app":
+            # a management port the knowledge file says the application services share
             health_port = int(default_health_port)
+        if health_port is not None:
+            health_path = health_path or paths.get("alive")
+        ready_path = paths.get("ready") if health_port is not None else None
+        engine, engine_evidence = None, None
+        if role == "datastore":
+            fact = known_engines.get(name)
+            found = datastores.get(str(fact.get("engine"))) if fact else datastores.from_image(f"{name} {image}")
+            if found is not None:
+                engine = found.key
+                engine_evidence = str(fact.get("evidence") or "knowledge file") if fact else f"image {image or name}"
         aliases = parse_aliases(svc.get("networks"))
         nodes[name] = ServiceNode(
             name=name,
@@ -156,11 +182,35 @@ def service_nodes(compose: dict, knowledge: dict | None = None) -> dict[str, Ser
             stateful=(role == "datastore") or _mounts_named_volume(svc, top_volumes),
             entrypoint=bool(svc.get("ports")),
             health_port=health_port,
+            health_path=health_path,
+            ready_path=ready_path,
+            engine=engine,
+            engine_evidence=engine_evidence,
             mem_limit_mb=mem,
             aliases=aliases,
             chaos_relevant=role not in ("ui", "other"),
         )
+    _engines_from_uris(compose, nodes)
     return nodes
+
+
+def _engines_from_uris(compose: dict, nodes: dict[str, ServiceNode]) -> None:
+    """A datastore whose image says nothing (a custom build, a renamed mirror) can still be named by how
+    its dependents reach it: `postgres://db:5432/app` in someone's environment means `db` speaks postgres."""
+    unknown = {n for n, node in nodes.items() if node.role == "datastore" and node.engine is None}
+    if not unknown:
+        return
+    idx = _alias_index(nodes)
+    for name, svc in (compose.get("services") or {}).items():
+        for key, value in parse_env((svc or {}).get("environment")).items():
+            found = datastores.from_uri(value) if not SECRET_KEY_RE.search(key) else None
+            if found is None:
+                continue
+            for host in _extract_hosts(value):
+                for dst in idx.get(host, []):
+                    if dst in unknown:
+                        nodes[dst].engine, nodes[dst].engine_evidence = found.key, f"{name} env {key} uses {found.key}://"
+                        unknown.discard(dst)
 
 
 # ---------------------------------------------------------------- edges

@@ -38,23 +38,23 @@ def test_deterministic_spec_identical_to_original(board):
 
 
 def test_reference_values_with_history(demo):
-    """Literal reference values from the original planner on reports-demo (images {pumba, tc})."""
+    """Literal reference values from the original planner on shop-demo (images {pumba, tc})."""
     result = _run(demo)
-    assert [r.target["service"] for r in demo.build().history] == ["mongodb", "gateway", "things", "policies"]
+    assert [r.target["service"] for r in demo.build().history] == ["postgres", "gateway", "orders", "auth"]
     assert len(result.candidates) == 55
     assert [(c.service, c.failure_type, c.priority) for c in result.candidates[:6]] == [
-        ("mongodb", "network_delay", 14.15), ("mongodb", "db_flood", 14.10), ("mongodb", "cpu_stress", 13.85),
-        ("mongodb", "disk_pressure", 13.75), ("mongodb", "network_loss", 7.80), ("policies", "container_crash", 6.90),
+        ("postgres", "network_delay", 14.15), ("postgres", "db_flood", 14.10), ("postgres", "cpu_stress", 13.85),
+        ("postgres", "disk_pressure", 13.75), ("postgres", "network_loss", 7.80), ("auth", "container_crash", 6.90),
     ]
-    assert (result.spec.target_service, result.spec.failure_type) == ("mongodb", "network_delay")
+    assert (result.spec.target_service, result.spec.failure_type) == ("postgres", "network_delay")
 
 
 def test_reference_values_without_history(empty):
     result = _run(empty)
     assert empty.build().history == []
     assert [(c.service, c.failure_type, c.priority) for c in result.candidates[:5]] == [
-        ("mongodb", "network_delay", 14.15), ("mongodb", "db_flood", 14.10), ("mongodb", "network_loss", 14.05),
-        ("mongodb", "cpu_stress", 13.85), ("mongodb", "disk_pressure", 13.75),
+        ("postgres", "network_delay", 14.15), ("postgres", "db_flood", 14.10), ("postgres", "network_loss", 14.05),
+        ("postgres", "cpu_stress", 13.85), ("postgres", "disk_pressure", 13.75),
     ]
 
 

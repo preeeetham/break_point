@@ -5,11 +5,11 @@ from datetime import datetime, timezone
 
 from ..safety.thresholds import thresholds_from
 from ..schemas import Baseline
-from .probes import HealthProbe, ThingsApiProbe
+from .probes import HealthProbe, HttpApiProbe
 from .window import SampleWindow
 
 
-def capture(api: ThingsApiProbe, health: HealthProbe, window: SampleWindow, duration_s: float, ditto_url: str,
+def capture(api: HttpApiProbe, health: HealthProbe, window: SampleWindow, duration_s: float, target_url: str,
             policy: dict, log=print) -> Baseline:
     log(f"capturing steady state for {duration_s:.0f}s ...")
     t0 = time.time()
@@ -22,21 +22,21 @@ def capture(api: ThingsApiProbe, health: HealthProbe, window: SampleWindow, dura
     availability = health.availability(t0, t1)
     notes = []
     if api_stats.sample_count == 0:
-        notes.append("no API samples collected: check DITTO_URL / credentials")
+        notes.append("no API samples collected: check TARGET_URL / TARGET_USER / TARGET_PASSWORD and the probe spec")
     elif (api_stats.success_rate or 0) < 0.99:
         notes.append(f"baseline is not clean: success rate {api_stats.success_rate:.1%}; fix this before injecting faults")
     for svc, a in availability.items():
         if a is not None and a < 1:
             notes.append(f"{svc} health was only {a:.0%} available at steady state")
     return Baseline(
-        captured_at=datetime.now(timezone.utc), duration_s=round(t1 - t0, 1), ditto_url=ditto_url, api=api_stats,
+        captured_at=datetime.now(timezone.utc), duration_s=round(t1 - t0, 1), target_url=target_url, api=api_stats,
         health_availability=availability, thresholds=thresholds_from(policy, api_stats.p95_ms), notes=notes,
     )
 
 
 def to_markdown(b: Baseline) -> str:
     a, t = b.api, b.thresholds
-    out = [f"# Steady-state baseline", "", f"Captured {b.captured_at.isoformat(timespec='seconds')} against {b.ditto_url}, {b.duration_s}s.", "",
+    out = [f"# Steady-state baseline", "", f"Captured {b.captured_at.isoformat(timespec='seconds')} against {b.target_url}, {b.duration_s}s.", "",
            f"API: {a.sample_count} requests, success {100 * (a.success_rate or 0):.2f}%, p50 {a.p50_ms} ms, p95 {a.p95_ms} ms, p99 {a.p99_ms} ms.", "",
            "| Operation | Count | Success | p95 ms |", "|---|---|---|---|"]
     for op, s in a.by_operation.items():

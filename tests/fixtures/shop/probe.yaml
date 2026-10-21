@@ -1,0 +1,18 @@
+# Test fixture: synthetic traffic for the invented shop. A canary order is created once; every write
+# carries a sequence number that the integrity check reads back.
+health:
+  path: /health
+  expect: {status: UP}
+setup:
+  - name: create_canary
+    method: PUT
+    path: /api/orders/{namespace}:canary
+    json: {kind: faultline-canary, seq: 0}
+operations:
+  get_order: {method: GET, path: "/api/orders/{namespace}:canary", route: [nginx, gateway, orders]}
+  put_property: {method: PUT, path: "/api/orders/{namespace}:canary/seq", json: "{seq}", write: true, route: [nginx, gateway, orders]}
+  get_property: {method: GET, path: "/api/orders/{namespace}:canary/seq", route: [nginx, gateway, orders]}
+  search: {method: GET, path: /api/search/orders, params: {filter: "kind=faultline-canary"}, route: [nginx, gateway, orders-search]}
+mix: [get_order, put_property, get_order, search, get_property, put_property, get_order, search]
+integrity: get_property
+spike: get_order

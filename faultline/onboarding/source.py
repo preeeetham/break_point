@@ -18,8 +18,8 @@ GITHUB_URL_RE = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w
 SHORTHAND_RE = re.compile(r"^([\w.-]+)/([\w.-]+)$")
 SLUG_CLEAN_RE = re.compile(r"[^a-z0-9]+")
 
-# Ordered: the first match wins. Deployment-specific files beat a root compose because projects
-# like Ditto keep a toy compose at the root and the real one under deployment/.
+# Ordered: the first match wins. Deployment-specific files beat a root compose because many projects
+# keep a toy compose at the root and the real one under deployment/.
 COMPOSE_CANDIDATES = (
     "deployment/docker/docker-compose.yml", "deployment/docker/docker-compose.yaml",
     "deploy/docker-compose.yml", "deploy/docker-compose.yaml",

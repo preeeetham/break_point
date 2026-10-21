@@ -19,7 +19,7 @@ class Session:
 
     def __init__(self, s: Settings, store: ReportStore, need_probes: bool = True, rebuild_topology: bool = False):
         from .chaos.docker_ctl import DockerController
-        from .observe.probes import HealthProbe, ThingsApiProbe
+        from .observe.probes import HealthProbe, api_probe
         from .observe.window import SampleWindow
         from .planning.planner import Policy
         from .safety.thresholds import load_policy, thresholds_from
@@ -37,7 +37,7 @@ class Session:
         self.window = SampleWindow()
         self.api = self.health = None
         if need_probes:
-            self.api = ThingsApiProbe(s.ditto_url, s.ditto_user, s.ditto_password, self.window, s.probe_rps, s.probe_namespace, log=say)
+            self.api = api_probe(s, self.window, self.topology, log=say)
             self.health = HealthProbe(self.docker, self.topology, s.health_interval_s, log=lambda m: None)
             self.api.start()
             self.health.start()
@@ -61,15 +61,47 @@ def build_topology(s: Settings, store: ReportStore, live: bool, knowledge: str |
 
     from .topology import quality
 
-    nginx = s.nginx_conf if Path(s.nginx_conf).is_file() else None
-    audit = quality.Audit()
+    from .topology.compose import load_knowledge
+
     src = compose or s.compose_file
-    topo = build(src, s.compose_project, nginx, knowledge or s.knowledge_file, live=live, audit=audit)
+    if not src:
+        raise NoTarget(no_target_message(s))
+    nginx = s.nginx_conf if s.nginx_conf and Path(s.nginx_conf).is_file() else None
+    audit = quality.Audit()
+    kfile = knowledge or s.knowledge_file or None
+    topo = build(src, s.compose_project, nginx, kfile, live=live, audit=audit)
     store.write_topology(topo)
     store.write_data_quality(quality.report(f"topology:{src}", audit, s.time_lenience_s,
                                             len(topo.services), len(topo.edges)))
-    (store.root / "topology.md").write_text(markdown(topo))
+    (store.root / "topology.md").write_text(markdown(topo, load_knowledge(kfile).get("cluster_alias")))
     return topo
+
+
+class NoTarget(RuntimeError):
+    """Raised by anything that needs the stack's compose file when none is configured."""
+
+
+def no_target_message(s: Settings) -> str:
+    """Why there is nothing to work on, and the one line that fixes it."""
+    if s.target_error:
+        return f"error: {s.target_error}"
+    return ("error: no target selected. Set FAULTLINE_TARGET=<name> in .env (a directory under targets/), or "
+            "FAULTLINE_COMPOSE_FILE for a stack without one. See docs/ONBOARDING_A_TARGET.md")
+
+
+def target_health(s: Settings, topology=None) -> tuple[bool, str]:
+    """GET the probe spec's health path on TARGET_URL: (healthy, what was seen)."""
+    import requests
+
+    from .observe.probes import health_ok, load_spec
+
+    spec = load_spec(s.probe_file, topology)
+    url = s.target_url.rstrip("/") + spec.health_path
+    try:
+        r = requests.get(url, timeout=5)
+    except requests.RequestException as exc:
+        return False, f"{url}: unreachable ({type(exc).__name__})"
+    return health_ok(spec, r), f"{url}: HTTP {r.status_code} {r.text.strip()[:80]}"
 
 
 def llm_client(s: Settings, enabled: bool = True):
@@ -93,6 +125,13 @@ def cmd_setup(s, store, a):
     from .chaos.docker_ctl import DockerController
 
     ok = True
+    if s.target_error or not s.compose_file:
+        say(no_target_message(s))
+        ok = False
+    else:
+        say(f"target: {s.target or '(none, FAULTLINE_COMPOSE_FILE)'} -> {s.compose_file}"
+            + (f", knowledge {s.knowledge_file}" if s.knowledge_file else ", no knowledge file")
+            + (f", probe spec {s.probe_file}" if s.probe_file else ", no probe spec (health URL only)"))
     try:
         d = DockerController(s.compose_project, s.compose_network)
         cs = d.containers()
@@ -107,14 +146,27 @@ def cmd_setup(s, store, a):
         say(f"docker: FAILED ({exc})")
         ok = False
     import requests
-    try:
-        r = requests.get(f"{s.ditto_url}/health", timeout=5)
-        say(f"ditto {s.ditto_url}/health: HTTP {r.status_code} {r.text.strip()[:80]}")
-        r = requests.get(f"{s.ditto_url}/api/2/things/{s.probe_namespace}:canary", auth=(s.ditto_user, s.ditto_password), timeout=5)
-        say(f"ditto API auth as {s.ditto_user}: HTTP {r.status_code} ({'ok' if r.status_code in (200, 404) else 'check DITTO_USER/DITTO_PASSWORD'})")
-    except requests.RequestException as exc:
-        say(f"ditto: unreachable ({exc})")
-        ok = False
+    healthy, seen = target_health(s, store.topology())
+    say(f"target health {seen}" + ("" if healthy else "  -> NOT healthy"))
+    ok = ok and healthy
+    if s.target_user:
+        r = None
+        try:
+            r = requests.get(s.target_url, auth=(s.target_user, s.target_password), timeout=5)
+        except requests.RequestException:
+            pass
+        if r is not None and r.status_code in (401, 403):
+            say(f"target auth as {s.target_user}: HTTP {r.status_code} -> check TARGET_USER / TARGET_PASSWORD")
+    topo = store.topology()
+    if topo is not None:
+        from .planning.planner import Policy
+        from .safety.thresholds import load_policy
+
+        protected = Policy(load_policy(s.thresholds_file)).protected
+        for name, node in sorted(topo.services.items()):
+            if node.role == "datastore" and node.chaos_relevant and name not in protected:
+                say(f"warning: datastore {name} is not protected in {s.thresholds_file}; a full outage of it may be "
+                    "planned (add it under policy.protected to make it degrade-only)")
     try:
         r = requests.get(f"{s.prometheus_url}/-/ready", timeout=3)
         say(f"prometheus {s.prometheus_url}: HTTP {r.status_code}")
@@ -124,6 +176,50 @@ def cmd_setup(s, store, a):
     say(f"llm {c.describe()}: {'available' if c.available() else 'NOT available (' + (c.last_error or 'disabled') + ') -> deterministic planning'}")
     say("setup " + ("complete" if ok else "incomplete"))
     return 0 if ok else 1
+
+
+def target_links(s: Settings) -> dict[str, str]:
+    """`links:` in the target's target.yaml: what the operator can open once the stack is up."""
+    import yaml
+
+    from .config import TARGET_FILE
+
+    tfile = s.target_dir / TARGET_FILE if s.target_dir else None
+    data = (yaml.safe_load(tfile.read_text()) or {}) if tfile and tfile.is_file() else {}
+    return {str(k): str(v) for k, v in (data.get("links") or {}).items()}
+
+
+def cmd_target(s, store, a):
+    """The resolved target, for people and for scripts/up.sh (--shell), and an optional wait for health."""
+    import shlex
+
+    if not s.compose_file:
+        say(no_target_message(s))
+        return 1
+    from .observe.probes import load_spec
+
+    health_url = s.target_url.rstrip("/") + load_spec(s.probe_file).health_path
+    values = {"FAULTLINE_TARGET": s.target, "TARGET_DIR": str(s.target_dir or ""), "COMPOSE_FILE": s.compose_file,
+              "COMPOSE_PROJECT": s.compose_project, "TARGET_URL": s.target_url, "HEALTH_URL": health_url}
+    if a.shell:
+        say("\n".join(f"{k}={shlex.quote(v)}" for k, v in values.items()))
+    elif not a.wait:
+        for k, v in values.items():
+            say(f"{k.lower():<16} {v or '-'}")
+        for label, url in target_links(s).items():
+            say(f"{'link':<16} {label}: {url}")
+    if a.wait:
+        deadline = time.time() + a.wait
+        while True:
+            healthy, seen = target_health(s)
+            if healthy:
+                say(f"healthy: {seen}")
+                return 0
+            if time.time() >= deadline:
+                say(f"not healthy after {a.wait}s; last: {seen}")
+                return 1
+            time.sleep(5)
+    return 0
 
 
 def cmd_topology(s, store, a):
@@ -229,7 +325,7 @@ def cmd_baseline(s, store, a):
     sess = Session(s, store)
     try:
         sess.warmup(10)
-        b = capture(sess.api, sess.health, sess.window, a.duration, s.ditto_url, sess.policy_raw, log=say)
+        b = capture(sess.api, sess.health, sess.window, a.duration, s.target_url, sess.policy_raw, log=say)
         store.write_baseline(b)
         (store.root / "baseline.md").write_text(to_markdown(b))
         say(f"baseline: success {100 * (b.api.success_rate or 0):.2f}%, p95 {b.api.p95_ms} ms -> abort at error>{b.thresholds.abort_error_rate_above:.0%} "
@@ -371,10 +467,11 @@ def cmd_run(s, store, a):
 
 def _post_analysis(s, store, topology, use_llm: bool, ids: list[str] | None = None):
     from .agents import fix, risk, scorecard
+    from .agents.knowledge import rules_for
 
     llm = llm_client(s, use_llm)
     risk.run(store, llm, topology, log=say)
-    fix.run(store, llm, log=say)
+    fix.run(store, llm, log=say, rules=rules_for(s), app=s.app_name)
     scorecard.run(store, topology, s.compose_project, log=say)
     if ids:
         _propose_after_analysis(s, store, ids, use_llm)
@@ -625,8 +722,9 @@ def cmd_risk(s, store, a):
 
 def cmd_fix(s, store, a):
     from .agents import fix
+    from .agents.knowledge import rules_for
 
-    fix.run(store, llm_client(s, not a.no_llm), only=a.ids or None, force=a.force, log=say)
+    fix.run(store, llm_client(s, not a.no_llm), only=a.ids or None, force=a.force, log=say, rules=rules_for(s), app=s.app_name)
     return 0
 
 
@@ -654,10 +752,10 @@ def cmd_guardian(s, store, a):
 
 
 def cmd_heal(s, store, a):
-    """Operator reset between demos: remove chaos leftovers, restart the Ditto cluster in dependency order, wait for UP."""
-    import requests
+    """Operator reset between demos: remove chaos leftovers, restart the stack in dependency order, wait for health."""
     from .chaos.actions import clear_qdisc
     from .chaos.docker_ctl import DockerController
+    from .topology.graph import start_order
 
     d = DockerController(s.compose_project, s.compose_network)
     store.clear_active()
@@ -665,6 +763,8 @@ def cmd_heal(s, store, a):
         d.remove_helper(h)
         say(f"removed helper {h.name}")
     containers = d.containers()
+    topo = store.topology()
+    relevant = set(topo.relevant_services()) if topo is not None else set(containers)
     for svc, c in containers.items():
         c.reload()
         if not d.is_connected(svc):
@@ -673,24 +773,22 @@ def cmd_heal(s, store, a):
             c.unpause(); say(f"unpaused {svc}")
         elif c.status != "running":
             c.start(); say(f"started {svc}")
-        if svc in ("mongodb", "policies", "things", "things-search", "connectivity", "gateway", "nginx") and clear_qdisc(d, s.tc_image, c.name):
+        if svc in relevant and clear_qdisc(d, s.tc_image, c.name):
             say(f"removed netem qdisc on {svc}")
-    order = [x for x in ("mongodb", "policies", "things", "things-search", "connectivity", "gateway") if x in containers]
     if a.restart:
-        for svc in order:
+        if topo is None:
+            say("no topology on disk, so no dependency order is known; run `faultline topology` and retry")
+            return 1
+        for svc in [x for x in start_order(topo) if x in containers]:
             say(f"restarting {svc} ...")
             d.restart(svc, timeout=20)
-            time.sleep(5 if svc != "mongodb" else 10)
+            time.sleep(10 if topo.services[svc].role == "datastore" else 5)
     deadline = time.time() + 600
-    say(f"waiting for {s.ditto_url}/health = UP ...")
+    say(f"waiting for {s.target_url} to report healthy ...")
     while time.time() < deadline:
-        try:
-            r = requests.get(f"{s.ditto_url}/health", timeout=5)
-            if r.ok and r.json().get("status") == "UP":
-                say("stack healthy")
-                return 0
-        except (requests.RequestException, ValueError):
-            pass
+        if target_health(s, topo)[0]:
+            say("stack healthy")
+            return 0
         time.sleep(5)
     say("stack still not healthy after 10 minutes; inspect `faultline status` and container logs")
     return 1
@@ -723,7 +821,7 @@ def cmd_onboard(s, store, a):
     # rather than exceptional. Reporting one as a traceback with exit code 0 would tell a script
     # the run succeeded; say what broke and fail.
     try:
-        report = onboard(src, llm_client(s, not a.no_llm), _Path(s.knowledge_file),
+        report = onboard(src, llm_client(s, not a.no_llm), _Path(s.onboarding_example),
                          _Path(a.out), log=say, write=not a.dry_run, force=a.force)
     except SourceError as exc:
         say(f"error: {exc}")
@@ -850,11 +948,15 @@ def cmd_demo(s, store, a):
 
 # ---------------------------------------------------------------------- parser
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="faultline", description="AI-driven chaos engineering for Eclipse Ditto")
+    p = argparse.ArgumentParser(prog="faultline", description="AI-driven chaos engineering for docker-compose applications")
     p.add_argument("--config", help="settings yaml (default config/settings.yaml)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("setup", help="check Docker, the Ditto stack, helper images and the LLM").set_defaults(fn=cmd_setup)
+    sub.add_parser("setup", help="check the target, Docker, its stack, helper images and the LLM").set_defaults(fn=cmd_setup)
+    tg = sub.add_parser("target", help="show the selected target (FAULTLINE_TARGET) and where its files are")
+    tg.add_argument("--shell", action="store_true", help="print KEY=value lines for scripts")
+    tg.add_argument("--wait", type=int, default=0, metavar="SECONDS", help="wait up to SECONDS for its health URL")
+    tg.set_defaults(fn=cmd_target)
     t = sub.add_parser("topology", help="map services, dependencies and criticality")
     t.add_argument("--no-live", action="store_true")
     t.add_argument("--knowledge", help="documented-knowledge YAML to layer on (default: settings knowledge_file)")
@@ -902,7 +1004,7 @@ def main(argv=None) -> int:
     ob.set_defaults(fn=cmd_onboard)
     sub.add_parser("stop", help="KILL SWITCH: abort and roll back now").set_defaults(fn=cmd_stop)
     h = sub.add_parser("heal", help="reset the sandbox: remove chaos leftovers, (optionally) restart the cluster, wait for UP")
-    h.add_argument("--restart", action="store_true", help="also restart the Ditto services in dependency order"); h.set_defaults(fn=cmd_heal)
+    h.add_argument("--restart", action="store_true", help="also restart the services in dependency order"); h.set_defaults(fn=cmd_heal)
     ap = sub.add_parser("approvals", help="show the decision the system is waiting on (answers arrive by email)")
     ap.add_argument("--resend", metavar="ID", help="re-send a pending decision's email, same token")
     ap.add_argument("--limit", type=int, default=5, help="how many past decisions to list (0 = none)")
@@ -927,7 +1029,7 @@ def main(argv=None) -> int:
     apv.add_argument("id")
     apv.add_argument("--hash", help="the change hash shown (full sha256 or its first 8+ characters)")
     apv.add_argument("--yes", action="store_true", help="approve the hash just displayed without typing it")
-    apv.add_argument("--allow-protected", action="store_true", help="required for fixes that touch MongoDB")
+    apv.add_argument("--allow-protected", action="store_true", help="required for fixes that touch a protected service")
     apv.add_argument("--no-apply", action="store_true", help="record the approval only; do not apply now")
     apv.add_argument("--reason", default="", help="why, for the audit trail")
     apv.set_defaults(fn=cmd_approve)
@@ -950,6 +1052,9 @@ def main(argv=None) -> int:
     store = ReportStore(s.reports)
     try:
         return a.fn(s, store, a)
+    except NoTarget as exc:
+        say(str(exc))
+        return 1
     except KeyboardInterrupt:
         say("\ninterrupted")
         return 130

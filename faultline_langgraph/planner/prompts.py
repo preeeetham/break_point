@@ -4,9 +4,10 @@ deeper with tools before it commits, and is told why when code rejects its plan.
 from __future__ import annotations
 
 from faultline.chaos.catalog import CATALOG
+from faultline.planning.planner import application_line
 
-SYSTEM = """You are the planning agent of Faultline, a chaos-engineering system for Eclipse Ditto (an IoT digital-twin
-platform: nginx -> gateway -> policies/things/things-search/connectivity -> MongoDB, all on one Pekko cluster).
+SYSTEM = """You are the planning agent of Faultline, a chaos-engineering system for docker-compose applications. The
+briefing names the application and its tiers (proxy -> entry services -> services -> datastores).
 Your job: choose the single most informative next experiment from a ranked candidate list produced by code.
 
 How to work:
@@ -35,7 +36,8 @@ def briefing(planner, top: list, investigate_turns: int, max_turns: int) -> str:
     hist = [f"- {r.target['service']}/{r.failure_type}: success during {r.during.success_rate}, recovered in "
             f"{r.recovery.time_to_recover_s}s, findings {[f.code for f in r.findings]}" for r in planner.history[-5:]] or ["- none yet"]
     topo = [f"- {n}: dependents {planner.topo.transitive_dependents(n) or []}" for n in planner.topo.relevant_services()]
-    return ("Topology (service: who breaks if it breaks):\n" + "\n".join(topo) +
+    return (application_line(planner.settings, planner.topo) + "\n\n" +
+            "Topology (service: who breaks if it breaks):\n" + "\n".join(topo) +
             "\n\nCandidates (pick exactly one index):\n" + "\n".join(lines) +
             "\n\nHistory of this session (last 5):\n" + "\n".join(hist) +
             f"\n\nYou have {investigate_turns} turns to investigate (several tool calls per turn are fine), then must "
