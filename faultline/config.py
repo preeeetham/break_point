@@ -173,7 +173,8 @@ def _apply_yaml(s: Settings, data: dict, base: Path | None = None) -> None:
 def _apply_target(s: Settings) -> None:
     """Layer targets/<target>/target.yaml and pick up the target's conventional files.
 
-    A missing target directory is recorded rather than raised: .env is shared by every branch of
+    A missing or unusable target (no directory, no target.yaml, invalid YAML) is recorded in
+    `target_error` rather than raised: .env is shared by every branch of
     this repository, and a branch that does not carry the target must still load its settings.
     `faultline setup` reports the error, and every command that needs a compose file says so.
     """
@@ -184,16 +185,21 @@ def _apply_target(s: Settings) -> None:
                           f"(available: {', '.join(known) or 'none'})")
         return
     tfile = tdir / TARGET_FILE
-    if tfile.is_file():
-        try:
-            data = yaml.safe_load(tfile.read_text()) or {}
-        except yaml.YAMLError as exc:
-            s.target_error = f"targets/{s.target}/{TARGET_FILE} is not valid YAML: {exc}".replace("\n", " ")
-            return
-        if not isinstance(data, dict):
-            s.target_error = f"targets/{s.target}/{TARGET_FILE} must be a mapping of settings"
-            return
-        _apply_yaml(s, data, base=tdir)
+    if not tfile.is_file():
+        # Usually the leftovers of another branch: git keeps ignored files (a stack's .env, caches) when it
+        # switches, so the directory can outlive the branch that carries the target.
+        s.target_error = (f"targets/{s.target}/ has no {TARGET_FILE}; if the target lives on its own branch, "
+                          f"`git checkout target/{s.target}`")
+        return
+    try:
+        data = yaml.safe_load(tfile.read_text()) or {}
+    except yaml.YAMLError as exc:
+        s.target_error = f"targets/{s.target}/{TARGET_FILE} is not valid YAML: {exc}".replace("\n", " ")
+        return
+    if not isinstance(data, dict):
+        s.target_error = f"targets/{s.target}/{TARGET_FILE} must be a mapping of settings"
+        return
+    _apply_yaml(s, data, base=tdir)
     knowledge = tdir / f"{s.target}{KNOWLEDGE_SUFFIX}"
     if not knowledge.is_file():
         # `faultline onboard <repo> --out targets/<name>` names the file after the repository, not the target

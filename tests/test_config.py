@@ -99,6 +99,17 @@ def test_a_broken_target_yaml_is_reported_not_raised(tmp_path, monkeypatch, text
     assert match in s.target_error and s.target_dir is None and s.compose_file == ""
 
 
+def test_a_target_directory_without_target_yaml_points_at_its_branch(tmp_path, monkeypatch):
+    tdir = _target(tmp_path, monkeypatch, name="ghost")
+    (tdir / "target.yaml").unlink()
+    (tdir / "deploy").mkdir()
+    (tdir / "deploy" / ".env").write_text("X=1\n")      # what a branch switch leaves behind
+    s = load_settings()
+    assert s.target_error == "targets/ghost/ has no target.yaml; if the target lives on its own branch, " \
+                             "`git checkout target/ghost`"
+    assert s.compose_file == "" and s.target_dir is None
+
+
 def test_no_target_leaves_paths_empty_rather_than_pointing_at_the_repo_root(monkeypatch):
     for key in ("FAULTLINE_TARGET", "FAULTLINE_COMPOSE_FILE", "FAULTLINE_NGINX_CONF", "FAULTLINE_KNOWLEDGE_FILE",
                 "FAULTLINE_PROBE_FILE", "FAULTLINE_RULES_FILE"):
