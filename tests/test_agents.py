@@ -13,7 +13,7 @@ def _level_for(sev: float) -> str:
 
 # ---------------------------------------------------------------- risk
 def test_risk_severity_and_level_bands(make_report, topology):
-    risk = pytest.importorskip("faultline.agents.risk")
+    risk = pytest.importorskip("break_point.agents.risk")
     for during in (1.0, 0.9, 0.5, 0.1, 0.0):
         r = make_report(during_success=during)
         a = risk.assess(r, topology, None)
@@ -32,7 +32,7 @@ def test_risk_severity_and_level_bands(make_report, topology):
 
 
 def test_risk_data_loss_forces_critical(make_report, topology):
-    risk = pytest.importorskip("faultline.agents.risk")
+    risk = pytest.importorskip("break_point.agents.risk")
     a = risk.assess(make_report(during_success=0.99, ttr=1.0, affected=[], finding_codes=["data_loss_suspected"]), topology, None)
     assert a.severity < 3
     assert a.level == "critical"
@@ -40,14 +40,14 @@ def test_risk_data_loss_forces_critical(make_report, topology):
 
 
 def test_risk_skipped_report_has_zero_severity(make_report, topology):
-    risk = pytest.importorskip("faultline.agents.risk")
+    risk = pytest.importorskip("break_point.agents.risk")
     a = risk.assess(make_report(status="skipped", error="system unhealthy before injection"), topology, None)
     assert a.severity == 0 and a.level == "low" and a.blast_radius == 0
     assert "skipped" in a.summary
 
 
 def test_risk_factors_sum_to_severity(make_report, topology):
-    risk = pytest.importorskip("faultline.agents.risk")
+    risk = pytest.importorskip("break_point.agents.risk")
     a = risk.assess(make_report(), topology, None)
     assert a.severity == pytest.approx(min(10.0, sum(a.factors.values())), abs=0.01)
     assert a.blast_radius == 2  # target + gateway
@@ -56,8 +56,8 @@ def test_risk_factors_sum_to_severity(make_report, topology):
 
 # ---------------------------------------------------------------- fix
 def test_fix_is_advisory_with_recommendations(make_report, topology):
-    risk = pytest.importorskip("faultline.agents.risk")
-    fix = pytest.importorskip("faultline.agents.fix")
+    risk = pytest.importorskip("break_point.agents.risk")
+    fix = pytest.importorskip("break_point.agents.fix")
     report = make_report()
     rk = risk.assess(report, topology, None)
     out = fix.recommend(report, rk, None)
@@ -74,7 +74,7 @@ def test_fix_is_advisory_with_recommendations(make_report, topology):
 
 
 def test_fix_health_check_masked_failure_leads_with_the_readiness_rule(make_report, topology):
-    fix = pytest.importorskip("faultline.agents.fix")
+    fix = pytest.importorskip("break_point.agents.fix")
     report = make_report(finding_codes=["health_check_masked_failure"])
     out = fix.recommend(report, None, None)
     assert out.recommendations[0].title.startswith("Make readiness reflect dependency health")
@@ -84,7 +84,7 @@ def test_fix_health_check_masked_failure_leads_with_the_readiness_rule(make_repo
 
 # ---------------------------------------------------------------- scorecard
 def test_scorecard_untested_and_ranking(make_report, topology):
-    scorecard = pytest.importorskip("faultline.agents.scorecard")
+    scorecard = pytest.importorskip("break_point.agents.scorecard")
     reports = [
         make_report(service="auth", during_success=0.1),
         make_report(service="orders", during_success=0.9, failure_type="network_delay"),
@@ -107,7 +107,7 @@ def test_scorecard_untested_and_ranking(make_report, topology):
 
 
 def test_scorecard_grades_and_empty(topology):
-    scorecard = pytest.importorskip("faultline.agents.scorecard")
+    scorecard = pytest.importorskip("break_point.agents.scorecard")
     assert scorecard.grade(None) == "—"
     assert scorecard.grade(95) == "A" and scorecard.grade(80) == "B" and scorecard.grade(70) == "C"
     assert scorecard.grade(50) == "D" and scorecard.grade(10) == "F"
@@ -118,9 +118,9 @@ def test_scorecard_grades_and_empty(topology):
 
 # ---------------------------------------------------------------- narrator
 def test_narrator_mentions_target(make_report, topology):
-    risk = pytest.importorskip("faultline.agents.risk")
-    fix = pytest.importorskip("faultline.agents.fix")
-    narrator = pytest.importorskip("faultline.agents.narrator")
+    risk = pytest.importorskip("break_point.agents.risk")
+    fix = pytest.importorskip("break_point.agents.fix")
+    narrator = pytest.importorskip("break_point.agents.narrator")
     report = make_report()
     rk = risk.assess(report, topology, None)
     fx = fix.recommend(report, rk, None)

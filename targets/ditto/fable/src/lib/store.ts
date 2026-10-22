@@ -123,19 +123,19 @@ function subscribe(l: () => void) {
 }
 
 /** Subscribe to one slice. The selector must return a stable reference (a field of the snapshot, not a new object). */
-export function useFaultline<T>(select: (s: Snapshot) => T): T {
+export function useBreakPoint<T>(select: (s: Snapshot) => T): T {
   return useSyncExternalStore(subscribe, () => select(snap), () => select(snap));
 }
 
-export const useConnection = () => useFaultline((s) => s.connection);
-export const useFState = () => useFaultline((s) => s.state);
-export const useEvents = () => useFaultline((s) => s.events);
-export const useCatalog = () => useFaultline((s) => s.catalog);
+export const useConnection = () => useBreakPoint((s) => s.connection);
+export const useFState = () => useBreakPoint((s) => s.state);
+export const useEvents = () => useBreakPoint((s) => s.events);
+export const useCatalog = () => useBreakPoint((s) => s.catalog);
 
 const replayRefusal = (): ActionResult => ({
   ok: false,
   status: 0,
-  error: "Replay mode: the Faultline server is not reachable, so nothing can run. Start it with faultline dashboard --port 8777.",
+  error: "Replay mode: the Break Point server is not reachable, so nothing can run. Start it with break_point dashboard --port 8777.",
 });
 
 // In replay the poll only retries every 15 s, so an action first checks whether the server is back

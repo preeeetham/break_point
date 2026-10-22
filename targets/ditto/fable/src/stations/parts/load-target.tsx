@@ -23,7 +23,7 @@ function PathRows({ rows }: { rows: [string, string][] }) {
 function adoptFix(error: string): string {
   if (/must live under/i.test(error)) return "The control room only adopts files under deploy/, config/ or .cache/onboarding/. Load the repository again from this station: it writes to .cache/onboarding/knowledge.";
   if (/not found/i.test(error)) return "The file is no longer on disk. Load the repository again to regenerate it.";
-  if (/replay/i.test(error)) return "Start the server with faultline dashboard --port 8777, then adopt the target.";
+  if (/replay/i.test(error)) return "Start the server with break_point dashboard --port 8777, then adopt the target.";
   return "Check both paths above, then try again.";
 }
 

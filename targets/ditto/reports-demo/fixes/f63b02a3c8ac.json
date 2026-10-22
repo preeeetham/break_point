@@ -78,7 +78,7 @@
       "rationale": "In experiment f63b02a3c8ac (risk HIGH 6.2/10), API success fell to 0% during injection, TTR 26 s, findings: API success dropped to 0% during the fault; things-search kept reporting /ready=200 while the API was failing. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.",
       "steps": [
         "Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~\"5..\"}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.",
-        "Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.",
+        "Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.",
         "Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs."
       ],
       "verify": [

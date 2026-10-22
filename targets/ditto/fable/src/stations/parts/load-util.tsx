@@ -67,7 +67,7 @@ export function stripExc(text: string | null | undefined): string {
 
 const ROOT_RE = /^(.*?)\/(deploy|config|reports|\.cache\/onboarding)\//;
 
-/** The Faultline checkout on the server, inferred from the configured target paths. */
+/** The Break Point checkout on the server, inferred from the configured target paths. */
 export function repoRoot(target: State["target"]): string | null {
   for (const p of [target?.compose_file, target?.knowledge_file]) {
     const m = p && p.startsWith("/") ? ROOT_RE.exec(p) : null;

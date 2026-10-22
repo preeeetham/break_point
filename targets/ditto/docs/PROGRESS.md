@@ -8,13 +8,13 @@ it was built, what was verified and how, and what is not done.
 
 ## What it is, in one paragraph
 
-Every other agent in Faultline is empirical: the Risk agent scores an experiment that already ran,
-the Fix agent recommends off a finding that was already observed. Correct, and it means Faultline has
+Every other agent in Break Point is empirical: the Risk agent scores an experiment that already ran,
+the Fix agent recommends off a finding that was already observed. Correct, and it means Break Point has
 nothing to say about a service nobody has gotten around to breaking — which matters on a hackathon
-time budget and matters more the moment Faultline is pointed at an unfamiliar repo. The Scout runs
+time budget and matters more the moment Break Point is pointed at an unfamiliar repo. The Scout runs
 once, early (right after Topology, before any experiment), reads the compose file, the declared health
 checks, the resource limits, the restart policies and the knowledge file, and produces a ranked list
-of *predicted* weaknesses. `faultline scout --reconcile` later scores those predictions against the
+of *predicted* weaknesses. `break_point scout --reconcile` later scores those predictions against the
 experiments that have since run.
 
 Two rules hold it together. The checks are 100 % deterministic — the LLM never decides whether a
@@ -26,7 +26,7 @@ the Markdown header and on every CLI line, the same discipline the Fix agent app
 
 ## Build order
 
-1. **The seven deterministic checks** (`faultline/agents/scout.py`): `check_health_checks` (two
+1. **The seven deterministic checks** (`break_point/agents/scout.py`): `check_health_checks` (two
    categories, `shallow_health_check` and `missing_health_check`), `check_redundancy`,
    `check_resource_limits`, `check_restart_policy`, `check_retry_backoff`, `check_published_ports`,
    `check_rate_limiting` — eight categories from seven check functions. Every finding quotes the
@@ -38,7 +38,7 @@ the Markdown header and on every CLI line, the same discipline the Fix agent app
    limit does not score as if it set neither. Each finding also nominates the existing catalog failure
    type that would test it, resolved against `applicable()` and the safety policy so the suggestion is
    always runnable — MongoDB is protected and degrade-only, so its predictions ask for `network_delay`.
-3. **Schema and blackboard slots** (`faultline/schemas.py`, `faultline/reporting/store.py`):
+3. **Schema and blackboard slots** (`break_point/schemas.py`, `break_point/reporting/store.py`):
    `PredictedWeakness`, `SystemicPattern`, `WeaknessReport`, `WeaknessOutcome`,
    `WeaknessReconciliation`, `SuggestedExperiment`, `PREDICTED_LABEL`, plus `write_weaknesses` /
    `weaknesses` / `write_reconciliation` / `reconciliation` on the store.
@@ -46,14 +46,14 @@ the Markdown header and on every CLI line, the same discipline the Fix agent app
    two systemic-pattern narratives over findings the checks already made. The model cannot add to,
    remove from, re-rank or re-score the list; anything it returns for an id the checks did not produce
    is dropped, and a pattern citing fewer than two known ids is dropped.
-5. **CLI** (`cmd_scout` and the `scout` subparser in `faultline/cli.py`): `faultline scout`,
+5. **CLI** (`cmd_scout` and the `scout` subparser in `break_point/cli.py`): `break_point scout`,
    `--reconcile`, `--json`, `--no-llm`, registered after `topology` and before `baseline`, and added
-   to `faultline demo` as step 2 of 7, with the reconciliation as step 5. With no `topology.json`
+   to `break_point demo` as step 2 of 7, with the reconciliation as step 5. With no `topology.json`
    on disk it maps one first with
    `live=False`, because static analysis has to work with the stack down.
 6. **Planner integration** (`WEAKNESS_WEIGHT`, `WEAKNESS_EXACT_MATCH_BONUS` in
-   `faultline/planning/planner.py`): strictly additive, bounded at +1.5.
-7. **Reconcile** (`faultline/agents/reconcile.py`): confirmed / cleared / untested per prediction,
+   `break_point/planning/planner.py`): strictly additive, bounded at +1.5.
+7. **Reconcile** (`break_point/agents/reconcile.py`): confirmed / cleared / untested per prediction,
    pure arithmetic over `reports/`, no LLM anywhere in the module.
 
 The commit order is not quite the logical order above: the schema landed first so the contract existed
@@ -66,18 +66,18 @@ before its producers, and reconcile landed before the CLI and planner wiring tha
 | `16743fa` | Schema + blackboard slots for predicted weaknesses — the contract, kept deliberately separate from the Risk agent's post-hoc measured severity |
 | `6584d3c` | The seven deterministic checks, the severity formula and the first LLM prose pass. **This is the commit the Ditto sanity check belongs to** (below) |
 | `b97495e` | `--reconcile`: the whole-system analogue of per-experiment `hypothesis_result.held`, plus the two gates that keep the headline number honest |
-| `edbad8d` | `faultline scout` and `faultline scout --reconcile` on the CLI, following the existing command pattern, with every printed severity labelled as predicted |
+| `edbad8d` | `break_point scout` and `break_point scout --reconcile` on the CLI, following the existing command pattern, with every printed severity labelled as predicted |
 | `a7a2ece` | Planner takes predicted weaknesses as an *additional* ranking signal, bounded at +1.5; the one change to already-working shared code, and strictly additive |
 | `0dc3ed4` | Split the LLM pass into small, independently-failing calls after a real provider exposed the one-big-call design as both over-budget and all-or-nothing |
 | `a73e263` | `tests/test_scout.py`, plus two fixes the tests and a clean-config run exposed: a well-configured deployment yields zero predictions, and a 0.0.0.0-bound port outranks a loopback one |
 | `1cba35c` | Attribute a per-service finding to the prediction it is actually about, and honour the module's own "never raises" contract. Moved the real result from 6 confirmed to 8 |
 | `78edf1a` | Say so when the safety policy forces a weaker stand-in experiment, instead of printing "take the single instance away" beside a latency injection |
-| _(demo)_ | `faultline demo` runs the reconciliation as step 5 of 7, closing the loop it opens at step 2 |
+| _(demo)_ | `break_point demo` runs the reconciliation as step 5 of 7, closing the loop it opens at step 2 |
 
 ## The Ditto sanity check — step 1, before any LLM or reconcile logic
 
 This is the result the whole feature rests on, and it was taken before the LLM pass was wired in and
-long before reconcile existed: `faultline scout` against `deploy/docker-compose.yml`, no model in the
+long before reconcile existed: `break_point scout` against `deploy/docker-compose.yml`, no model in the
 loop, checking whether purely deterministic checks rediscover gaps whose correct answers are already
 known elsewhere in this repository. **21 predictions.** Top of the ranking:
 
@@ -97,14 +97,14 @@ Why that is the right answer:
 
 - The top prediction is MongoDB having no replica set, whose fix is already in the Fix agent's
   knowledge library word for word — "Run MongoDB as a replica set so the Ditto driver can fail over"
-  (`faultline/agents/knowledge.py`) — except that the library only offers it *after* an experiment
+  (`break_point/agents/knowledge.py`) — except that the library only offers it *after* an experiment
   proves the point. The Scout predicts it from the compose file before anything is injected.
 - `no_redundancy` on `policies` is that library's other Ditto-specific one, "run ≥2 policies
   instances".
 - `shallow_health_check` fires on all five Ditto Java services off the real evidence
   ``test: curl --fail `hostname`:7626/alive`` — a bare liveness probe that never touches `mongodb`.
   That is the static shape of `health_check_masked_failure`, the finding the README documents against
-  Ditto issue #1865, which until now Faultline could only find empirically.
+  Ditto issue #1865, which until now Break Point could only find empirically.
 - `weak_restart_policy` reports **zero** predictions, and that is the point: every Ditto service
   declares `restart: always`, which is part of why its crash recovery works cleanly. A check that
   fires on everything is a broken check, so the checks discriminate.
@@ -114,7 +114,7 @@ Why that is the right answer:
 
 ## Predicted before, confirmed after
 
-`faultline scout --reconcile` against the six experiment reports already on the blackboard:
+`break_point scout --reconcile` against the six experiment reports already on the blackboard:
 **21 predicted, 8 confirmed, 0 cleared, 13 untested**, across 6 experiments considered.
 
 The best single line of evidence: `shallow_health_check` on `things-search`, `connectivity` and
@@ -143,7 +143,7 @@ at all.
 ## Verified, and how
 
 - **Deterministic checks.** The Ditto sanity check above, run with `--no-llm`, against a compose file
-  whose correct answers are independently recorded in `faultline/agents/knowledge.py` and in the
+  whose correct answers are independently recorded in `break_point/agents/knowledge.py` and in the
   README's own `health_check_masked_failure` / Ditto #1865 documentation. The silent
   `weak_restart_policy` check is part of the result, not an omission from it.
 - **Reconcile.** Run against the six real experiment reports on the blackboard, not fixtures:
@@ -172,7 +172,7 @@ at all.
 
 - **Nothing in the build order.** All seven steps are committed, the suite is green (405 tests, 133
   of them for this agent), and a full `scout` -> experiments -> `scout --reconcile` cycle produces a
-  sensible predicted-vs-confirmed comparison. `faultline demo` now runs the reconciliation as step 5
+  sensible predicted-vs-confirmed comparison. `break_point demo` now runs the reconciliation as step 5
   of 7, so the loop the scout opens is closed inside the demo itself.
 - **Two commits carry pre-existing uncommitted work that was in the tree when this branch was cut.**
   `main`'s working tree held roughly fifteen modified or untracked files from other in-flight work
@@ -293,9 +293,9 @@ reported as "the failure stayed at policies", consistent with its unchanged p95.
 
 # Progress: Human-approved fixes (2026-10-12)
 
-Branch `feature/hitl-fix`. Until now every Faultline fix was advice. This feature adds one narrow
+Branch `feature/hitl-fix`. Until now every Break Point fix was advice. This feature adds one narrow
 path that can change the application, and only with a person's say-so: after an experiment finds a
-problem, Faultline asks "Can I fix this?" (what is wrong, the exact change, the expected improvement,
+problem, Break Point asks "Can I fix this?" (what is wrong, the exact change, the expected improvement,
 the risks, the rollback), applies only the exact change a human approved by its hash, re-runs the same
 experiment, and keeps the change only if the before/after comparison holds. The feature is described
 for readers in [docs/REFERENCE.md](docs/REFERENCE.md#human-approved-fixes); the 60-second demo script
@@ -303,27 +303,27 @@ is [docs/demo/HITL_FIX_DEMO.md](docs/demo/HITL_FIX_DEMO.md).
 
 ## The rules it was built around
 
-- **Only code-defined changes.** Six catalog entries (`faultline/remediation/catalog.py`) build every
+- **Only code-defined changes.** Six catalog entries (`break_point/remediation/catalog.py`) build every
   change deterministically from the live stack's merged compose config. A model may rank the shortlist
   and reword three prose fields; it never writes the change, the rollback text or the diff, and an id
-  it invents is discarded. With `FAULTLINE_LLM=false` the feature works the same from templates.
+  it invents is discarded. With `BREAK_POINT_LLM=false` the feature works the same from templates.
 - **Nothing is approved by default.** Proposals expire (`FIX_PROPOSAL_TIMEOUT_SECONDS`, 1800 s); an
   unanswered email, a send failure or missing mail settings decide nothing.
 - **The approval pins the change.** `change_hash` is the sha256 of the verbatim preview. CLI, control
   room and email all approve a hash, and the apply engine rebuilds the change and refuses if it no
   longer hashes the same.
-- **The stack's own compose files are never edited.** Changes go into a Faultline-owned, git-ignored
+- **The stack's own compose files are never edited.** Changes go into a Break Point-owned, git-ignored
   override (`deploy/docker-compose.override.yml`), backed up byte for byte under
   `reports/remediation/backups/` and restored exactly on rollback.
 - **Every status change is a legal transition with an audit entry**
-  (`faultline/remediation/proposals.py`), so a rejected or expired proposal can never become applied.
+  (`break_point/remediation/proposals.py`), so a rejected or expired proposal can never become applied.
 
 ## Build order and commits
 
 | Commit | What |
 |---|---|
 | `d6eb237` | 1/5: the contract (`FixProposal`, `FixVerification`, `MetricComparison`, `FixState`) and the lifecycle: legal transitions, change hash, expiry |
-| `276fec9` | 2/5: the code-defined fix catalog and the Faultline-owned override (deterministic render, diff, exact-bytes backup and restore, live compose files from container labels, recreate) |
+| `276fec9` | 2/5: the code-defined fix catalog and the Break Point-owned override (deterministic render, diff, exact-bytes backup and restore, live compose files from container labels, recreate) |
 | `197a795` | 3/5: "Can I fix this?" proposals (candidates, templates, optional validated LLM step) and the CLI (`propose`, `proposals`, `approve`, `reject`; `run --analyze` proposes) |
 | `a47d943` | 4/5: apply, re-run, verify and roll back automatically, with preflight refusals, the two locks and the metric tolerances |
 | `3ee3f13` | Fix states on the scorecard (`ServiceScore.fixes`, the Fix states table in `scorecard.md`) and verified or rolled-back fixes in the narrative |
@@ -331,7 +331,7 @@ is [docs/demo/HITL_FIX_DEMO.md](docs/demo/HITL_FIX_DEMO.md).
 
 ## What it does on Ditto
 
-Checked against the live `bosch-ditto` project, with `faultline propose --no-llm` run against a copy
+Checked against the live `bosch-ditto` project, with `break_point propose --no-llm` run against a copy
 of the blackboard on 2026-10-12 (nothing applied):
 
 - `fd1b18f67001` (`container_crash` on `things`; `health_check_masked_failure` on `things-search`,
@@ -366,13 +366,13 @@ of the blackboard on 2026-10-12 (nothing applied):
 - The control room's scorecard panel does not draw fix states, and `narrate_sections()` (the
   control room's narrative JSON) has no fix lines; both are in the CLI output and `scorecard.md` only.
 - The scorecard written right after a verification re-run still shows the fix as `applied`, because it
-  is computed before the final transition; the next `faultline scorecard` or analysis corrects it.
+  is computed before the final transition; the next `break_point scorecard` or analysis corrects it.
 - Regression mode is only partly delivered: see the roadmap in
   [docs/REFERENCE.md](docs/REFERENCE.md#roadmap).
 
 ## Live integration run (2026-10-12, project bosch-ditto)
 
-Rerun with `FAULTLINE_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x -s` (4 tests, skipped in the normal suite). Each scenario was exercised against the live stack while the tests were being written (evidence: the proposal records below); a final uninterrupted pass of all four still has to be run once Docker is back:
+Rerun with `BREAK_POINT_LIVE=1 .venv/bin/python -m pytest -q tests/integration -x -s` (4 tests, skipped in the normal suite). Each scenario was exercised against the live stack while the tests were being written (evidence: the proposal records below); a final uninterrupted pass of all four still has to be run once Docker is back:
 - Approve flow: `fx-484ad4e23d` (add_or_tighten_healthcheck on connectivity, gateway, things-search, from the things container_crash `083c6cac4a0d`) applied, re-run `6600e215b8e8` and **verified**: error rate during the fault 100% -> 100% (same), time to recover 32.5 s -> 32.8 s (same), no new findings. An honest result: tightening the healthcheck changes what the platform reports, not how the crash hurts users.
 - Reject: `fx-0bacda5fe5` rejected, override and containers unchanged.
 - Bad fix: `fx-a6e19a88f5` (test-only failing healthcheck on things) went unhealthy and was **rolled back automatically**; things healthy again on its original /alive check.
@@ -382,7 +382,7 @@ Bugs the live run found and fixed: recreating gateway left nginx proxying to the
 
 ## 2026-10-11: ingestion data quality (evaluator feedback)
 
-- New `faultline/topology/quality.py`: null, consistency, conformity, range, cleaning and time-lenience checks on raw compose input, run automatically on every topology build.
+- New `break_point/topology/quality.py`: null, consistency, conformity, range, cleaning and time-lenience checks on raw compose input, run automatically on every topology build.
 - New `reports/data_quality.json` (`DataQualityReport`), validated before write; `TIME_LENIENCE_SECONDS` setting.
 - Ditto compose: clean, graph unchanged. Mastodon and OpenTelemetry demo: issues recorded, no edges invented.
 - Not yet wired: Repo Onboarding does not write its own data_quality report (it reuses the same compose parsers, so the topology build of an onboarded repo is covered).

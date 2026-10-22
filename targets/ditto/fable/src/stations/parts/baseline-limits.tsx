@@ -33,7 +33,7 @@ export function LimitsList({ t, compact = false, columns = false }: { t: Thresho
     {
       value: "any time",
       name: "Stop",
-      text: "Stop everything, the Esc key, or faultline stop from any shell.",
+      text: "Stop everything, the Esc key, or break_point stop from any shell.",
     },
   ];
   const always: Row[] = [

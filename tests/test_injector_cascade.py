@@ -10,13 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import faultline.agents.injector as injector_mod
-from faultline.agents.injector import Injector
-from faultline.chaos.actions import Handle
-from faultline.observe.probes import HealthSample
-from faultline.observe.window import Sample, SampleWindow
-from faultline.reporting.markdown import experiment_markdown
-from faultline.schemas import CascadeAttribution, CascadeEdge, CascadeHop, ExperimentSpec, Hypothesis
+import break_point.agents.injector as injector_mod
+from break_point.agents.injector import Injector
+from break_point.chaos.actions import Handle
+from break_point.observe.probes import HealthSample
+from break_point.observe.window import Sample, SampleWindow
+from break_point.reporting.markdown import experiment_markdown
+from break_point.schemas import CascadeAttribution, CascadeEdge, CascadeHop, ExperimentSpec, Hypothesis
 
 T0 = 1_700_000_000.0
 TARGET = "auth"

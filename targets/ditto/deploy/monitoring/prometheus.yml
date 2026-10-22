@@ -1,4 +1,4 @@
-# Prometheus scrape config for the Faultline sandbox.
+# Prometheus scrape config for the Break Point sandbox.
 # 5s resolution so short chaos experiments (seconds to a few minutes) are visible.
 
 global:
@@ -94,7 +94,7 @@ scrape_configs:
         labels: { service: mongodb }
     relabel_configs: *probe_relabel
 
-  # Faultline's own probe/metrics endpoint on the host (optional; may be down)
-  - job_name: faultline_probe
+  # Break Point's own probe/metrics endpoint on the host (optional; may be down)
+  - job_name: break_point_probe
     static_configs:
       - targets: ["host.docker.internal:9200"]

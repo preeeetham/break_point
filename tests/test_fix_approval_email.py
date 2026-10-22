@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from faultline.config import Settings
-from faultline.remediation import proposals as P
+from break_point.config import Settings
+from break_point.remediation import proposals as P
 
 from .test_approval import ADMIN, answer, mail, mailbox, settings  # noqa: F401  (fixtures)
 from .test_control import PREVIEW, make_proposal
@@ -22,7 +22,7 @@ from .test_control import PREVIEW, make_proposal
 
 @pytest.fixture
 def agent(settings, tmp_store):  # noqa: F811
-    from faultline.agents.approval import ApprovalAgent
+    from break_point.agents.approval import ApprovalAgent
 
     return ApprovalAgent(settings, tmp_store, log=lambda m: None)
 
@@ -47,17 +47,17 @@ def sent_body(mailbox, i: int = 0) -> str:  # noqa: F811
     ("FIX 1", None), ("CONTINUE", None), ("", None),
 ])
 def test_fix_proposal_vocabulary_is_closed_and_exact(line, expected):
-    from faultline.agents.approval import parse_reply
+    from break_point.agents.approval import parse_reply
 
     parsed = parse_reply(line, "fix_proposal")
     assert (parsed.answer if parsed else None) == expected
 
 
 def test_reply_reason_is_the_unquoted_text_after_the_answer():
-    from faultline.agents.approval import reply_reason
+    from break_point.agents.approval import reply_reason
 
     body = "\n> quoted first\nREJECT\nNot during the demo,\n  the judges are watching.\n\n" \
-           "On Mon, Oct 12, Faultline wrote:\n> APPROVE  apply exactly the change\n"
+           "On Mon, Oct 12, Break Point wrote:\n> APPROVE  apply exactly the change\n"
     assert reply_reason(body) == "Not during the demo, the judges are watching."
     assert reply_reason("APPROVE") == ""
     assert reply_reason("APPROVE\n-- \nsent from my phone") == ""
@@ -85,7 +85,7 @@ def test_approve_by_email_approves_exactly_the_hash_that_was_shown(agent, mailbo
                     "4. Risks", "5. Rollback"):
         assert heading in body, heading
     assert "APPROVE" in body and "REJECT" in body and "never approved automatically" in body
-    assert "faultline approve" not in body          # the CLI hints are not the email vocabulary
+    assert "break_point approve" not in body          # the CLI hints are not the email vocabulary
 
 
 def test_reject_by_email_keeps_the_reason(agent, mailbox, tmp_store, proposal):  # noqa: F811
@@ -181,7 +181,7 @@ def test_not_pending_or_unknown_is_never_emailed(agent, mailbox, tmp_store):  # 
 
 
 def test_unconfigured_channel_decides_nothing(tmp_store, proposal):
-    from faultline.agents.approval import request_fix_approval
+    from break_point.agents.approval import request_fix_approval
 
     lines: list[str] = []
     assert request_fix_approval(Settings(), tmp_store, proposal, log=lines.append) is None
@@ -192,7 +192,7 @@ def test_unconfigured_channel_decides_nothing(tmp_store, proposal):
 
 
 def test_send_failure_decides_nothing(mailbox, tmp_store, proposal, settings):  # noqa: F811
-    from faultline.agents.approval import ApprovalAgent
+    from break_point.agents.approval import ApprovalAgent
 
     from .fakemail import FakeSMTPServer
 
@@ -212,9 +212,9 @@ def test_credentials_never_reach_the_blackboard(agent, mailbox, tmp_store, propo
 
 
 def test_cli_propose_email_without_config_leaves_proposals_pending(monkeypatch, tmp_path):
-    """`faultline propose --email` with no mail config refuses clearly and approves nothing."""
-    from faultline import cli
-    from faultline.agents import approval as ap
+    """`break_point propose --email` with no mail config refuses clearly and approves nothing."""
+    from break_point import cli
+    from break_point.agents import approval as ap
 
     monkeypatch.setattr(ap, "preflight", lambda s: ["ADMIN_EMAIL is not set"])
     sent = []

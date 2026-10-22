@@ -1,4 +1,4 @@
-# Faultline topology — project `bosch-ditto`
+# Break Point topology — project `bosch-ditto`
 
 Generated 2026-10-10 09:26:04 UTC · 12 services · 21 edges
 

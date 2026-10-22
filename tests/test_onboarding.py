@@ -1,4 +1,4 @@
-"""Unit tests for the Repo Onboarding Agent (faultline.onboarding.source + .agent).
+"""Unit tests for the Repo Onboarding Agent (break_point.onboarding.source + .agent).
 
 Everything here is offline: no network, no git, no Docker, no LLM. Repositories are fake trees
 built under `tmp_path` and the model is a `StubLLM` that returns whatever the test hands it.
@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from faultline.onboarding import agent as A
-from faultline.onboarding import source as S
-from faultline.schemas import OnboardingReport, RepoKnowledge
-from faultline.topology.compose import service_nodes, static_edges
+from break_point.onboarding import agent as A
+from break_point.onboarding import source as S
+from break_point.schemas import OnboardingReport, RepoKnowledge
+from break_point.topology.compose import service_nodes, static_edges
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = ROOT / "tests" / "fixtures" / "shop"
@@ -101,7 +101,7 @@ def _doc(path: Path, marker: str, repeat: int = 8) -> Path:
 
 
 class StubLLM:
-    """Stands in for faultline.planning.llm.LLMClient. Never touches the network."""
+    """Stands in for break_point.planning.llm.LLMClient. Never touches the network."""
 
     def __init__(self, payload=None, ok: bool = True, error: str = "", name: str = "stub:model-1"):
         self.payload = payload
@@ -953,7 +953,7 @@ def test_compare_to_the_runs_own_output_path_is_refused_without_writing(tmp_path
     (`onboard acme/shop --out targets/shop --compare-to targets/shop/shop_knowledge.yaml`)
     destroys the hand-authored ground truth and then reports a perfect score against the wreckage.
     """
-    from faultline.cli import main
+    from break_point.cli import main
 
     repo = tmp_path / "demo"
     (repo / "deployment").mkdir(parents=True)
@@ -969,7 +969,7 @@ def test_compare_to_the_runs_own_output_path_is_refused_without_writing(tmp_path
 
 def test_compare_to_a_different_path_is_allowed(tmp_path: Path):
     """The guard must not block the legitimate side-by-side into a scratch directory."""
-    from faultline.cli import main
+    from break_point.cli import main
 
     repo = tmp_path / "demo"
     repo.mkdir()

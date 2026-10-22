@@ -14,9 +14,9 @@ export function CameraHeader() {
   return (
     <div className="sticky top-0 z-40 border-b border-line bg-bg/95 backdrop-blur-[2px]">
       <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-5 gap-y-1 px-4 py-1.5 md:px-8 md:py-2.5">
-        <a href="#top" className="flex min-h-11 items-center gap-2 text-fg" aria-label="Faultline, back to the explainer">
+        <a href="#top" className="flex min-h-11 items-center gap-2 text-fg" aria-label="Break Point, back to the explainer">
           <MarkerGlyph size={18} />
-          <span className="display text-[17px]">Faultline</span>
+          <span className="display text-[17px]">Break Point</span>
         </a>
         <TestClock />
         <div className="ml-auto flex items-center gap-2">
@@ -48,9 +48,9 @@ function Pills() {
   const guardianFresh = !!s?.guardian && s.now - s.guardian.at < 15;
   return (
     <ul className="flex items-center gap-1.5 font-mono text-[11px]">
-      <Pill tone={conn === "live" ? "pass" : conn === "replay" ? "warn" : "muted"} label={conn === "live" ? "live" : conn === "replay" ? "replay" : "connecting"} title={conn === "replay" ? "The Faultline server is not reachable. Showing a recorded snapshot. Actions are disabled except Stop." : undefined} />
+      <Pill tone={conn === "live" ? "pass" : conn === "replay" ? "warn" : "muted"} label={conn === "live" ? "live" : conn === "replay" ? "replay" : "connecting"} title={conn === "replay" ? "The Break Point server is not reachable. Showing a recorded snapshot. Actions are disabled except Stop." : undefined} />
       {s && <Pill wide tone={s.llm.available && s.llm.enabled ? "model" : "muted"} label={s.llm.available && s.llm.enabled ? s.llm.model.split("/").pop() ?? s.llm.model : "rules only"} title={`${s.llm.provider}: ${s.llm.error || "available"}`} />}
-      {s && <Pill wide tone={guardianFresh ? "pass" : "muted"} label={guardianFresh ? "guardian on" : "guardian off"} title={guardianFresh ? "The independent Guardian process is heartbeating." : "Start it with: faultline guardian"} />}
+      {s && <Pill wide tone={guardianFresh ? "pass" : "muted"} label={guardianFresh ? "guardian on" : "guardian off"} title={guardianFresh ? "The independent Guardian process is heartbeating." : "Start it with: break_point guardian"} />}
       {s && <Pill wide tone={s.session.armed ? "pass" : "muted"} label={s.session.armed ? `probes ${s.session.probe.samples}` : "probes off"} />}
     </ul>
   );
@@ -68,7 +68,7 @@ function Pill({ tone, label, title, wide = false }: { tone: "pass" | "warn" | "m
 }
 
 const STOPPED = "Stopped everything. The fault rolls back within about a second.";
-const STOP_FAILED = "Stop did not reach the server. Run faultline stop in a terminal, or touch reports/STOP.";
+const STOP_FAILED = "Stop did not reach the server. Run break_point stop in a terminal, or touch reports/STOP.";
 
 function stopAll() {
   return actions.stop().then((r) => announce(r.ok ? STOPPED : `${STOP_FAILED} (${r.error ?? "no response"})`));

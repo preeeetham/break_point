@@ -1,12 +1,12 @@
-"""FixProposal schema and lifecycle (faultline/remediation/proposals.py)."""
+"""FixProposal schema and lifecycle (break_point/remediation/proposals.py)."""
 from datetime import timedelta
 
 import pytest
 from pydantic import ValidationError
 
-from faultline.remediation import proposals as P
-from faultline.reporting.store import ReportStore
-from faultline.schemas import FixProposal, ProposalExplanation
+from break_point.remediation import proposals as P
+from break_point.reporting.store import ReportStore
+from break_point.schemas import FixProposal, ProposalExplanation
 
 
 def _proposal(status="pending", preview="services:\n  orders:\n    healthcheck: {}\n", **kw):

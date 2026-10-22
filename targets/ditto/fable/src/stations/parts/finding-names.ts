@@ -1,4 +1,4 @@
-// Plain-English names for the finding codes the injector raises (faultline/agents/injector.py), so the findings
+// Plain-English names for the finding codes the injector raises (break_point/agents/injector.py), so the findings
 // table reads for a non-technical viewer. The raw code stays visible next to the name; the backend's own title,
 // which carries the measured numbers, stays as the detail line. Help text follows the control room's copy.js,
 // corrected against the conditions the injector actually checks.
@@ -29,7 +29,7 @@ export const FINDING_NAMES: Record<string, { name: string; help: string }> = {
   },
   manual_restart_required: {
     name: "Needed restarts beyond the rollback to recover",
-    help: "Removing the fault was not enough. Faultline had to restart the target or its dependents before the API came back. In production someone would do that by hand.",
+    help: "Removing the fault was not enough. Break Point had to restart the target or its dependents before the API came back. In production someone would do that by hand.",
   },
   no_automated_remediation: {
     name: "Nothing reacted to the outage",

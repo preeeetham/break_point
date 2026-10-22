@@ -1,4 +1,4 @@
-// Mirrors docs/UI_CONTRACT.md §2 and faultline/schemas.py. Only fields the UI reads are typed strictly.
+// Mirrors docs/UI_CONTRACT.md §2 and break_point/schemas.py. Only fields the UI reads are typed strictly.
 
 export type AgentKey =
   | "onboarding" | "topology" | "scout" | "baseline" | "planner" | "injector"

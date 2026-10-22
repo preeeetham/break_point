@@ -5,7 +5,7 @@ import { Barrier } from "./Barrier";
 import { Handoff } from "./Handoff";
 import { Proof } from "./Proof";
 
-/** The light act: what Faultline is, in four screens, then the hand-off into the dark workflow. */
+/** The light act: what Break Point is, in four screens, then the hand-off into the dark workflow. */
 export function Lab() {
   return (
     <div id="top" className="bg-bg text-fg">

@@ -1,8 +1,8 @@
 import time
 
-from faultline.observe.window import Sample, SampleWindow
-from faultline.safety.monitor import SafetyMonitor, Verdict, Watchdog
-from faultline.safety.thresholds import thresholds_from
+from break_point.observe.window import Sample, SampleWindow
+from break_point.safety.monitor import SafetyMonitor, Verdict, Watchdog
+from break_point.safety.thresholds import thresholds_from
 
 
 class FakeHealth:

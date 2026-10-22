@@ -7,10 +7,10 @@ import pytest
 from conftest import APPS as DITTO_APPS, COMPOSE as REAL_COMPOSE, KNOWLEDGE as REAL_KNOWLEDGE  # noqa: E402
 from conftest import NGINX as REAL_NGINX, THRESHOLDS as REAL_THRESHOLDS  # noqa: E402
 
-from faultline.agents import scout as S
-from faultline.chaos.catalog import CATALOG
-from faultline.schemas import PREDICTED_LABEL, WeaknessReport
-from faultline.topology import graph
+from break_point.agents import scout as S
+from break_point.chaos.catalog import CATALOG
+from break_point.schemas import PREDICTED_LABEL, WeaknessReport
+from break_point.topology import graph
 
 
 class FakeSettings:
@@ -27,7 +27,7 @@ class FakeSettings:
 def real_ctx() -> S.ScoutContext:
     """A ScoutContext over the real deployment: enough weaknesses to need several prose chunks."""
     settings = FakeSettings(REAL_COMPOSE, REAL_NGINX, REAL_KNOWLEDGE, REAL_THRESHOLDS)
-    topology = graph.build(str(REAL_COMPOSE), "faultline", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
+    topology = graph.build(str(REAL_COMPOSE), "break_point", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
     return S.build_context(settings, topology)
 
 
@@ -39,7 +39,7 @@ def real_report() -> WeaknessReport:
     pinned below were verified by hand against the compose file.
     """
     settings = FakeSettings(REAL_COMPOSE, REAL_NGINX, REAL_KNOWLEDGE, REAL_THRESHOLDS)
-    topology = graph.build(str(REAL_COMPOSE), "faultline", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
+    topology = graph.build(str(REAL_COMPOSE), "break_point", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
     return S.scout(S.build_context(settings, topology), None)
 
 
@@ -113,7 +113,7 @@ def test_real_ditto_mongodb_experiment_is_degrade_only(real_report):
 
 
 def test_real_ditto_every_prediction_is_labelled_and_sane(real_report):
-    assert real_report.project == "faultline"
+    assert real_report.project == "break_point"
     assert real_report.compose_file == str(REAL_COMPOSE)
     assert real_report.knowledge_file == str(REAL_KNOWLEDGE)
     assert real_report.label == PREDICTED_LABEL

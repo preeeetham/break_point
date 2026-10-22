@@ -1,4 +1,4 @@
-# Fix rules for Eclipse Ditto 3.9 on docker compose. Pure data, matched by faultline.agents.knowledge.
+# Fix rules for Eclipse Ditto 3.9 on docker compose. Pure data, matched by break_point.agents.knowledge.
 # mode: replace -- these are the complete, hand-written Ditto library; the generic core rules would only
 # repeat them with less detail. Each rule: match {failure_types, targets, roles, finding_codes} (an absent
 # slot is a wildcard) plus the Recommendation fields.
@@ -438,7 +438,7 @@ rules:
   steps:
   - 'Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m]))
     / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.'
-  - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment
+  - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment
     so latency spikes are attributable.
   - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the
     API SLIs.

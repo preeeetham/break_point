@@ -1,21 +1,21 @@
-# Fable: Faultline front end, design brief
+# Fable: Break Point front end, design brief
 
 Built from scratch, independent of `site/` and of the vanilla control room. Served at `/fable/` by
-`faultline dashboard`; dev server `npm run dev` on 5181 proxies `/api` to 127.0.0.1:8777.
+`break_point dashboard`; dev server `npm run dev` on 5181 proxies `/api` to 127.0.0.1:8777.
 
 ## Read
 
 A crash-test lab for cloud software, for hackathon judges with six minutes and engineers after them.
 Two acts on one page:
 
-1. **The lab** (light): what Faultline is, in four screens. Hero with a live test rig, the eight-step
+1. **The lab** (light): what Break Point is, in four screens. Hero with a live test rig, the eight-step
    sequence, the rule ("the model proposes, code decides"), the safety barrier, the hand-off.
 2. **The camera** (dark, `data-theme="camera"`): the workflow. A sticky rail of eight stations; one
    station on screen at a time; each station is one agent's input, action and output. The narrator
    feed is a drawer at the bottom. Stop everything is always in the header.
 
 Why crash testing: Bosch tests cars by crashing them on purpose, instrumented, repeatable, behind a
-barrier. Faultline does that to a running system. The vernacular gives us the signature element.
+barrier. Break Point does that to a running system. The vernacular gives us the signature element.
 
 ## The one bold thing: the test marker
 

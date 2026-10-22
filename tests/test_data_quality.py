@@ -1,10 +1,10 @@
-"""Ingestion validation and cleaning (faultline/topology/quality.py): the six checks, no LLM."""
+"""Ingestion validation and cleaning (break_point/topology/quality.py): the six checks, no LLM."""
 import yaml
 
-from faultline.config import load_settings
-from faultline.reporting.store import ReportStore
-from faultline.topology import quality
-from faultline.topology.graph import build
+from break_point.config import load_settings
+from break_point.reporting.store import ReportStore
+from break_point.topology import quality
+from break_point.topology.graph import build
 
 SHOP = ("tests/fixtures/shop/docker-compose.yml", "shop", "tests/fixtures/shop/nginx/nginx.conf",
         "tests/fixtures/shop/shop_knowledge.yaml")
@@ -80,7 +80,7 @@ def test_cleaning_trims_names_and_dedupes_env_and_depends_on(tmp_path):
 
 
 def test_edge_check_excludes_unknown_endpoints_and_duplicates():
-    from faultline.schemas import Edge, ServiceNode
+    from break_point.schemas import Edge, ServiceNode
     nodes = {"a": ServiceNode(name="a"), "b": ServiceNode(name="b")}
     audit = quality.Audit()
     kept = quality.check_edges([Edge(src="a", dst="b", kind="env"), Edge(src="a", dst="b", kind="env"),

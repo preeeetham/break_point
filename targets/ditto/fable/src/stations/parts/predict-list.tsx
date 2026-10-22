@@ -120,7 +120,7 @@ function WeaknessDetail({ w, outcome, topology, onPlan, id }: { w: PredictedWeak
         {exp && !exempt && (
           <p className="text-[12px] text-fg-2">Opens the planner with {failureLabel(exp.failure_type).toLowerCase()} on {exp.target_service} filled in. Nothing runs until you launch it there.</p>
         )}
-        {exempt && <p className="text-[12px] text-fg-2">Faultline will not inject into {exp?.target_service}: it is outside the system under test.</p>}
+        {exempt && <p className="text-[12px] text-fg-2">Break Point will not inject into {exp?.target_service}: it is outside the system under test.</p>}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-"""The Faultline-owned compose override: exact-bytes backup/restore, deterministic render/diff, recreate. No Docker."""
+"""The Break Point-owned compose override: exact-bytes backup/restore, deterministic render/diff, recreate. No Docker."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultline.remediation import override as ov
+from break_point.remediation import override as ov
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = ROOT / "tests" / "fixtures" / "shop"
@@ -119,7 +119,7 @@ def test_render_is_deterministic_and_round_trips():
     assert ov.render(a) == ov.render(b)
     assert ov.load_yaml_text(ov.render(a)) == a
     text = ov.render(ov.with_applied(a, "add_or_tighten_healthcheck"))
-    assert text.startswith("# Faultline-owned compose override")
+    assert text.startswith("# Break Point-owned compose override")
     assert "# Applied fixes (in order): add_or_tighten_healthcheck\n" in text
     assert text.index("  gateway:") < text.index("  orders:")
 

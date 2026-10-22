@@ -268,7 +268,7 @@ export function ManualSummary({
           </Button>
         </div>
         <p id={reasonId} className="text-[12px] leading-snug text-fg-2">
-          {missing ?? "Recorded as planned_by operator. Faultline writes the hypothesis from the map at launch. Nothing has been injected."}
+          {missing ?? "Recorded as planned_by operator. Break Point writes the hypothesis from the map at launch. Nothing has been injected."}
         </p>
       </div>
     </div>
