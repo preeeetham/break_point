@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from faultline.observe.cascade import attribute, describe_hop
-from faultline.observe.probes import HealthSample, load_spec
-from faultline.observe.window import Sample
-from faultline.schemas import (
+from break_point.observe.cascade import attribute, describe_hop
+from break_point.observe.probes import HealthSample, load_spec
+from break_point.observe.window import Sample
+from break_point.schemas import (
     CASCADE_MECHANISMS,
     PATH_CONFIDENCE,
     CascadeAttribution,

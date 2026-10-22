@@ -12,10 +12,10 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-import faultline.dashboard.server as server_mod
-from faultline.dashboard.control import ControlPlane
-from faultline.dashboard.server import make_handler
-from faultline.schemas import ApprovalDecision
+import break_point.dashboard.server as server_mod
+from break_point.dashboard.control import ControlPlane
+from break_point.dashboard.server import make_handler
+from break_point.schemas import ApprovalDecision
 
 from .test_control import STATE_KEYS, block_handler, make_approval_request, make_session_cls, wait_job  # noqa: F401
 from .test_control import PREVIEW, PROPOSAL_SUMMARY_KEYS, make_proposal
@@ -309,7 +309,7 @@ def test_static_guard_rejects_sibling_prefix_dirs(base, tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- fix proposals
 def _hash(preview: str = PREVIEW) -> str:
-    from faultline.remediation.proposals import change_hash
+    from break_point.remediation.proposals import change_hash
 
     return change_hash(preview)
 
@@ -418,7 +418,7 @@ def test_expired_proposal_cannot_be_approved_or_rejected(base, tmp_store, fake_a
 
 
 def test_apply_endpoint_needs_approval_and_a_free_slot(base, control, tmp_store, fake_apply, monkeypatch):
-    from faultline.remediation import proposals as P
+    from break_point.remediation import proposals as P
 
     tmp_store.write_proposal(make_proposal())
     status, out, _ = call(base, "POST", "/api/proposals/fx-0123456789/apply", {})

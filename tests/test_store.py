@@ -1,7 +1,7 @@
 import os
 
-from faultline.reporting.store import ReportStore
-from faultline.schemas import (
+from break_point.reporting.store import ReportStore
+from break_point.schemas import (
     Baseline,
     FixRecommendation,
     Recommendation,

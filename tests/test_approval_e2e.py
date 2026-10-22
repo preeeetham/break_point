@@ -1,4 +1,4 @@
-"""End to end through `faultline run`, both scenarios, with real mail.
+"""End to end through `break_point run`, both scenarios, with real mail.
 
 What is real here: the whole CLI run path (`cli.cmd_run`), the planner and its policy check, the
 approval agent, and the `smtplib` / `imaplib` clients talking to the loopback servers in
@@ -18,10 +18,10 @@ from typing import Any
 
 import pytest
 
-from faultline import cli
-from faultline.config import Settings
-from faultline.planning.planner import Policy
-from faultline.safety.thresholds import thresholds_from
+from break_point import cli
+from break_point.config import Settings
+from break_point.planning.planner import Policy
+from break_point.safety.thresholds import thresholds_from
 
 from .conftest import PROJECT, ROOT, SHOP
 from .fakemail import FakeIMAPServer, FakeMailbox, FakeSMTPServer
@@ -78,14 +78,14 @@ def mail(mailbox):
 
 @pytest.fixture
 def run_env(monkeypatch, tmp_path, topology, policy_raw, mail, make_report):
-    """A `faultline run` that reaches real mail and a recording injector, and nothing else."""
+    """A `break_point run` that reaches real mail and a recording injector, and nothing else."""
     smtp, imap = mail
     settings = Settings(
         compose_project=PROJECT, reports_dir=str(tmp_path / "reports"),
         thresholds_file=str(SHOP / "thresholds.yaml"), llm_enabled=False,
-        admin_email=ADMIN, smtp_host=smtp.host, smtp_port=smtp.port, smtp_user="faultline",
-        smtp_password="secret", smtp_from="faultline@example.invalid", smtp_starttls=False,
-        imap_host=imap.host, imap_port=imap.port, imap_user="faultline", imap_password="secret",
+        admin_email=ADMIN, smtp_host=smtp.host, smtp_port=smtp.port, smtp_user="break_point",
+        smtp_password="secret", smtp_from="break_point@example.invalid", smtp_starttls=False,
+        imap_host=imap.host, imap_port=imap.port, imap_user="break_point", imap_password="secret",
         imap_ssl=False, approval_timeout_s=6.0, approval_poll_s=0.05,
     )
 
@@ -108,7 +108,7 @@ def run_env(monkeypatch, tmp_path, topology, policy_raw, mail, make_report):
         def close(self) -> None:
             pass
 
-    import faultline.agents.injector as injector_mod
+    import break_point.agents.injector as injector_mod
 
     monkeypatch.setattr(cli, "Session", FakeSession)
     monkeypatch.setattr(injector_mod, "Injector", RecordingInjector)

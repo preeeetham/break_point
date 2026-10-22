@@ -1,4 +1,4 @@
-"""The apply engine (faultline/remediation/apply.py), end to end with fakes: no Docker, no network, no sleeping.
+"""The apply engine (break_point/remediation/apply.py), end to end with fakes: no Docker, no network, no sleeping.
 
 Real pieces: the catalog, the override file handling, propose.build_proposals (so the preview/hash is the one a
 human would really approve), proposals.approve, the operator Planner (clamping + policy) and the risk/scorecard
@@ -15,18 +15,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultline.agents import risk, scorecard
-from faultline.config import Settings
-from faultline.planning.planner import Planner, Policy
-from faultline.remediation import apply as A
-from faultline.remediation import override as ov
-from faultline.remediation import proposals as P
-from faultline.remediation import propose
-from faultline.schemas import Finding, WindowStats
+from break_point.agents import risk, scorecard
+from break_point.config import Settings
+from break_point.planning.planner import Planner, Policy
+from break_point.remediation import apply as A
+from break_point.remediation import override as ov
+from break_point.remediation import proposals as P
+from break_point.remediation import propose
+from break_point.schemas import Finding, WindowStats
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = ROOT / "tests" / "fixtures" / "shop"
-PROJECT = "faultline-apply-test"     # no such compose project exists: nothing here can match a real container
+PROJECT = "break_point-apply-test"     # no such compose project exists: nothing here can match a real container
 
 BASE_COMPOSE = """\
 services:
@@ -310,7 +310,7 @@ def test_second_fix_in_flight_is_refused_but_a_stale_lock_is_not(env):
 
 
 def test_test_only_fix_needs_include_test(env, monkeypatch):
-    monkeypatch.delenv("FAULTLINE_TEST_CATALOG", raising=False)
+    monkeypatch.delenv("BREAK_POINT_TEST_CATALOG", raising=False)
     original_experiment(env)
     p = approved(env, "break_healthcheck_for_test", include_test=True)
     got = run(env, p)
@@ -546,8 +546,8 @@ class RecordingDocker(FakeDocker):
 
 def _approved_on(env, services):
     """An approved add_or_tighten_healthcheck on exactly `services`, built the way propose does it."""
-    from faultline.remediation import catalog
-    from faultline.schemas import FixProposal, ProposalExplanation
+    from break_point.remediation import catalog
+    from break_point.schemas import FixProposal, ProposalExplanation
     base, label = ov.load(env.s.compose_file), propose._path_label(env.s)
     change = catalog.get("add_or_tighten_healthcheck").build(base, {}, list(services), env.topology)
     preview = catalog.preview(change, "", label)
@@ -778,7 +778,7 @@ def test_service_score_compares_the_same_service_and_scorecard_shows_the_final_s
 
 
 def test_cli_apply_only_applies_an_approved_proposal(env, monkeypatch):
-    from faultline import cli
+    from break_point import cli
     original_experiment(env)
     p = approved(env)
     P.transition(p, "applying", "test")

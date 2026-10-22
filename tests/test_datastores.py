@@ -1,6 +1,6 @@
-"""Datastore engines (faultline/topology/datastores.py) and how a service gets one.
+"""Datastore engines (break_point/topology/datastores.py) and how a service gets one.
 
-The invariant these tests pin down: Faultline never assumes an engine. Every engine on a ServiceNode is
+The invariant these tests pin down: Break Point never assumes an engine. Every engine on a ServiceNode is
 backed by evidence code can quote -- the image, the knowledge file, a dependent's connection URI, or (in
 onboarding) the project's own Dockerfile and dependency manifests -- and a datastore with none of those
 keeps every generic fault but gets no engine-specific command at all.
@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from faultline.chaos.actions import kill_marked_script
-from faultline.onboarding import code_evidence
-from faultline.topology import datastores as D
-from faultline.topology.compose import service_nodes, static_edges
-from faultline.topology.graph import _structural_findings
+from break_point.chaos.actions import kill_marked_script
+from break_point.onboarding import code_evidence
+from break_point.topology import datastores as D
+from break_point.topology.compose import service_nodes, static_edges
+from break_point.topology.graph import _structural_findings
 
 
 # ---------------------------------------------------------------- the table
@@ -66,17 +66,17 @@ def test_only_verified_engines_carry_commands():
 
 
 def test_flood_command_fills_only_its_placeholders():
-    pg = D.flood_command(D.ENGINES["postgres"], 35, "faultline-abc123")
-    assert pg.startswith("timeout 35 sh -c '") and pg.endswith("' faultline-abc123")
+    pg = D.flood_command(D.ENGINES["postgres"], 35, "break_point-abc123")
+    assert pg.startswith("timeout 35 sh -c '") and pg.endswith("' break_point-abc123")
     # the shell's own ${...} survive: they are expanded inside the container, not by Python
     assert '"${POSTGRES_USER:-postgres}"' in pg and "{duration}" not in pg
-    assert "faultline-abc123" in D.flood_command(D.ENGINES["mongo"], 10, "faultline-abc123")
+    assert "break_point-abc123" in D.flood_command(D.ENGINES["mongo"], 10, "break_point-abc123")
     assert D.flood_command(D.ENGINES["mysql"], 10, "m") == ""
 
 
 def test_kill_script_skips_itself_and_collects_before_killing():
     """Each clause is one of the three bugs it was verified against (see kill_marked_script)."""
-    script = kill_marked_script("faultline-abc123")
+    script = kill_marked_script("break_point-abc123")
     assert '[ "$i" = "$$" ] && continue' in script                  # its own shell carries the marker too
     assert script.index("c=''") < script.index("kill -9")           # every pid collected before any kill
     assert "${s##*) }" in script                                    # ppid read after the last ')' of stat
