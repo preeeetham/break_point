@@ -42,7 +42,7 @@ There is no second configuration scheme. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_
 | `LLM_PROVIDER` | LangChain class |
 |---|---|
 | `ollama` | `langchain_ollama.ChatOllama` |
-| `openai` | `langchain_openai.ChatOpenAI` (any OpenAI-compatible endpoint: OpenAI, Groq, OpenRouter, ...) |
+| `openai` | `langchain_openai.ChatOpenAI` (any OpenAI-compatible endpoint: OpenAI, Groq, OpenRouter, Gemini, ...), subclassed to send each tool call's `extra_content` back; see below |
 | `anthropic` | `langchain_anthropic.ChatAnthropic` |
 
 Temperature is 0.2 and the timeout is the configured `llm_timeout_s`, both as in the original `LLMClient`. Provider packages are imported lazily, so only the one in use has to import cleanly. `BREAK_POINT_LLM=false` or `--no-llm` removes the model entirely. The model label recorded in planner notes is `langgraph:<provider>:<model>`, so a report shows which engine planned it.
@@ -170,8 +170,9 @@ Two things showed up that the offline tests could not show:
 
 - **Forced `tool_choice` is not reliable on Groq.** Groq's gpt-oss sometimes ignored it and kept investigating. The turn budget and the deterministic fallback cover this.
 - **Small models garble tool calls,** mostly for tools that take no arguments. The retry covers this.
+- **Gemini needs its thought signatures back.** Its OpenAI-compatible endpoint attaches `extra_content.google.thought_signature` to every tool call and answers the next turn with `400 Function call is missing a thought_signature` unless it is returned. `langchain-openai` drops the field, so `llm.py` keeps it on the `AIMessage` and puts it back on the same tool call id. Endpoints that send no `extra_content` see no difference.
 
-**Tests.** `break_point_langgraph/tests`: 110 passed, offline. Base suite: 83 passed and 1 xpassed, unchanged, with nothing collected from `break_point_langgraph`. A no-extras install resolves to the same packages as before this branch.
+**Tests.** `break_point_langgraph/tests`: 112 passed, offline. Base suite: 83 passed and 1 xpassed, unchanged, with nothing collected from `break_point_langgraph`. A no-extras install resolves to the same packages as before this branch.
 
 ## What is converted, and what is not
 

@@ -51,11 +51,52 @@ def _build(c, max_tokens: int):
         return ChatOllama(model=c.model, base_url=c.base_url, temperature=TEMPERATURE, num_predict=max_tokens,
                           client_kwargs={"timeout": c.timeout})
     if c.provider == "openai":
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(model=c.model, base_url=c.base_url, api_key=c.api_key, temperature=TEMPERATURE,
-                          max_tokens=max_tokens, timeout=c.timeout, max_retries=RETRIES)
+        return _chat_openai_class()(model=c.model, base_url=c.base_url, api_key=c.api_key, temperature=TEMPERATURE,
+                                    max_tokens=max_tokens, timeout=c.timeout, max_retries=RETRIES)
     from langchain_anthropic import ChatAnthropic
 
     return ChatAnthropic(model=c.model, base_url=c.base_url, api_key=c.api_key, temperature=TEMPERATURE,
                          max_tokens=max_tokens, timeout=c.timeout, max_retries=RETRIES)
+
+
+EXTRA_KEY = "tool_call_extra_content"  # AIMessage.additional_kwargs key: {tool_call_id: extra_content}
+
+
+def _chat_openai_class():
+    """ChatOpenAI that round-trips each tool call's `extra_content`.
+
+    Gemini's OpenAI-compatible endpoint attaches `extra_content.google.thought_signature` to every tool call and
+    rejects the next turn (400 "Function call is missing a thought_signature") unless it comes back verbatim.
+    langchain-openai parses tool calls down to id/type/function and drops it, so this keeps it on the AIMessage
+    and puts it back on the same tool call id in the request. Endpoints that send no `extra_content` (OpenAI,
+    Groq, OpenRouter, ...) are unaffected.
+    """
+    from langchain_core.messages import AIMessage
+    from langchain_openai import ChatOpenAI
+
+    class _ChatOpenAI(ChatOpenAI):
+        def _create_chat_result(self, response, generation_info=None):
+            result = super()._create_chat_result(response, generation_info)
+            raw = response if isinstance(response, dict) else response.model_dump(warnings=False)
+            for gen, choice in zip(result.generations, raw.get("choices") or []):
+                extras = {tc["id"]: tc["extra_content"] for tc in (choice.get("message") or {}).get("tool_calls") or []
+                          if tc.get("id") and tc.get("extra_content")}
+                if extras and isinstance(gen.message, AIMessage):
+                    gen.message.additional_kwargs[EXTRA_KEY] = extras
+            return result
+
+        def _get_request_payload(self, input_, *, stop=None, **kwargs):
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            extras = {}
+            for m in self._convert_input(input_).to_messages():
+                if isinstance(m, AIMessage):
+                    extras.update(m.additional_kwargs.get(EXTRA_KEY) or {})
+            for msg in payload.get("messages") or []:
+                if msg.get("role") != "assistant":
+                    continue
+                for tc in msg.get("tool_calls") or []:
+                    if tc.get("id") in extras:
+                        tc["extra_content"] = extras[tc["id"]]
+            return payload
+
+    return _ChatOpenAI
