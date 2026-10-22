@@ -62,6 +62,43 @@ def test_openai_model_constructed_without_network(no_network):
     assert m.max_tokens == 321 and m.temperature == lg_llm.TEMPERATURE and m.max_retries == lg_llm.RETRIES
 
 
+def _openai_model():
+    s = Settings(llm_provider="openai", llm_model="gemini-test", llm_api_key="sk-test",
+                 llm_base_url="http://127.0.0.1:9/v1", llm_timeout_s=5)
+    return lg_llm.chat_model_from_settings(s).model
+
+
+def _tool_call_response(extra=None):
+    call = {"id": "call_1", "type": "function", "function": {"name": "get_x", "arguments": "{}"}}
+    if extra is not None:
+        call["extra_content"] = extra
+    return {"choices": [{"index": 0, "finish_reason": "tool_calls",
+                         "message": {"role": "assistant", "content": None, "tool_calls": [call]}}]}
+
+
+def test_openai_tool_call_extra_content_round_trips(no_network):
+    # Gemini's OpenAI-compatible endpoint 400s on the next turn unless the thought signature comes back verbatim
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    m = _openai_model()
+    extra = {"google": {"thought_signature": "sig-abc"}}
+    ai = m._create_chat_result(_tool_call_response(extra)).generations[0].message
+    assert ai.tool_calls[0]["id"] == "call_1"
+    payload = m._get_request_payload([HumanMessage("go"), ai, ToolMessage("42", tool_call_id="call_1")])
+    sent = [msg for msg in payload["messages"] if msg["role"] == "assistant"][0]
+    assert sent["tool_calls"][0]["extra_content"] == extra
+
+
+def test_openai_tool_call_without_extra_content_is_unchanged(no_network):
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    m = _openai_model()
+    ai = m._create_chat_result(_tool_call_response()).generations[0].message
+    payload = m._get_request_payload([HumanMessage("go"), ai, ToolMessage("42", tool_call_id="call_1")])
+    sent = [msg for msg in payload["messages"] if msg["role"] == "assistant"][0]
+    assert set(sent["tool_calls"][0]) == {"id", "type", "function"}
+
+
 def test_anthropic_model_constructed_without_network(no_network):
     from langchain_anthropic import ChatAnthropic
 
