@@ -1,0 +1,35 @@
+{
+  "experiment_id": "2ad72f695676",
+  "assessed_at": "2026-10-10T11:01:04.359779Z",
+  "target_service": "mongodb",
+  "failure_type": "network_loss",
+  "severity": 0.65,
+  "level": "low",
+  "blast_radius": 1,
+  "user_impact": 0.0139,
+  "recovery_s": 18.4,
+  "factors": {
+    "impact": 0.056,
+    "blast": 0.286,
+    "recovery": 0.307,
+    "intervention": 0.0,
+    "findings": 0.0
+  },
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "info",
+      "title": "API success dropped to 99% during the fault",
+      "evidence": "72 requests, status counts {'200': 53, '204': 18, 'timeout': 1}, p95 1238.7 ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 18s",
+      "evidence": "outage as seen by clients: 2.1s"
+    }
+  ],
+  "summary": "Dropping packets on `mongodb` (network_loss) moved API success from 100% to 99% across 72 samples; 1 service affected; recovered in 18 s without intervention.",
+  "production_implication": "In production a network_loss on mongodb would be absorbed with little or no user-visible impact.",
+  "generated_by": "rules"
+}

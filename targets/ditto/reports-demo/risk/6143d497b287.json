@@ -1,0 +1,41 @@
+{
+  "experiment_id": "6143d497b287",
+  "assessed_at": "2026-10-10T11:01:04.361574Z",
+  "target_service": "policies",
+  "failure_type": "container_stop",
+  "severity": 1.98,
+  "level": "low",
+  "blast_radius": 1,
+  "user_impact": 0.25,
+  "recovery_s": 41.5,
+  "factors": {
+    "impact": 1.0,
+    "blast": 0.286,
+    "recovery": 0.692,
+    "intervention": 0.0,
+    "findings": 0.0
+  },
+  "findings": [
+    {
+      "code": "api_impact",
+      "severity": "medium",
+      "title": "API success dropped to 75% during the fault",
+      "evidence": "16 requests, status counts {'200': 9, '503': 4, '204': 3}, p95 214.0 ms (baseline 41.2 ms)"
+    },
+    {
+      "code": "auto_recovered",
+      "severity": "info",
+      "title": "Recovered on its own in 42s",
+      "evidence": "outage as seen by clients: 12.3s"
+    },
+    {
+      "code": "safety_abort",
+      "severity": "info",
+      "title": "Kill switch fired (operator_stop)",
+      "evidence": "{}"
+    }
+  ],
+  "summary": "Stopping `policies` (container_stop) moved API success from 100% to 75% across 16 samples; 1 service affected; recovered in 42 s without intervention. The safety monitor aborted early (operator_stop).",
+  "production_implication": "In production a container_stop on policies would be absorbed with little or no user-visible impact.",
+  "generated_by": "rules"
+}

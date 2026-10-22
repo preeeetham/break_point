@@ -1,0 +1,34 @@
+# Synthetic traffic for Ditto, exactly what Break Point's original Things-API probe sent: a canary thing is
+# created once, then reads, sequence-numbered property writes and searches go through nginx -> gateway at
+# probe_rps. Every acknowledged write's number is read back after an experiment (`integrity`).
+health:
+  path: /health
+  expect: {status: UP}
+setup:
+  - name: create_canary
+    method: PUT
+    path: /api/2/things/{namespace}:canary
+    json:
+      attributes: {kind: break_point-canary}
+      features: {telemetry: {properties: {seq: 0, temperature: 20.0}}}
+operations:
+  # thing reads and writes are served by `things` (which enforces policies), search by `things-search`
+  get_thing: {method: GET, path: "/api/2/things/{namespace}:canary", route: [nginx, gateway, things]}
+  put_property:
+    method: PUT
+    path: /api/2/things/{namespace}:canary/features/telemetry/properties/seq
+    json: "{seq}"
+    write: true
+    route: [nginx, gateway, things]
+  get_property:
+    method: GET
+    path: /api/2/things/{namespace}:canary/features/telemetry/properties/seq
+    route: [nginx, gateway, things]
+  search:
+    method: GET
+    path: /api/2/search/things
+    params: {filter: 'eq(attributes/kind,"break_point-canary")', option: size(1)}
+    route: [nginx, gateway, things-search]
+mix: [get_thing, put_property, get_thing, search, get_property, put_property, get_thing, search]
+integrity: get_property
+spike: get_thing

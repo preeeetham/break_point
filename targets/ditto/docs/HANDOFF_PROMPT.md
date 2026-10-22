@@ -1,0 +1,380 @@
+# Break Point — continuation prompt for a fresh Claude session
+
+Paste this whole file as your first message in a new Claude Code session, with the working
+directory set to `/Users/dakshtyagi/Documents/bosch-hackathon-2`.
+
+---
+
+## Who you are and what this is
+
+You are continuing work on **Break Point**, a hackathon project for the **Bosch hackathon**, problem
+statement *"AI-Driven Chaos Engineering for Cloud-Native Resilience"*. It is due imminently and the
+user (Daksh) demos it to judges. Move fast, verify with real tools, and do not break what works.
+
+Break Point deliberately breaks a real open-source cloud-native app — **Eclipse Ditto 3.9.8** (IoT
+digital-twin platform, EPL-2.0, https://github.com/eclipse-ditto/ditto) — measures the damage and
+recovery, and reports weaknesses with recommended fixes. It is driven from a web "Control Room".
+
+**Everything below is already built and verified working unless explicitly marked otherwise.**
+
+---
+
+## 1. Read these first, in this order
+
+1. `README.md` — the product overview and the judges'-requirements mapping.
+2. `docs/UI_CONTRACT.md` — **authoritative** spec for the dashboard API + design tokens + module
+   contracts. If backend and frontend disagree, this file wins.
+3. `docs/ARCHITECTURE.md` — module map and the experiment lifecycle.
+4. `docs/DEMO.md` — the 6-minute demo runbook.
+5. `break_point/schemas.py` — every data contract (pydantic v2). Nothing crosses a boundary that
+   isn't in here.
+
+---
+
+## 2. How to run it right now
+
+```bash
+cd /Users/dakshtyagi/Documents/bosch-hackathon-2
+source .venv/bin/activate            # Python 3.12 venv, deps already installed
+
+# The Ditto stack is ALREADY RUNNING on this machine as compose project `bosch-ditto`
+docker compose ls                     # should show bosch-ditto with 13 containers
+
+# The control room (this is the demo)
+.venv/bin/python -m break_point dashboard --port 8777
+# -> http://127.0.0.1:8777
+
+# Independent watchdog, in a second terminal (judges like seeing this)
+.venv/bin/python -m break_point guardian
+
+# Health check before demoing
+.venv/bin/python scripts/demo_doctor.py          # may still be being written; see §6
+.venv/bin/python scripts/verify_ui.py --url http://127.0.0.1:8777 --out /tmp/flui --settle 4
+```
+
+**Important:** `.env` is gitignored and already configured. It points at the **existing**
+`bosch-ditto` compose project (not the bundled `deploy/` one) with user `hackathon`, and at
+**Groq** for the LLM:
+
+```
+BREAK_POINT_COMPOSE_PROJECT=bosch-ditto
+DITTO_URL=http://127.0.0.1:8080
+DITTO_USER=hackathon
+DITTO_PASSWORD=<set>
+PROMETHEUS_URL=http://127.0.0.1:9090
+LLM_PROVIDER=openai
+LLM_MODEL=openai/gpt-oss-120b          # Groq; llama-3.3-70b-versatile is NOT on this account
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_API_KEY=<set, working>
+```
+
+The server reads settings **once at startup** — restart it after editing `.env`.
+
+---
+
+## 3. Architecture in one page
+
+**Blackboard pattern.** Eight agents communicate only through JSON files in `reports/`. No message
+bus. You can watch them work independently.
+
+```
+reports/
+  topology.json / .md        the application map + criticality ranking
+  baseline.json / .md        steady state + derived safety thresholds
+  experiments/<id>.json      one full ExperimentReport each (+ <id>/ dir with logs, report.md)
+  risk/<id>.json             RiskAssessment (severity 0-10)
+  fixes/<id>.json / .md      FixRecommendation (advisory only)
+  scorecard.json / .md       0-100 per service, graded A-F
+  live.json                  what the injector is doing right now
+  ACTIVE_EXPERIMENT.json     the single-experiment lock
+  STOP                       kill-switch flag; its presence aborts everything
+  PENDING_APPROVAL.json      an admin is being waited on for a decision (absent = none)
+  approvals/<id>.json        ApprovalRequest + its decision, one file per decision
+```
+
+**The eight agents**
+
+| Agent | File | Job |
+|---|---|---|
+| Topology | `break_point/topology/` | Maps services from compose `depends_on` + **env-var scan** + nginx `proxy_pass` + live `docker inspect`. Computes criticality. |
+| Planner | `break_point/planning/planner.py` | Ranks (service, failure) pairs; the LLM picks from the top 5 and writes a falsifiable hypothesis. |
+| Injector | `break_point/agents/injector.py` | Runs one experiment end to end: preflight → inject → observe → rollback → recover → soak → report. |
+| Guardian | `break_point/agents/guardian.py` | Separate process. Restores the sandbox even if the injector dies. |
+| Risk | `break_point/agents/risk.py` | Deterministic 0-10 severity. LLM only writes prose. |
+| Fix | `break_point/agents/fix.py` | 18 Ditto-specific rules in `knowledge.py` + ≤2 LLM extras. **Never applies anything.** |
+| Scorecard | `break_point/agents/scorecard.py` | 0-100 per service, worst first, untested shown as untested. |
+| Approval | `break_point/agents/approval.py` | Human in the loop, by email. Blocks an experiment that would have needed `--allow-protected`; asks again after a high/critical result. Closed reply vocabulary, 120 s deadline, safe default on timeout. **No LLM. Applies nothing.** |
+
+**The governing principle: "LLM proposes, code disposes."** Every number (severity, score, ranking,
+thresholds) is computed by code. The model may make an experiment *safer* (shorter, lighter) but can
+never raise a safety limit. Everything works with `--no-llm` / `BREAK_POINT_LLM=false`.
+
+**The project's headline insight:** Compose's `depends_on` never mentions MongoDB, yet every Ditto
+service needs it via `MONGO_DB_HOSTNAME`. Only the env-var scan reveals it is the #1 single point of
+failure (criticality 9.5 vs 5.0 for the next). Say this to judges.
+
+**Safety (code only, `config/thresholds.yaml`)** — abort if trailing-10 error rate > 30%, or p95 >
+max(3000 ms, 5× baseline), or any service outside the predicted blast radius fails 3 health checks;
+hard cap 90 s per experiment plus an independent watchdog timer (+15 s grace) that force-restores
+even if the main loop hangs; one experiment at a time; MongoDB is **degrade-only** on Day 1
+(`--allow-protected` overrides explicitly); refuse to inject if pre-experiment success < 95%.
+Recovery requires 3 consecutive good checks **plus a 20 s soak** (a relapse resets it); escalation
+restarts the target at 50% of the 300 s timeout and its dependents at 80%.
+
+**Failure catalog (10)** in `break_point/chaos/catalog.py`: `container_crash`, `container_stop`,
+`container_pause`, `network_delay`, `network_loss` (Pumba + tc netem sidecar), `network_partition`,
+`cpu_stress`, `disk_pressure`, `db_flood`, `traffic_spike`.
+
+---
+
+## 4. The dashboard (the thing being actively worked on)
+
+- `break_point/dashboard/control.py` (~690 lines) — the control plane. Owns a **long-lived session**
+  (synthetic Ditto API probe ~4 req/s + health monitor every 3 s via `docker exec` on `/alive` and
+  `/ready` port 7626, plus `mongosh ping`), samples telemetry at **1 Hz into a 300 s buffer**, and
+  runs operator actions as **one-at-a-time jobs**. Has an event log with monotonic sequence numbers.
+- `break_point/dashboard/server.py` (161 lines) — thin stdlib HTTP adapter. No framework.
+- `break_point/dashboard/static/` — vanilla ES modules, **no build step, no CDN, no web fonts**
+  (venue wifi may not exist):
+
+| File | Lines | Owner/purpose |
+|---|---|---|
+| `index.html` | 95 | shell markup |
+| `tokens.css` | 215 | design tokens — the ONLY place raw hex is allowed |
+| `app.css` | ~2400 | the entire visual system |
+| `app.js` | ~670 | shell, polling, header, ribbon, pipeline, KPIs, feed, experiments, scorecard |
+| `topology.js` | 723 | animated dependency graph (the main stage) |
+| `charts.js` | 699 | streaming canvas telemetry chart, sparklines, score ring |
+| `launcher.js` | ~1080 | the injection console (choose target/failure/params and launch) |
+| `util.js` / `icons.js` / `copy.js` | 212/60/85 | DOM+format helpers / SVG icons / explain-mode copy |
+
+**API** (full detail in `docs/UI_CONTRACT.md` §2): `GET /api/state?since=<seq>` (one snapshot —
+events, session, job, live run, telemetry, agents, topology, baseline, experiments, scorecard),
+`GET /api/catalog`, `GET /api/plan?llm=0|1`, `GET /api/experiment/<id>`,
+`POST /api/jobs/{topology,baseline,run,analyze,heal}`, `POST /api/{stop,resume,arm,disarm}`,
+`POST /api/jobs/cancel`. Polling is 1000 ms idle, 400 ms during a run.
+
+**Screen layout:** header (brand, 7-step phase ribbon, LLM/guardian/probe pills, STOP) · left
+injection console · centre stage (agent pipeline strip → dependency graph → telemetry chart → KPI
+tiles) · right agent activity feed · bottom experiments table + resilience scorecard.
+Keyboard: `Esc` = kill switch, `E` = explain all panels, `Space` = pause updates.
+
+**Verified working end to end:** I launched real experiments through the HTTP API and watched
+`preflight → injecting → rollback → recovering → soaking → analyzing → idle`, with risk, fixes and
+the scorecard all updating. The AI planner on Groq chose `network_loss` on `mongodb`, wrote its own
+rationale and hypothesis, the hypothesis held, and 7 fix recommendations were generated.
+
+---
+
+## 5. How to verify anything you change
+
+```bash
+# Python unit tests — offline, no Docker needed. 84 passing, 1 xfail.
+.venv/bin/python -m pytest -q tests
+
+# JS syntax (node --check treats .js as CJS and WILL pass broken ES modules — copy to .mjs first)
+cd break_point/dashboard/static && for f in *.js; do cp "$f" "/tmp/x_$f.mjs" && node --check "/tmp/x_$f.mjs" || echo "FAIL $f"; done
+
+# Real browser: screenshots 5 breakpoints, fails on console errors, overflow, tiny touch targets
+.venv/bin/python scripts/verify_ui.py --url http://127.0.0.1:8777 --out /tmp/flui --settle 4 --expand
+# THEN ACTUALLY LOOK at /tmp/flui/desktop.png and phone.png with the Read tool. The numbers alone
+# will not tell you whether it looks right — this is how the two worst bugs were caught.
+```
+
+Playwright uses the installed Chrome via `channel="chrome"` (no browser download needed).
+
+---
+
+## 6. State of play — what is done, what is not
+
+### Done and verified
+- All backend agents, the CLI, the control plane, the HTTP API, the Groq LLM path.
+- Topology mapping (12 services, 21 edges on the live stack; mongodb ranked #1).
+- Experiments run end to end from the dashboard with risk/fix/scorecard auto-analysis.
+- `tokens.css`, `app.css`, `app.js`, `index.html`, `topology.js`, `charts.js`, `util.js`,
+  `icons.js`, `copy.js`, `scripts/verify_ui.py`.
+- Docs: `README.md`, `docs/DEMO.md`, `docs/ARCHITECTURE.md`, `docs/UI_CONTRACT.md`.
+
+### Approval agent — landed and wired on the CLI path
+- `break_point/agents/approval.py`: two scenarios (`pre_injection`, `problem_occurred`), one mechanism
+  — pause, email `ADMIN_EMAIL`, wait for one of a closed set of replies or for the
+  `APPROVAL_TIMEOUT_SECONDS` (120 s) deadline on an independent `Watchdog`, record what happened and
+  why. Safe default on timeout, on an unreachable mailbox and on any unset credential: `SKIP` before
+  an injection, `CONTINUE` after one. `WAIT` / `STOP RUN` reuse `reports/STOP`; `FIX <n>` is a
+  decision log entry on `ExperimentReport.approval` and nothing else. Schemas, the twelve
+  `SMTP_*` / `IMAP_*` settings, `ReportStore.pending_approval` / `write_approval` and
+  `tests/fakemail.py` (in-process SMTP and IMAP doubles — a test must never touch a real inbox) are
+  all in. Documented in `README.md`, `docs/PROJECT_GUIDE.md` 5.8 and 8.4, `docs/ARCHITECTURE.md`,
+  `.env.example`.
+- **Wired:** `cmd_run` enables the gate via `approvals_enabled()` unless `--no-approvals`, calls
+  `gate()` before a held experiment and `run_post_experiment()` after each non-skipped one;
+  `Planner.plan_operator` sets `requires_approval` when the policy refuses the pair and
+  `approval_gate=True`; `break_point approvals [--resend ID] [--limit 5]` and `GET /api/approvals` are
+  read-only views.
+- **Not wired, check these:** `Planner.candidates` (weakness-aware or not, and therefore the
+  LangGraph planner in `break_point_langgraph/` too) deliberately never marks a protected pair for
+  approval, so an AI-planned run never reaches the gate — only an operator-chosen one does.
+  `ControlPlane._job_run` passes `approval_gate` and holds a manual protected launch sent to
+  `POST /api/jobs/run`, but the launcher and Fable both lock a protected card unless the override is
+  ticked (and the override bypasses the gate), so no button produces that request yet.
+  `scout_predicted_severity()` reads the Scout's real `reports/weaknesses.json` (tested against the
+  real schema) but nothing calls it: wiring it into `Planner.candidates` next to the policy check
+  would widen who gets asked, which is a product decision. See PROJECT_GUIDE section 17, item 22.
+- **`ADMIN_EMAIL` is a placeholder.** No default, deliberately not hardcoded anywhere; the project
+  owner has not supplied the real address. Leave it empty until they do — the gate then reports
+  itself unconfigured and applies the safe default rather than approving anything. Use
+  `admin@example.invalid` in examples.
+- There is deliberately no way to answer a decision from the CLI or over HTTP. The answer comes back
+  by email on purpose; a local bypass would defeat the gate, and `break_point stop` / `resume` already
+  cover an operator at the laptop.
+
+### In flight when the session ended — CHECK THESE FIRST
+1. **`launcher.js` restyle** — the panel still uses its own `fl-launch-*` class names and only
+   injects its fallback `<style>` when `app.css` is absent, so in the real browser it renders raw
+   radio buttons and run-on text. **This is the worst-looking thing on the screen.** It must be
+   remapped onto the classes `app.css` already defines: `.panel/.panel__head/.panel__body`,
+   `.fieldset/.fieldset__legend`, `.optgrid/.card/.card__input/.card__icon/.card__name/.card__sub/
+   .card__badge/.card__lock`, `.params/.param/.param__label/.param__range/.param__out/.param__desc`,
+   `.btn --primary/--ghost/--danger/--icon/--sm/--block/--launch`, `.chip/.pill/.stat/.hypothesis`,
+   and `data-tone="ok|warn|danger|critical|chaos|cyan|violet|neutral"`. Inject its scoped style
+   unconditionally. Do not change its behaviour, exports, dirty-state handling, policy gating or
+   payload shape — presentation only. Verify with `verify_ui.py` and by looking at the screenshot.
+2. **`app.css` layout fixes** — an agent was mid-edit. Confirm: (a) `.app__main` has **four**
+   children (pipeline, graph, chart, kpis) so `grid-template-rows` must be
+   `auto minmax(220px,1fr) auto auto` or the **application-map panel collapses to zero height**;
+   (b) the scorecard ring no longer overlaps the ranked rows; (c) `span.chip` and
+   `span.ribbon__glyph` stop overflowing; (d) `.btn--sm` ≥32px and a `@media (pointer: coarse)`
+   raising controls to 44px; (e) no horizontal scroll at 390px.
+3. **`scripts/demo_doctor.py` and `scripts/seed_demo.py`** — an agent was writing these. The doctor
+   is a pre-demo readiness check; the seeder populates a fake-but-schema-valid `reports/` so the UI
+   can be shown without Docker. If they are missing or broken, they are nice-to-have, not critical.
+
+### Known issues, not yet fixed
+- The 7-step ribbon synthesises `preflight` and `analyzing`; `injecting` maps to the *Observe* step,
+  so *Inject* only ever shows as already-done. Acceptable, but could be made literal.
+- `app.css` styles a `.drawer-toggle`; a button with that class was added to `index.html` and wired
+  in `app.js` — verify it actually appears and works between 768–1279 px.
+- No automated tests cover `control.py` or any frontend module.
+- `GET /api/plan` was made read-only (`arm=False`) — confirm it no longer starts probes as a side
+  effect on a cold server.
+
+---
+
+## 7. House rules for this codebase
+
+- **Match the existing style.** Dense, precise, few comments — and only comments that explain *why*,
+  never *what*. No emojis anywhere. No marketing language in docs.
+- **Never put a raw hex colour in `app.css`** — only in `tokens.css`.
+  Check: `grep -nE "#[0-9a-fA-F]{3,8}" break_point/dashboard/static/app.css` must return nothing.
+- **Never let the model override a safety limit.** New thresholds go in `config/thresholds.yaml`
+  and are enforced in `break_point/safety/`.
+- **Advisory only** — the Fix agent must never mutate the target system.
+- Frontend modules must be side-effect free on import and export a factory returning
+  `{update(...), destroy()}`; `update()` is called every poll and must be cheap and idempotent
+  (diff, don't rebuild — rebuilding kills the animations).
+- Accessibility floor: visible focus rings (never removed), contrast ≥4.5:1, never colour alone
+  (always pair with a glyph or label), honour `prefers-reduced-motion`.
+- Don't commit `.env`, `reports/*`, or anything under `ditto-local/secrets/`.
+- Commit messages end with the attribution line the system prompt gives you. Ask before pushing.
+
+---
+
+## 8. If you only have time for three things
+
+1. **Fix the launcher panel styling** (§6.1). It is the one part of the UI that looks unfinished.
+2. **Confirm the application-map panel renders at a usable size** (§6.2a) — it is the centrepiece
+   and the best visual on the screen when it works.
+3. **Run `scripts/verify_ui.py`, look at the screenshots, and run one live experiment** from the
+   dashboard to prove the demo path still works after your changes.
+
+## 9. Demo-day cheat sheet
+
+```bash
+break_point heal --restart     # reset the sandbox between runs
+break_point dashboard          # the demo
+break_point guardian           # second terminal
+break_point run --no-llm ...   # fallback if Groq is slow or offline
+```
+
+Fallback if the live stack misbehaves mid-demo: serve the seeded blackboard instead —
+`.venv/bin/python -m break_point.dashboard.server --reports reports-demo --port 8790`.
+
+The single best moment to show a judge: kill `things`, and point out that the platform kept
+reporting itself **healthy** (`/ready` = 200) while the API returned 0% success — a real, documented
+Eclipse Ditto bug ([issue #1865](https://github.com/eclipse-ditto/ditto/issues/1865)) that the
+system discovered on its own from evidence.
+
+---
+
+## 10. Repo Onboarding Agent (newest work — read this if you are continuing it)
+
+**Why it exists.** Everything else in Break Point is repo-agnostic except one thing: the topology
+mapper's richest signal is a hand-authored knowledge file, `config/ditto_knowledge.yaml`, that a
+human wrote by reading Eclipse Ditto's architecture pages. Point Break Point at a different app and
+you lose documented edges entirely. `break_point onboard` generates that file for any Compose repo,
+which is what makes "point it at any compliant repo" true rather than aspirational.
+
+**Files:** `break_point/onboarding/source.py` (resolve a reference → local checkout; find the compose
+file, README and architecture docs), `break_point/onboarding/agent.py` (extract → one bounded LLM
+pass → validate → write → compare), `RepoKnowledge` / `DocumentedEdge` / `OnboardingReport` at the
+end of `break_point/schemas.py`, `cmd_onboard` in `break_point/cli.py`, `tests/test_onboarding.py`
+(89 tests, fully offline).
+
+**Commands**
+```bash
+break_point onboard eclipse-ditto/ditto --compare-to config/ditto_knowledge.yaml
+break_point onboard https://github.com/owner/app --out config
+break_point onboard .                      # the compose file you actually run
+break_point topology --knowledge config/<slug>_knowledge.yaml
+# flags: --compose --ref --cache-dir --dry-run --json --force --no-llm
+```
+
+**The real schema** (do not invent fields — only these are consumed):
+`roles`, `health_port`, `documented_edges` are read by `break_point/topology/compose.py`;
+`cluster_alias` is read by `topology/render.py` for the Mermaid cluster subgraph; `references` is
+for humans. There is deliberately no per-service description, no app summary and no `protected`
+list — protection lives in `config/thresholds.yaml` and the rest would be dead weight.
+
+**Measured against ground truth** (Ditto is the only target with a hand-authored file):
+
+| Measure | Result |
+|---|---|
+| Final graph coverage (generated ∪ structural vs. hand-authored) | **9/9** |
+| Criticality ranking vs. hand-authored | **identical, all 9 services** |
+| Effective role accuracy | 1.00 |
+| `health_port`, `cluster_alias` | exact |
+| Documented-edge F1 | 0.67–0.82, **varies run to run** |
+
+Generalisation: `dockersamples/example-voting-app` correctly yields **zero** documented edges (its
+compose already declares everything) and does not hallucinate a Pekko cluster from the worked
+example. Onboarding this repo's own `deploy/docker-compose.yml` independently reproduced all four
+observability role overrides.
+
+**Design rules — keep these.**
+- One bounded LLM pass. `MAX_PROMPT_CHARS` guards the request; `synthesize()` shrinks the docs and
+  retries on a size rejection, and retries with backoff on transient failures (`MAX_ATTEMPTS = 3`).
+- `validate()` is the code-decides boundary: unknown services, self-edges, duplicates, illegal
+  roles, a `cluster_alias` that is not a real network alias, and non-http references are all
+  dropped; `health_port` is derived from the compose healthchecks in code and **overrides** the
+  model. Never loosen this.
+- A `ui`/`other` role override is **refused for any service built from the repo's own source**,
+  because those roles mean *excluded from chaos testing* and would silently exempt the product.
+- A degraded run (model failed) **will not overwrite** an existing knowledge file that has content,
+  unless `--force`. This was a real incident: one transient Groq failure produced an empty file.
+- Never special-case a repository by name. The Ditto knowledge file is passed to the model only as
+  a shape example and is explicitly labelled as a different application.
+
+**Known gaps**
+- Only as good as the docs the target ships. Ditto keeps architecture pages in-repo (why it scores
+  well); a project documenting only on a website yields role overrides and little else.
+- No merge: onboarding the upstream repo gives you the edges, onboarding your deployment wrapper
+  gives you the observability role overrides, and combining them is currently manual.
+- Compose-only. No Kubernetes/Helm support.
+- Still Ditto-shaped after onboarding: the remediation rules in `break_point/agents/knowledge.py` and
+  the protected-service policy in `config/thresholds.yaml`. Those are separate pieces of work.
+- Output is a **draft for review**. Documented edges change the criticality ranking and therefore
+  what gets broken first.
+
+**Note:** a separate **Weakness Scout** (`break_point/agents/scout.py`, `reconcile.py`,
+`break_point scout`) was built in a parallel session and predicts weaknesses before anything is
+injected. It is unrelated to onboarding but shares the topology output; do not confuse the two.
