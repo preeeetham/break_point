@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from faultline.agents import risk
-from faultline.schemas import CascadeAttribution, CascadeHop
+from break_point.agents import risk
+from break_point.schemas import CascadeAttribution, CascadeHop
 
 
 def _origin(service: str = "auth") -> CascadeHop:

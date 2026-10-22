@@ -1,4 +1,4 @@
-from faultline.observe.window import Sample, SampleWindow, percentile, stats
+from break_point.observe.window import Sample, SampleWindow, percentile, stats
 
 
 def _s(ts: float, status: int = 200, latency: float = 10.0, op: str = "get_order", error: str = "") -> Sample:

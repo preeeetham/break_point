@@ -22,7 +22,7 @@ recovery:
 policy:
   # Services that may only be degraded, never taken fully offline, keyed by compose service name.
   # Empty here because the core names no application: a target protects its own services in its own
-  # thresholds file (targets/<name>/target.yaml -> thresholds_file). `faultline setup` warns about every
+  # thresholds file (targets/<name>/target.yaml -> thresholds_file). `break_point setup` warns about every
   # datastore in the topology that is not protected. Shape of an entry:
   #   <service>:
   #     reason: "sole datastore for every service; degrade-only, never a full outage"

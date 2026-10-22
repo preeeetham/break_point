@@ -8,12 +8,12 @@ import argparse
 import pytest
 import requests
 
-from faultline import cli
-from faultline.agents import knowledge as K
-from faultline.config import Settings
-from faultline.observe import probes as P
-from faultline.planning.planner import Planner, Policy, application_line
-from faultline.topology.graph import build, start_order, system_summary
+from break_point import cli
+from break_point.agents import knowledge as K
+from break_point.config import Settings
+from break_point.observe import probes as P
+from break_point.planning.planner import Planner, Policy, application_line
+from break_point.topology.graph import build, start_order, system_summary
 
 from .conftest import SHOP
 
@@ -83,9 +83,9 @@ def test_api_probe_sends_what_the_spec_says(shop):
 
     probe.send(spec.operations["put_property"], seq=42, session=Session())
     method, url, kw = sent[0]
-    assert (method, url) == ("PUT", "http://shop.test/api/orders/faultline.probe:canary/seq")
+    assert (method, url) == ("PUT", "http://shop.test/api/orders/break_point.probe:canary/seq")
     assert kw["json"] == 42 and kw["auth"] == ("probe", "pw")
-    assert probe.spike_request()[:2] == ("GET", "http://shop.test/api/orders/faultline.probe:canary")
+    assert probe.spike_request()[:2] == ("GET", "http://shop.test/api/orders/break_point.probe:canary")
     assert P.HttpApiProbe("http://x", spec, window=None).auth is None   # no user, no credentials sent
 
 
@@ -158,7 +158,7 @@ def test_start_order_puts_every_service_after_what_it_needs(shop):
 
 
 def test_start_order_survives_a_dependency_cycle(topology):
-    from faultline.schemas import Edge
+    from break_point.schemas import Edge
 
     cyclic = topology.model_copy(update={"edges": topology.edges + [Edge(src="auth", dst="orders", kind="documented")]})
     assert sorted(start_order(cyclic)) == sorted(start_order(topology))
@@ -173,7 +173,7 @@ def test_planner_is_told_the_application_and_reads_outage_rates_from_knowledge(s
     s = Settings(app_name="The Shop", knowledge_file=str(SHOP / "shop_knowledge.yaml"))
     assert application_line(s, shop).startswith("Application: The Shop. Tiers: nginx -> gateway")
     p = Planner(shop, Policy(policy_raw), [], None, s, {"pumba", "tc"})
-    from faultline.chaos.catalog import CATALOG
+    from break_point.chaos.catalog import CATALOG
 
     full = CATALOG["container_stop"]
     assert p.default_hypothesis("orders-search", full, {}).expected_max_error_rate == 0.3
@@ -188,10 +188,10 @@ def test_cli_without_a_target_says_how_to_choose_one(capsys):
     s = Settings()
     assert cli.cmd_target(s, None, argparse.Namespace(shell=False, wait=0)) == 1
     assert "no target selected" in capsys.readouterr().out
-    with pytest.raises(cli.NoTarget, match="FAULTLINE_TARGET"):
+    with pytest.raises(cli.NoTarget, match="BREAK_POINT_TARGET"):
         cli.build_topology(s, None, live=False)
-    missing = Settings(target="ghost", target_error="FAULTLINE_TARGET=ghost but targets/ghost/ does not exist")
-    assert cli.no_target_message(missing) == "error: FAULTLINE_TARGET=ghost but targets/ghost/ does not exist"
+    missing = Settings(target="ghost", target_error="BREAK_POINT_TARGET=ghost but targets/ghost/ does not exist")
+    assert cli.no_target_message(missing) == "error: BREAK_POINT_TARGET=ghost but targets/ghost/ does not exist"
 
 
 def test_cli_target_shell_output_is_sourceable(capsys):

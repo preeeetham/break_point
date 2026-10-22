@@ -1,7 +1,7 @@
 import pytest
 
-from faultline.chaos.catalog import CATALOG
-from faultline.planning.planner import (
+from break_point.chaos.catalog import CATALOG
+from break_point.planning.planner import (
     WEAKNESS_EXACT_MATCH_BONUS,
     WEAKNESS_WEIGHT,
     Candidate,
@@ -9,7 +9,7 @@ from faultline.planning.planner import (
     Policy,
     describe_candidates,
 )
-from faultline.schemas import PREDICTED_LABEL, PredictedWeakness, SuggestedExperiment, WeaknessReport
+from break_point.schemas import PREDICTED_LABEL, PredictedWeakness, SuggestedExperiment, WeaknessReport
 
 
 class FakeSettings:

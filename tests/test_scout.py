@@ -1,4 +1,4 @@
-"""Tests for the Weakness Scout (faultline/agents/scout.py).
+"""Tests for the Weakness Scout (break_point/agents/scout.py).
 
 The module's own docstring names the two invariants these tests exist to pin down:
 
@@ -21,13 +21,13 @@ from pathlib import Path
 
 import pytest
 
-from faultline.agents import scout as S
-from faultline.chaos.catalog import CATALOG, applicable
-from faultline.config import load_settings
-from faultline.planning.planner import Policy
-from faultline.schemas import PREDICTED_LABEL, Topology, WeaknessReport
-from faultline.topology import graph
-from faultline.topology.compose import documented_edges, service_nodes, static_edges
+from break_point.agents import scout as S
+from break_point.chaos.catalog import CATALOG, applicable
+from break_point.config import load_settings
+from break_point.planning.planner import Policy
+from break_point.schemas import PREDICTED_LABEL, Topology, WeaknessReport
+from break_point.topology import graph
+from break_point.topology.compose import documented_edges, service_nodes, static_edges
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = ROOT / "tests" / "fixtures" / "shop"
@@ -42,7 +42,7 @@ SHOP_APPS = ("auth", "orders", "orders-search", "notifier", "gateway")
 
 # ---------------------------------------------------------------- stubs
 class FakeLLM:
-    """Stands in for faultline.planning.llm.LLMClient. Never touches the network.
+    """Stands in for break_point.planning.llm.LLMClient. Never touches the network.
 
     Same shape as the stubs in tests/test_planner.py and tests/test_onboarding.py: `available()`,
     `describe()`, `last_error`, `chat_json()`.
@@ -129,7 +129,7 @@ def make_ctx(services: dict, *, volumes: dict | None = None, knowledge: dict | N
              nginx_text: str = "", policy: dict | None = None, project: str = "synthetic") -> S.ScoutContext:
     """A ScoutContext over a hand-written compose dict, built with the real parsers.
 
-    The Topology is produced by faultline.topology.{compose,graph} exactly as `faultline topology`
+    The Topology is produced by break_point.topology.{compose,graph} exactly as `break_point topology`
     would produce it, so criticality / aliases / roles are not hand-faked.
     """
     compose = {"services": services, "volumes": volumes or {}}
@@ -540,7 +540,7 @@ def test_published_ports_marks_a_target_outside_the_system_under_test(ports_ctx)
     assert "outside the system under test" not in raws["extra"].evidence
 
     # ... and its suggested experiment carries the "cannot be confirmed" note rather than a policy
-    # complaint, because Faultline will not inject into something outside the SUT at all.
+    # complaint, because Break Point will not inject into something outside the SUT at all.
     se = S.resolve_experiment(raws["grafana"], ports_ctx)
     assert "tagged outside the system under test" in se.policy_note
     assert "role other" in se.policy_note
@@ -785,7 +785,7 @@ def test_resolve_experiment_skips_unknown_types_and_unknown_targets():
 # ================================================================ confirming finding codes
 def test_every_confirming_code_is_one_the_injector_can_actually_raise():
     """A prediction naming a code nothing can emit could never be confirmed."""
-    from faultline.agents import injector
+    from break_point.agents import injector
 
     emitted = set(re.findall(r'code="(\w+)"', Path(injector.__file__).read_text()))
     assert "health_check_masked_failure" in emitted      # sanity: the grep found something real
@@ -1207,7 +1207,7 @@ def test_markdown_states_in_words_that_the_severities_are_predicted_not_measured
     assert "every severity below is PREDICTED from configuration" in md
     assert "Nothing here was measured: no fault has been injected" in md
     assert "must not be read as, the Risk agent's post-hoc measured severities" in md
-    assert "faultline scout --reconcile" in md
+    assert "break_point scout --reconcile" in md
     # ... and it repeats the disclaimer next to every single number, not only once at the top
     n = len(S.scout(llm_ctx, None).weaknesses)
     assert md.count("_(predicted, not measured)_") == n
@@ -1265,7 +1265,7 @@ def test_markdown_of_a_clean_deployment_says_so():
 def real_ctx() -> S.ScoutContext:
     """A ScoutContext over the real deployment: enough weaknesses to need several prose chunks."""
     settings = FakeSettings(REAL_COMPOSE, REAL_NGINX, REAL_KNOWLEDGE, REAL_THRESHOLDS)
-    topology = graph.build(str(REAL_COMPOSE), "faultline", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
+    topology = graph.build(str(REAL_COMPOSE), "break_point", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
     return S.build_context(settings, topology)
 
 
@@ -1277,7 +1277,7 @@ def real_report() -> WeaknessReport:
     pinned below were verified by hand against the compose file.
     """
     settings = FakeSettings(REAL_COMPOSE, REAL_NGINX, REAL_KNOWLEDGE, REAL_THRESHOLDS)
-    topology = graph.build(str(REAL_COMPOSE), "faultline", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
+    topology = graph.build(str(REAL_COMPOSE), "break_point", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
     return S.scout(S.build_context(settings, topology), None)
 
 
@@ -1351,7 +1351,7 @@ def test_real_shop_db_experiment_is_degrade_only(real_report):
 
 
 def test_shop_every_prediction_is_labelled_and_sane(real_report):
-    assert real_report.project == "faultline"
+    assert real_report.project == "break_point"
     assert real_report.compose_file == str(REAL_COMPOSE)
     assert real_report.knowledge_file == str(REAL_KNOWLEDGE)
     assert real_report.label == PREDICTED_LABEL
@@ -1406,7 +1406,7 @@ def test_shop_markdown_is_self_describing(real_report):
 # ================================================================ build_context
 def test_build_context_reads_compose_knowledge_policy_and_proxy_text(policy_raw):
     settings = FakeSettings(REAL_COMPOSE, REAL_NGINX, REAL_KNOWLEDGE, REAL_THRESHOLDS)
-    topology = graph.build(str(REAL_COMPOSE), "faultline", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
+    topology = graph.build(str(REAL_COMPOSE), "break_point", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
     ctx = S.build_context(settings, topology)
     assert ctx.compose_path == str(REAL_COMPOSE)
     assert ctx.knowledge_path == str(REAL_KNOWLEDGE)
@@ -1442,7 +1442,7 @@ def _real_settings():
 
 
 def _seed_topology(store) -> Topology:
-    topo = graph.build(str(REAL_COMPOSE), "faultline", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
+    topo = graph.build(str(REAL_COMPOSE), "break_point", str(REAL_NGINX), str(REAL_KNOWLEDGE), live=False)
     store.write_topology(topo)
     return topo
 

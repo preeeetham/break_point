@@ -1,7 +1,7 @@
 """Fix states on the scorecard and verified fixes in the narrator."""
-from faultline.agents import narrator, scorecard
-from faultline.remediation import proposals as P
-from faultline.schemas import FixProposal, FixVerification, MetricComparison, ProposalExplanation
+from break_point.agents import narrator, scorecard
+from break_point.remediation import proposals as P
+from break_point.schemas import FixProposal, FixVerification, MetricComparison, ProposalExplanation
 
 
 def _prop(eid, status, svc="orders", **kw):

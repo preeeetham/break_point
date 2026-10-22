@@ -1,8 +1,8 @@
 """Reconcile agent. Predicted-vs-confirmed over synthetic reports: no Docker, no LLM, no network."""
 from __future__ import annotations
 
-from faultline.agents import reconcile as agent
-from faultline.schemas import (
+from break_point.agents import reconcile as agent
+from break_point.schemas import (
     PREDICTED_LABEL,
     Finding,
     PredictedWeakness,
@@ -301,7 +301,7 @@ def test_markdown_escapes_pipes_in_evidence(make_report):
 def test_run_without_weaknesses_file(tmp_store):
     logs: list[str] = []
     assert agent.run(tmp_store, PROJECT, log=logs.append) is None
-    assert logs == ["[reconcile] no reports/weaknesses.json yet; run `faultline scout` first"]
+    assert logs == ["[reconcile] no reports/weaknesses.json yet; run `break_point scout` first"]
     assert tmp_store.reconciliation() is None
     assert not (tmp_store.root / "weaknesses_reconcile.md").exists()
 

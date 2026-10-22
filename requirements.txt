@@ -1,5 +1,5 @@
 # Runtime dependencies (mirrors [project.dependencies] in pyproject.toml).
-# Prefer `pip install -e .` so the `faultline` console script is installed too.
+# Prefer `pip install -e .` so the `break_point` console script is installed too.
 docker>=7
 requests>=2.31
 pydantic>=2.6

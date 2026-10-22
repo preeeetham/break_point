@@ -1,0 +1,249 @@
+"""Settings, layered: process environment > .env > targets/<target>/target.yaml > config/settings.yaml > defaults.
+
+Break Point itself knows nothing about any one application. Everything that belongs to the system under test
+-- its compose file, its proxy config, its documented knowledge, how to send it traffic, extra fix rules --
+lives in one directory, `targets/<name>/`, selected with BREAK_POINT_TARGET. See docs/ONBOARDING_A_TARGET.md.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+TARGETS_DIR = ROOT / "targets"
+TARGET_FILE = "target.yaml"
+PROBE_FILE = "probe.yaml"
+RULES_FILE = "rules.yaml"
+KNOWLEDGE_SUFFIX = "_knowledge.yaml"
+# docker compose merges a file with this name next to the base compose file on its own, so the
+# Break Point-owned override is visible to a plain `docker compose up` in the target's directory too.
+OVERRIDE_NAME = "docker-compose.override.yml"
+PATH_FIELDS = ("compose_file", "nginx_conf", "reports_dir", "thresholds_file", "knowledge_file", "probe_file",
+               "rules_file", "onboarding_example", "remediation_override_file")
+
+
+def _dotenv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip("\"'")
+    return out
+
+
+@dataclass
+class Settings:
+    target: str = ""               # name of the directory under targets/; empty = nothing selected
+    target_error: str = ""         # why the selected target could not be loaded; `break_point setup` reports it
+    app_name: str = ""             # how prompts and reports name the system under test; empty = generic wording
+    compose_project: str = "break_point"
+    compose_file: str = ""
+    nginx_conf: str = ""
+    target_url: str = "http://127.0.0.1:8080"
+    target_user: str = ""          # empty = requests carry no credentials
+    target_password: str = ""
+    prometheus_url: str = "http://127.0.0.1:9090"
+    llm_provider: str = "ollama"  # ollama | openai | anthropic
+    llm_model: str = ""           # empty = provider default (phi4-mini / gpt-4o-mini / claude-sonnet-5)
+    llm_base_url: str = ""        # empty = provider default
+    llm_api_key: str = ""
+    llm_enabled: bool = True
+    llm_timeout_s: float = 120.0
+    reports_dir: str = "reports"
+    thresholds_file: str = "config/thresholds.yaml"
+    knowledge_file: str = ""       # empty = targets/<target>/<target>_knowledge.yaml when it exists
+    probe_file: str = ""           # empty = targets/<target>/probe.yaml when it exists, else health-only probing
+    rules_file: str = ""           # empty = targets/<target>/rules.yaml when it exists, else the generic rules only
+    # The worked example the onboarding prompt shows the model. A neutral, invented application on purpose:
+    # the onboarding validator drops anything that can only have come from the example.
+    onboarding_example: str = "config/examples/knowledge.example.yaml"
+    probe_rps: float = 4.0
+    probe_namespace: str = "break_point.probe"
+    health_interval_s: float = 3.0
+    pumba_image: str = "gaiaadm/pumba:latest"
+    tc_image: str = "ghcr.io/alexei-led/pumba-alpine-nettools:latest"
+    network_name: str = ""
+    dashboard_port: int = 8765
+    # Tolerance when correlating timestamps from different clocks (host vs containers) and samplers
+    # (health probe every 3 s). Two events closer than this are "same window": order unknown, never
+    # reported as ordered. See break_point/topology/quality.py same_window().
+    time_lenience_s: float = 1.5
+    # ---- approval gate. No defaults that could silently work: an unset ADMIN_EMAIL or an unset
+    # credential must fail loudly at the agent's startup check, never quietly approve anything.
+    admin_email: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""            # empty = smtp_user
+    smtp_starttls: bool = True
+    imap_host: str = ""            # empty = smtp_host
+    imap_port: int = 993
+    imap_user: str = ""            # empty = smtp_user
+    imap_password: str = ""        # empty = smtp_password
+    imap_mailbox: str = "INBOX"
+    imap_ssl: bool = True
+    approval_timeout_s: float = 120.0
+    # ---- human-approved fixes. Proposals expire unanswered (never auto-approved); config changes go
+    # into a Break Point-owned compose override next to the base compose file, never into it.
+    fix_proposal_timeout_s: float = 1800.0
+    remediation_override_file: str = ""   # empty = docker-compose.override.yml next to compose_file
+    fix_health_timeout_s: float = 180.0
+    compose_env: str = ""          # "K=V,K2=V2" passed to `docker compose` when recreating fixed services
+    approval_poll_s: float = 5.0
+
+    @property
+    def reports(self) -> Path:
+        return Path(self.reports_dir)
+
+    @property
+    def compose_network(self) -> str:
+        return self.network_name or f"{self.compose_project}_default"
+
+    @property
+    def target_dir(self) -> Path | None:
+        return TARGETS_DIR / self.target if self.target and not self.target_error else None
+
+    @property
+    def app_label(self) -> str:
+        return self.app_name or "the application under test"
+
+
+ENV_MAP = {
+    "TIME_LENIENCE_SECONDS": "time_lenience_s",
+    "BREAK_POINT_APP_NAME": "app_name",
+    "BREAK_POINT_COMPOSE_PROJECT": "compose_project",
+    "BREAK_POINT_COMPOSE_FILE": "compose_file",
+    "BREAK_POINT_NGINX_CONF": "nginx_conf",
+    "BREAK_POINT_KNOWLEDGE_FILE": "knowledge_file",
+    "BREAK_POINT_PROBE_FILE": "probe_file",
+    "BREAK_POINT_RULES_FILE": "rules_file",
+    "BREAK_POINT_REPORTS_DIR": "reports_dir",
+    "BREAK_POINT_LLM": "llm_enabled",
+    "BREAK_POINT_NETWORK": "network_name",
+    "TARGET_URL": "target_url",
+    "TARGET_USER": "target_user",
+    "TARGET_PASSWORD": "target_password",
+    "PROMETHEUS_URL": "prometheus_url",
+    # OLLAMA_* are legacy aliases; LLM_* come later in the map so they win when both are set
+    "OLLAMA_URL": "llm_base_url",
+    "OLLAMA_MODEL": "llm_model",
+    "LLM_PROVIDER": "llm_provider",
+    "LLM_MODEL": "llm_model",
+    "LLM_BASE_URL": "llm_base_url",
+    "LLM_API_KEY": "llm_api_key",
+    "ADMIN_EMAIL": "admin_email",
+    "SMTP_HOST": "smtp_host",
+    "SMTP_PORT": "smtp_port",
+    "SMTP_USER": "smtp_user",
+    "SMTP_PASSWORD": "smtp_password",
+    "SMTP_FROM": "smtp_from",
+    "SMTP_STARTTLS": "smtp_starttls",
+    "IMAP_HOST": "imap_host",
+    "IMAP_PORT": "imap_port",
+    "IMAP_USER": "imap_user",
+    "IMAP_PASSWORD": "imap_password",
+    "IMAP_MAILBOX": "imap_mailbox",
+    "IMAP_SSL": "imap_ssl",
+    "APPROVAL_TIMEOUT_SECONDS": "approval_timeout_s",
+    "FIX_PROPOSAL_TIMEOUT_SECONDS": "fix_proposal_timeout_s",
+    "BREAK_POINT_OVERRIDE_FILE": "remediation_override_file",
+    "FIX_HEALTH_TIMEOUT_SECONDS": "fix_health_timeout_s",
+    "BREAK_POINT_COMPOSE_ENV": "compose_env",
+    "APPROVAL_POLL_SECONDS": "approval_poll_s",
+}
+
+
+def _apply_yaml(s: Settings, data: dict, base: Path | None = None) -> None:
+    """Set known fields from a YAML mapping. Relative paths in a target file are relative to the target."""
+    for k, v in (data or {}).items():
+        if not hasattr(s, k) or v is None or k in ("target", "target_error"):
+            continue
+        if base is not None and k in PATH_FIELDS and v and not Path(str(v)).is_absolute():
+            v = str(base / str(v))
+        setattr(s, k, v)
+
+
+def _apply_target(s: Settings) -> None:
+    """Layer targets/<target>/target.yaml and pick up the target's conventional files.
+
+    A missing or unusable target (no directory, no target.yaml, invalid YAML) is recorded in
+    `target_error` rather than raised: .env is shared by every branch of
+    this repository, and a branch that does not carry the target must still load its settings.
+    `break_point setup` reports the error, and every command that needs a compose file says so.
+    """
+    tdir = TARGETS_DIR / s.target
+    if not tdir.is_dir():
+        known = sorted(p.name for p in TARGETS_DIR.iterdir() if p.is_dir()) if TARGETS_DIR.is_dir() else []
+        s.target_error = (f"BREAK_POINT_TARGET={s.target} but targets/{s.target}/ does not exist "
+                          f"(available: {', '.join(known) or 'none'})")
+        return
+    tfile = tdir / TARGET_FILE
+    if not tfile.is_file():
+        # Usually the leftovers of another branch: git keeps ignored files (a stack's .env, caches) when it
+        # switches, so the directory can outlive the branch that carries the target.
+        s.target_error = (f"targets/{s.target}/ has no {TARGET_FILE}; if the target lives on its own branch, "
+                          f"`git checkout target/{s.target}`")
+        return
+    try:
+        data = yaml.safe_load(tfile.read_text()) or {}
+    except yaml.YAMLError as exc:
+        s.target_error = f"targets/{s.target}/{TARGET_FILE} is not valid YAML: {exc}".replace("\n", " ")
+        return
+    if not isinstance(data, dict):
+        s.target_error = f"targets/{s.target}/{TARGET_FILE} must be a mapping of settings"
+        return
+    _apply_yaml(s, data, base=tdir)
+    knowledge = tdir / f"{s.target}{KNOWLEDGE_SUFFIX}"
+    if not knowledge.is_file():
+        # `break_point onboard <repo> --out targets/<name>` names the file after the repository, not the target
+        found = sorted(tdir.glob(f"*{KNOWLEDGE_SUFFIX}"))
+        knowledge = found[0] if len(found) == 1 else knowledge
+    for attr, path in (("knowledge_file", knowledge), ("probe_file", tdir / PROBE_FILE), ("rules_file", tdir / RULES_FILE)):
+        if not getattr(s, attr) and path.is_file():
+            setattr(s, attr, str(path))
+
+
+def load_settings(path: str | None = None) -> Settings:
+    s = Settings()
+    cfg = Path(path) if path else ROOT / "config" / "settings.yaml"
+    if cfg.is_file():
+        data = yaml.safe_load(cfg.read_text()) or {}
+        _apply_yaml(s, data)
+        s.target = str(data.get("target") or "")
+    env = {**_dotenv(ROOT / ".env"), **os.environ}
+    if env.get("BREAK_POINT_TARGET"):
+        s.target = env["BREAK_POINT_TARGET"].strip()
+    if s.target:
+        _apply_target(s)
+    for ek, attr in ENV_MAP.items():
+        raw = env.get(ek)
+        if raw is None or raw == "":
+            continue
+        cur = getattr(s, attr)
+        if isinstance(cur, bool):
+            val: object = raw.lower() in ("1", "true", "yes", "on")
+        elif isinstance(cur, int):
+            val = int(raw)
+        elif isinstance(cur, float):
+            val = float(raw)
+        else:
+            val = raw
+        setattr(s, attr, val)
+    s.smtp_from = s.smtp_from or s.smtp_user
+    s.imap_host = s.imap_host or s.smtp_host
+    s.imap_user = s.imap_user or s.smtp_user
+    s.imap_password = s.imap_password or s.smtp_password
+    for attr in PATH_FIELDS:
+        raw = getattr(s, attr)
+        if raw and not Path(raw).is_absolute():
+            setattr(s, attr, str(ROOT / raw))
+    if not s.remediation_override_file and s.compose_file:
+        s.remediation_override_file = str(Path(s.compose_file).parent / OVERRIDE_NAME)
+    return s

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from faultline.agents import narrator
-from faultline.observe.cascade import describe_hop
-from faultline.schemas import CascadeAttribution, CascadeHop
+from break_point.agents import narrator
+from break_point.observe.cascade import describe_hop
+from break_point.schemas import CascadeAttribution, CascadeHop
 
 
 def _origin(service: str, evidence: str) -> CascadeHop:

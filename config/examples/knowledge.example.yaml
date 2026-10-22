@@ -1,4 +1,4 @@
-# Worked example for `faultline onboard`: the shape and level of detail of a knowledge file.
+# Worked example for `break_point onboard`: the shape and level of detail of a knowledge file.
 # It describes an INVENTED application on purpose ("Quillstack", a self-hosted document editor), so the
 # model sees what is wanted without being handed a real project to copy. The onboarding validator drops
 # any service name, proper noun or URL that can only have come from this file.
