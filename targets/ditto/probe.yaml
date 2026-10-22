@@ -1,4 +1,4 @@
-# Synthetic traffic for Ditto, exactly what Faultline's original Things-API probe sent: a canary thing is
+# Synthetic traffic for Ditto, exactly what Break Point's original Things-API probe sent: a canary thing is
 # created once, then reads, sequence-numbered property writes and searches go through nginx -> gateway at
 # probe_rps. Every acknowledged write's number is read back after an experiment (`integrity`).
 health:
@@ -9,7 +9,7 @@ setup:
     method: PUT
     path: /api/2/things/{namespace}:canary
     json:
-      attributes: {kind: faultline-canary}
+      attributes: {kind: break_point-canary}
       features: {telemetry: {properties: {seq: 0, temperature: 20.0}}}
 operations:
   # thing reads and writes are served by `things` (which enforces policies), search by `things-search`
@@ -27,7 +27,7 @@ operations:
   search:
     method: GET
     path: /api/2/search/things
-    params: {filter: 'eq(attributes/kind,"faultline-canary")', option: size(1)}
+    params: {filter: 'eq(attributes/kind,"break_point-canary")', option: size(1)}
     route: [nginx, gateway, things-search]
 mix: [get_thing, put_property, get_thing, search, get_property, put_property, get_thing, search]
 integrity: get_property

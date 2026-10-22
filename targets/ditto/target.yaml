@@ -1,11 +1,11 @@
 # Eclipse Ditto 3.9 under Docker Compose: MongoDB, the five Ditto services on one Pekko cluster, nginx in
 # front (basic auth), and a Prometheus / cAdvisor / Blackbox / Grafana observability stack. The sandbox is
 # deploy/; scripts/up.sh starts it. Layered under .env: TARGET_URL / TARGET_USER / TARGET_PASSWORD and
-# FAULTLINE_COMPOSE_PROJECT there win (set the project to `bosch-ditto` to attach to an upstream stack).
+# BREAK_POINT_COMPOSE_PROJECT there win (set the project to `bosch-ditto` to attach to an upstream stack).
 app_name: Eclipse Ditto (an IoT digital-twin platform)
 compose_file: deploy/docker-compose.yml
 nginx_conf: deploy/nginx/nginx.conf
-compose_project: faultline
+compose_project: break_point
 target_url: http://127.0.0.1:8080
 target_user: ditto
 target_password: ditto

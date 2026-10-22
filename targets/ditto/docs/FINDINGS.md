@@ -1,4 +1,4 @@
-# Faultline findings report: Eclipse Ditto resilience
+# Break Point findings report: Eclipse Ditto resilience
 
 *Generated from a live run against Docker Compose project `bosch-ditto` (Eclipse Ditto 3.9.8 + MongoDB 7 + nginx), 2026-10-11 04:23:04 to 2026-10-11 04:34:29 UTC. Every number below is copied from the JSON reports the agents wrote to `reports/`; nothing is illustrative.*
 
@@ -8,7 +8,7 @@
 - **6 experiments, 6 distinct failure types**: `container_crash`, `container_stop`, `cpu_stress`, `network_delay`, `network_loss`, `traffic_spike`.
 - **0 rated high or critical** by the Risk agent; the worst is `container_crash` on `things` at **4.7/10 (MEDIUM)**.
 - **1 experiment(s) stopped automatically** by a safety threshold and rolled back; every experiment ended with the target restored (see [Safety: the kill switch fired for real](#safety-the-kill-switch-fired-for-real)).
-- All recommendations are **advisory only** (`advisory_only: true`); Faultline never changes the system under test.
+- All recommendations are **advisory only** (`advisory_only: true`); Break Point never changes the system under test.
 
 ## What the run shows
 
@@ -97,7 +97,7 @@ Score factors: impact 4.00, blast 0.29, recovery 0.44, intervention 0.00, findin
    - *Verify*: Kill one things instance: API success stays > 90% and the cluster view shows the shard regions rebalanced.; A retried PUT with a stale `If-Match` returns 412 rather than overwriting newer state.
 2. **Baseline observability: SLO alert rules and chaos annotations in Grafana** (observability, effort S, confidence 0.65). In experiment 1de6fb6a0969 (risk MEDIUM 4.7/10), API success fell to 0% during injection, TTR 26 s, findings: API success dropped to 0% during the fault. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.
    - Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.
-   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.
+   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.
    - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs.
    - *Verify*: During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window.
 
@@ -134,7 +134,7 @@ Score factors: impact 0.00, blast 0.29, recovery 0.31, intervention 0.00, findin
    - *Verify*: `curl -u devops:... http://localhost:8558/cluster` (or `/status/cluster`) lists two `policies` members.; Kill one policies container: API success rate during injection stays > 90% and no `cascade_beyond_hypothesis` finding is raised.
 2. **Baseline observability: SLO alert rules and chaos annotations in Grafana** (observability, effort S, confidence 0.65). In experiment 713eacc680e6 (risk LOW 0.6/10), API success fell to 100% during injection, TTR 18 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.
    - Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.
-   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.
+   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.
    - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs.
    - *Verify*: During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window.
 
@@ -176,7 +176,7 @@ Score factors: impact 0.00, blast 0.29, recovery 0.14, intervention 0.00, findin
    - *Verify*: Replay `network_delay` with the same latency: p95 is capped near the smallest configured timeout and the error budget burn is measurable rather than a hang.; No request in the probe log exceeds the nginx `proxy_read_timeout`.
 3. **Baseline observability: SLO alert rules and chaos annotations in Grafana** (observability, effort S, confidence 0.65). In experiment fb5442b902a7 (risk LOW 0.4/10), API success fell to 100% during injection, TTR 9 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.
    - Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.
-   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.
+   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.
    - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs.
    - *Verify*: During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window.
 
@@ -218,7 +218,7 @@ Score factors: impact 0.00, blast 0.29, recovery 0.11, intervention 0.00, findin
    - *Verify*: `docker stats` shows < 60% memory utilisation at idle and no OOMKilled events in `docker inspect`.; Replay `cpu_stress`: p95 stays below the abort threshold and nginx returns 429s for the excess rather than 5xx for everyone.
 3. **Baseline observability: SLO alert rules and chaos annotations in Grafana** (observability, effort S, confidence 0.65). In experiment 359e504c9f6c (risk LOW 0.4/10), API success fell to 100% during injection, TTR 6 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.
    - Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.
-   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.
+   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.
    - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs.
    - *Verify*: During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window.
 
@@ -261,7 +261,7 @@ Score factors: impact 0.00, blast 0.29, recovery 0.10, intervention 0.00, findin
    - *Verify*: Replay `traffic_spike`: probe success for the normal-rate probe stays ≥ 95% while `nginx_http_requests_total{status="429"}` rises.
 3. **Baseline observability: SLO alert rules and chaos annotations in Grafana** (observability, effort S, confidence 0.65). In experiment deeb5a23d7c8 (risk LOW 0.4/10), API success fell to 100% during injection, TTR 6 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.
    - Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.
-   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.
+   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.
    - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs.
    - *Verify*: During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window.
 4. **Add Docker healthcheck and restart policy for gateway container** (operations, effort M, confidence 0.60). [LLM suggestion, unverified] Ensures gateway restarts automatically if it becomes unresponsive, reducing outage duration and manual intervention.
@@ -274,7 +274,7 @@ Score factors: impact 0.00, blast 0.29, recovery 0.10, intervention 0.00, findin
    - Ensure persistence volumes are separate for each node to avoid data loss.
    - *Verify*: Simulate primary node failure and confirm that a secondary node is elected primary via MongoDB logs.; Verify that Ditto continues to write and read data during and after the failover without errors.
 
-Raw: `reports/experiments/deeb5a23d7c8.json`, `reports/risk/deeb5a23d7c8.json`, `reports/fixes/deeb5a23d7c8.md`. Reproduce by hand: `# 150 req/s for 30s against $DITTO_URL/api/2/things/faultline.probe:canary (e.g. hey -z 30s -q 150 -c 16)`
+Raw: `reports/experiments/deeb5a23d7c8.json`, `reports/risk/deeb5a23d7c8.json`, `reports/fixes/deeb5a23d7c8.md`. Reproduce by hand: `# 150 req/s for 30s against $DITTO_URL/api/2/things/break_point.probe:canary (e.g. hey -z 30s -q 150 -c 16)`
 
 <a id="exp-e85e6fa18520"></a>
 ### LOW 0.4/10: `network_loss` on `mongodb` (e85e6fa18520)
@@ -323,7 +323,7 @@ Score factors: impact 0.00, blast 0.29, recovery 0.10, intervention 0.00, findin
    - *Verify*: Replay `network_delay` with the same latency: p95 is capped near the smallest configured timeout and the error budget burn is measurable rather than a hang.; No request in the probe log exceeds the nginx `proxy_read_timeout`.
 5. **Baseline observability: SLO alert rules and chaos annotations in Grafana** (observability, effort S, confidence 0.65). In experiment e85e6fa18520 (risk LOW 0.4/10), API success fell to 100% during injection, TTR 6 s. Whatever the specific fault, the first production improvement is knowing within a minute that users are affected. Alert on what the user sees (probe success, error rate, p95), not only on container liveness.
    - Prometheus rules: `probe_success == 0 for 1m` (blackbox on `/api/2/things` through nginx), API error-rate SLO burn (`sum(rate(requests{status=~"5.."}[5m])) / sum(rate(requests[5m])) > 0.02`), and `histogram_quantile(0.95, ...) > 1s for 5m`.
-   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Faultline experiment so latency spikes are attributable.
+   - Add a Grafana annotation (HTTP API `POST /api/annotations`, tag `chaos`) at the start and end of each Break Point experiment so latency spikes are attributable.
    - Dashboard the Docker health state per container (`container_health_status` via cAdvisor or a tiny exporter) next to the API SLIs.
    - *Verify*: During the next experiment an alert fires within 60 s of the first API error and the Grafana graph shows the chaos window.
 
@@ -358,7 +358,7 @@ The Topology agent ranks every service by criticality (transitive dependents, st
 - Topology finding: container bosch-ditto-swagger-ui-1 running but not declared in compose
 - Topology finding: mongodb: not referenced by any depends_on; 4 services reach it only via environment variables
 
-The planner's ranked shortlist and the model's pick, captured with `faultline plan` before any experiment ran (code ranks; the LLM may only pick one of the top five and write the rationale):
+The planner's ranked shortlist and the model's pick, captured with `break_point plan` before any experiment ran (code ranks; the LLM may only pick one of the top five and write the rationale):
 
 ```
  #  priority  service        failure            reasons
@@ -384,5 +384,5 @@ next experiment (llm): network_delay on mongodb {'duration_s': 15, 'delay_ms': 5
 
 ## Method and reproducibility
 
-Pipeline: `faultline setup` -> `topology` -> `baseline --duration 60` -> `run` (one experiment at a time, Guardian running) -> `risk` -> `fix` -> `scorecard` -> `narrate`. Severity, scores and fix matching are computed by code; the LLM (open-weights `openai/gpt-oss-120b` via Groq) only picked among code-ranked candidates and rewrote prose fields. See [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md) for the formulas and the safety system.
+Pipeline: `break_point setup` -> `topology` -> `baseline --duration 60` -> `run` (one experiment at a time, Guardian running) -> `risk` -> `fix` -> `scorecard` -> `narrate`. Severity, scores and fix matching are computed by code; the LLM (open-weights `openai/gpt-oss-120b` via Groq) only picked among code-ranked candidates and rewrote prose fields. See [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md) for the formulas and the safety system.
 

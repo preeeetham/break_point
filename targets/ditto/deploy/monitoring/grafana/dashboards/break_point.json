@@ -1,8 +1,8 @@
 {
- "uid": "faultline",
- "title": "Faultline — Ditto resilience",
+ "uid": "break_point",
+ "title": "Break Point — Ditto resilience",
  "tags": [
-  "faultline",
+  "break_point",
   "ditto",
   "chaos"
  ],
@@ -300,7 +300,7 @@
       "uid": "prometheus"
      },
      "refId": "A",
-     "expr": "sum by (container_label_com_docker_compose_service) (rate(container_cpu_usage_seconds_total{container_label_com_docker_compose_project=\"faultline\"}[30s]))",
+     "expr": "sum by (container_label_com_docker_compose_service) (rate(container_cpu_usage_seconds_total{container_label_com_docker_compose_project=\"break_point\"}[30s]))",
      "legendFormat": "{{container_label_com_docker_compose_service}}"
     }
    ],
@@ -354,7 +354,7 @@
       "uid": "prometheus"
      },
      "refId": "A",
-     "expr": "max by (container_label_com_docker_compose_service) (container_memory_working_set_bytes{container_label_com_docker_compose_project=\"faultline\"}) / 1024 / 1024",
+     "expr": "max by (container_label_com_docker_compose_service) (container_memory_working_set_bytes{container_label_com_docker_compose_project=\"break_point\"}) / 1024 / 1024",
      "legendFormat": "{{container_label_com_docker_compose_service}}"
     }
    ],

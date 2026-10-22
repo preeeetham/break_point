@@ -21,12 +21,12 @@ sys.path.insert(0, str(ROOT))
 
 import requests  # noqa: E402
 
-from faultline.config import ENV_MAP, ROOT as CFG_ROOT, _dotenv, load_settings  # noqa: E402
-from faultline.reporting.store import ReportStore  # noqa: E402
+from break_point.config import ENV_MAP, ROOT as CFG_ROOT, _dotenv, load_settings  # noqa: E402
+from break_point.reporting.store import ReportStore  # noqa: E402
 
 PY = ".venv/bin/python"
 CORE_SERVICES = ["mongodb", "policies", "things", "things-search", "connectivity", "gateway", "nginx"]
-REQUIRED_ENV = ("FAULTLINE_TARGET",)   # URL, credentials and project come from targets/ditto/target.yaml
+REQUIRED_ENV = ("BREAK_POINT_TARGET",)   # URL, credentials and project come from targets/ditto/target.yaml
 GUARDIAN_FRESH_S = 15
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 Result = tuple[str, str]
@@ -48,7 +48,7 @@ def check_env(s, a) -> Result:
     env = _dotenv(path)
     missing = [k for k in REQUIRED_ENV if not env.get(k)]
     if s.target != TARGET.name or s.target_error:
-        return FAIL, (s.target_error or f"FAULTLINE_TARGET is {s.target or 'unset'}") + f"; fix: FAULTLINE_TARGET={TARGET.name} in .env"
+        return FAIL, (s.target_error or f"BREAK_POINT_TARGET is {s.target or 'unset'}") + f"; fix: BREAK_POINT_TARGET={TARGET.name} in .env"
     known = sum(1 for k in env if k in ENV_MAP)
     key = "key set" if s.llm_api_key else ("no key needed" if s.llm_provider == "ollama" else "key MISSING")
     msg = (f"{known} settings loaded: target {s.target}, project {s.compose_project}, ditto {s.target_url} as {s.target_user} "
@@ -61,7 +61,7 @@ def check_env(s, a) -> Result:
 
 
 def check_docker(s, a) -> Result:
-    from faultline.chaos.docker_ctl import DockerController
+    from break_point.chaos.docker_ctl import DockerController
 
     try:
         d = DockerController(s.compose_project, s.compose_network)
@@ -69,7 +69,7 @@ def check_docker(s, a) -> Result:
     except Exception as exc:
         return FAIL, f"docker unreachable ({type(exc).__name__}: {str(exc)[:80]}); is Docker Desktop running?"
     if not containers:
-        return FAIL, f"compose project '{s.compose_project}' has no containers; fix: docker compose ls, or set FAULTLINE_COMPOSE_PROJECT"
+        return FAIL, f"compose project '{s.compose_project}' has no containers; fix: docker compose ls, or set BREAK_POINT_COMPOSE_PROJECT"
     topo = None
     try:
         topo = ReportStore(s.reports).topology() if s.reports.is_dir() else None
@@ -94,7 +94,7 @@ def check_docker(s, a) -> Result:
     running = sum(1 for c in containers.values() if c.status == "running")
     msg = f"project {s.compose_project}: {running}/{len(containers)} running, {len(expected) - len(bad)}/{len(expected)} core services ok"
     if bad:
-        return FAIL, f"{msg}; {', '.join(bad)}; fix: {PY} -m faultline heal"
+        return FAIL, f"{msg}; {', '.join(bad)}; fix: {PY} -m break_point heal"
     return PASS, msg
 
 
@@ -109,7 +109,7 @@ def check_ditto(s, a) -> Result:
         r = requests.get(f"{s.target_url}/api/2/things/{s.probe_namespace}:canary",
                          auth=(s.target_user, s.target_password), timeout=4)
     except requests.RequestException as exc:
-        return FAIL, f"{s.target_url} unreachable ({type(exc).__name__}); fix: docker compose ls, then {PY} -m faultline heal"
+        return FAIL, f"{s.target_url} unreachable ({type(exc).__name__}); fix: docker compose ls, then {PY} -m break_point heal"
     ms = r.elapsed.total_seconds() * 1000
     if r.status_code in (401, 403):
         return FAIL, f"API auth as {s.target_user} rejected (HTTP {r.status_code}); check TARGET_USER / TARGET_PASSWORD in .env or targets/ditto/target.yaml"
@@ -136,7 +136,7 @@ def check_dashboard(s, a) -> Result:
         r = requests.get(f"{url}/api/state", params={"since": 10**9}, timeout=4)
         st = r.json()
     except requests.RequestException as exc:
-        return FAIL, f"{url} unreachable ({type(exc).__name__}); fix: {PY} -m faultline dashboard --port {_port(url)}"
+        return FAIL, f"{url} unreachable ({type(exc).__name__}); fix: {PY} -m break_point dashboard --port {_port(url)}"
     except ValueError:
         return FAIL, f"{url}/api/state did not return JSON (HTTP {r.status_code})"
     if r.status_code != 200 or "run" not in st:
@@ -159,11 +159,11 @@ def _port(url: str) -> str:
 def check_llm(s, a) -> Result:
     if a.no_llm:
         return WARN, "skipped (--no-llm)"
-    from faultline.planning.llm import client_from_settings
+    from break_point.planning.llm import client_from_settings
 
     c = client_from_settings(s)
     if not c.enabled:
-        return WARN, "disabled (FAULTLINE_LLM=false); planner and prose run deterministic"
+        return WARN, "disabled (BREAK_POINT_LLM=false); planner and prose run deterministic"
     c.timeout = a.llm_timeout
     t0 = time.time()
     # reasoning models think before answering; small budgets (5 or even 32 tokens) come back empty on gpt-oss
@@ -182,8 +182,8 @@ def check_artifacts(s, a) -> Result:
     out: list[str] = []
     level = PASS
     for name, load, stamp, fix in (
-        ("topology", store.topology, lambda m: m.generated_at, f"{PY} -m faultline topology"),
-        ("baseline", store.baseline, lambda m: m.captured_at, f"{PY} -m faultline baseline --duration 60"),
+        ("topology", store.topology, lambda m: m.generated_at, f"{PY} -m break_point topology"),
+        ("baseline", store.baseline, lambda m: m.captured_at, f"{PY} -m break_point baseline --duration 60"),
     ):
         try:
             m = load()
@@ -205,16 +205,16 @@ def check_locks(s, a) -> Result:
         return FAIL, f"reports dir {s.reports} missing"
     store = ReportStore(s.reports)
     if store.stop_requested():
-        return FAIL, f"STOP flag present ({store.stop_file}); fix: {PY} -m faultline resume"
+        return FAIL, f"STOP flag present ({store.stop_file}); fix: {PY} -m break_point resume"
     lock = store.active()
     if store.lock_file.exists() and lock is None:
-        return FAIL, f"unreadable lock {store.lock_file}; fix: {PY} -m faultline heal"
+        return FAIL, f"unreadable lock {store.lock_file}; fix: {PY} -m break_point heal"
     if lock:
         left = float(lock.get("deadline") or 0) - time.time()
         eid = lock.get("experiment_id", "?")
         if left > 0:
             return WARN, f"experiment {eid} is running right now (deadline in {left:.0f}s)"
-        return FAIL, f"stale lock for experiment {eid} ({-left:.0f}s past deadline); fix: {PY} -m faultline heal"
+        return FAIL, f"stale lock for experiment {eid} ({-left:.0f}s past deadline); fix: {PY} -m break_point heal"
     return PASS, "no STOP flag, no experiment lock"
 
 
@@ -224,7 +224,7 @@ def check_guardian(s, a) -> Result:
     if at > time.time() - GUARDIAN_FRESH_S:
         return PASS, f"heartbeat {time.time() - at:.0f}s ago"
     seen = f"last heartbeat {_fmt_age((time.time() - at) / 3600)} ago" if at else "no heartbeat"
-    return WARN, f"not running ({seen}); start it in a second terminal: {PY} -m faultline guardian"
+    return WARN, f"not running ({seen}); start it in a second terminal: {PY} -m break_point guardian"
 
 
 CHECKS: list[tuple[str, Callable, float]] = [
@@ -267,7 +267,7 @@ def run_checks(s, a) -> list[tuple[str, str, str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Faultline pre-demo readiness check (read-only)")
+    p = argparse.ArgumentParser(description="Break Point pre-demo readiness check (read-only)")
     p.add_argument("--url", default="http://127.0.0.1:8777", help="dashboard base URL")
     p.add_argument("--reports", help="blackboard directory (default: settings reports_dir)")
     p.add_argument("--no-llm", action="store_true", help="skip the live LLM call")
@@ -281,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
     tty = sys.stdout.isatty()
     colour = {PASS: "\033[32m", WARN: "\033[33m", FAIL: "\033[31m"}
-    print(f"Faultline demo doctor: project {s.compose_project}, reports {s.reports}")
+    print(f"Break Point demo doctor: project {s.compose_project}, reports {s.reports}")
     rows = run_checks(s, a)
     for name, level, msg in rows:
         tag = f"{colour[level]}{level}\033[0m" if tty else level

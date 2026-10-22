@@ -10,7 +10,7 @@ export function Hero() {
       <Container>
         <div className="flex h-16 items-center gap-2.5">
           <MarkerGlyph size={20} />
-          <span className="display text-[18px] text-fg">Faultline</span>
+          <span className="display text-[18px] text-fg">Break Point</span>
         </div>
         <h1 id="hero-title" className="display-wide mt-6 text-[clamp(2.6rem,6.1vw,5.6rem)] text-fg md:mt-8">
           <span className="block">Crash-test your cloud app.</span>

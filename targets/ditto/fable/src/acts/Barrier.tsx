@@ -103,7 +103,7 @@ export function Barrier() {
 
         <p className="mt-2 border-t border-line pt-4 font-mono text-[12px] text-fg-2">
           {source === "live" && "Read from config/thresholds.yaml through /api/catalog."}
-          {source === "replay" && "Read from the replay copy of /api/catalog. The Faultline server is not reachable."}
+          {source === "replay" && "Read from the replay copy of /api/catalog. The Break Point server is not reachable."}
           {!source && "Reading the limits from /api/catalog…"}
         </p>
       </Container>

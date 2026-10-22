@@ -1,15 +1,15 @@
-# Faultline project guide
+# Break Point project guide
 
-This is the long-form guide to Faultline: what it is, how every part works, how the processes run end to end, and how to demo it. It is written so that you can explain any part of the system to a judge or a teammate without opening the code. Every number in it is quoted from the code or from `config/`, with the file it comes from. Where the older docs (`README.md`, `docs/ARCHITECTURE.md`, `docs/DEMO.md`, `HANDOFF_PROMPT.md`) disagree with the code, the code wins and the difference is listed in [section 17](#17-where-the-docs-and-the-code-disagree).
+This is the long-form guide to Break Point: what it is, how every part works, how the processes run end to end, and how to demo it. It is written so that you can explain any part of the system to a judge or a teammate without opening the code. Every number in it is quoted from the code or from `config/`, with the file it comes from. Where the older docs (`README.md`, `docs/ARCHITECTURE.md`, `docs/DEMO.md`, `HANDOFF_PROMPT.md`) disagree with the code, the code wins and the difference is listed in [section 17](#17-where-the-docs-and-the-code-disagree).
 
 Contents
 
-1. [What Faultline is and why](#1-what-faultline-is-and-why)
+1. [What Break Point is and why](#1-what-break_point-is-and-why)
 2. [Tech stack](#2-tech-stack)
 3. [System overview and the blackboard](#3-system-overview-and-the-blackboard)
 4. [The sample application: Eclipse Ditto](#4-the-sample-application-eclipse-ditto)
 5. [The eight agents](#5-the-eight-agents)
-6. [How Faultline measures: the two probes](#6-how-faultline-measures-the-two-probes)
+6. [How Break Point measures: the two probes](#6-how-break_point-measures-the-two-probes)
 7. [The experiment lifecycle, step by step](#7-the-experiment-lifecycle-step-by-step)
 8. [The safety model](#8-the-safety-model)
 9. [The failure catalog](#9-the-failure-catalog)
@@ -25,7 +25,7 @@ Contents
 
 ---
 
-## 1. What Faultline is and why
+## 1. What Break Point is and why
 
 ### The problem statement
 
@@ -39,24 +39,24 @@ The Bosch hackathon problem statement is "AI-Driven Chaos Engineering for Cloud-
 
 Constraints from the brief that shaped the design: the agents recommend fixes but never apply them; at least one agent proposes failures, one scores risk and one recommends fixes; open-source models; the whole app monitored by an open-source observability tool; Day-1 minimum of a running app, a dependency map and one safe injection with a working kill switch.
 
-### What Faultline does
+### What Break Point does
 
-Faultline deliberately breaks a real Eclipse Ditto 3.9.8 deployment running under Docker Compose, measures what real API clients experience, rolls the fault back, waits for (and if necessary forces) recovery, and then writes a risk assessment, Ditto-specific fix recommendations and a per-service resilience scorecard. Everything is driven from one web page, the **control room**, and every button on that page is also a CLI subcommand.
+Break Point deliberately breaks a real Eclipse Ditto 3.9.8 deployment running under Docker Compose, measures what real API clients experience, rolls the fault back, waits for (and if necessary forces) recovery, and then writes a risk assessment, Ditto-specific fix recommendations and a per-service resilience scorecard. Everything is driven from one web page, the **control room**, and every button on that page is also a CLI subcommand.
 
 ### Why Eclipse Ditto
 
 - It is a real, public, EPL-2.0 open-source IoT digital-twin platform (https://github.com/eclipse-ditto/ditto), not a toy.
 - It is genuinely multi-service: nginx in front, a gateway, four Java persistence services (`policies`, `things`, `things-search`, `connectivity`) that together with the gateway form one Apache Pekko cluster, and one MongoDB behind them.
-- It has interesting real-world failure modes that are documented upstream, which lets Faultline ground its findings in evidence rather than invent them: [Ditto issue #1865](https://github.com/eclipse-ditto/ditto/issues/1865) (`/alive` and `/ready` do not consider subsystem health) and [Ditto discussion #1861](https://github.com/eclipse-ditto/ditto/discussions/1861) (Things never reconnected to MongoDB after an outage).
+- It has interesting real-world failure modes that are documented upstream, which lets Break Point ground its findings in evidence rather than invent them: [Ditto issue #1865](https://github.com/eclipse-ditto/ditto/issues/1865) (`/alive` and `/ready` do not consider subsystem health) and [Ditto discussion #1861](https://github.com/eclipse-ditto/ditto/discussions/1861) (Things never reconnected to MongoDB after an outage).
 - Official multi-arch images exist for everything, so it runs on an Apple Silicon laptop.
 
 ### The headline insight: MongoDB is the number one single point of failure, and Compose does not say so
 
-The Compose file's `depends_on` never mentions MongoDB. A dependency map built only from `depends_on` would show MongoDB as a leaf that nothing depends on. Faultline's topology agent also scans every container's environment variables for values that resolve to another service's name or network alias. It finds `MONGO_DB_HOSTNAME=mongodb` on `policies`, `things`, `things-search` and `connectivity`, adds four `env` edges, and the criticality ranking then puts MongoDB first.
+The Compose file's `depends_on` never mentions MongoDB. A dependency map built only from `depends_on` would show MongoDB as a leaf that nothing depends on. Break Point's topology agent also scans every container's environment variables for values that resolve to another service's name or network alias. It finds `MONGO_DB_HOSTNAME=mongodb` on `policies`, `things`, `things-search` and `connectivity`, adds four `env` edges, and the criticality ranking then puts MongoDB first.
 
 On the live demo stack (`reports/topology.json`, project `bosch-ditto`, 12 services, 21 edges) the ranking is:
 
-| Rank | Service | Score | How the score is built (`faultline/topology/graph.py`) |
+| Rank | Service | Score | How the score is built (`break_point/topology/graph.py`) |
 |---|---|---|---|
 | 1 | `mongodb` | 9.5 | 6 transitive dependents (6.0) + holds state (2.0) + is a datastore (1.0) + no application health endpoint (0.5) |
 | 2 | `policies` | 5.0 | 5 transitive dependents |
@@ -66,7 +66,7 @@ The mapper also reports the gap as a structural finding instead of silently fixi
 
 ### The governing principle: "LLM proposes, code disposes"
 
-Every number that matters (candidate ranking, parameter bounds, abort thresholds, severity, scores, grades) is computed by code. The LLM may only: pick one index from a code-ranked shortlist of five, suggest parameters that the code clamps into catalog bounds, and write prose (rationale, hypothesis, risk summary, up to two extra fix suggestions). If the model is slow, offline or returns nonsense, the deterministic path runs and the report says so. Everything works with `--no-llm` or `FAULTLINE_LLM=false`. The one caveat to this principle is described honestly in [section 8.10](#810-what-the-llm-can-and-cannot-influence).
+Every number that matters (candidate ranking, parameter bounds, abort thresholds, severity, scores, grades) is computed by code. The LLM may only: pick one index from a code-ranked shortlist of five, suggest parameters that the code clamps into catalog bounds, and write prose (rationale, hypothesis, risk summary, up to two extra fix suggestions). If the model is slow, offline or returns nonsense, the deterministic path runs and the report says so. Everything works with `--no-llm` or `BREAK_POINT_LLM=false`. The one caveat to this principle is described honestly in [section 8.10](#810-what-the-llm-can-and-cannot-influence).
 
 ---
 
@@ -75,13 +75,13 @@ Every number that matters (candidate ranking, parameter bounds, abort thresholds
 | Layer | Technology | Version (where pinned) | Why it was chosen |
 |---|---|---|---|
 | Language | Python | `requires-python >=3.10` (`pyproject.toml`); the demo venv runs 3.12.4 | Fast to write, first-class Docker SDK, everyone on the team can read it |
-| Data contracts | pydantic v2 | `pydantic>=2.6` (2.14.0 installed) | Every blackboard file validates against one model in `faultline/schemas.py`; a schema drift fails loudly instead of corrupting the UI |
+| Data contracts | pydantic v2 | `pydantic>=2.6` (2.14.0 installed) | Every blackboard file validates against one model in `break_point/schemas.py`; a schema drift fails loudly instead of corrupting the UI |
 | Container control | docker-py (`docker` package) | `docker>=7` (7.2.0 installed) | Kill, stop, pause, exec, network connect/disconnect and helper containers from Python, scoped by the Compose project label |
 | HTTP client | requests | `requests>=2.31` | Synthetic probe traffic, LLM calls, health checks |
 | Config | PyYAML | `pyyaml>=6` | `config/thresholds.yaml`, `config/settings.yaml`, `config/ditto_knowledge.yaml`, and parsing the Compose file |
-| Console output | rich | `rich>=13` (declared) | Declared in `pyproject.toml` but not imported anywhere in `faultline/` today |
+| Console output | rich | `rich>=13` (declared) | Declared in `pyproject.toml` but not imported anywhere in `break_point/` today |
 | Tests | pytest | `pytest>=8` (dev extra; 9.1.1 installed) | Offline unit tests, no Docker needed |
-| Web server | Python standard library `http.server.ThreadingHTTPServer` | stdlib | No framework to install or break at the venue; the server is a thin adapter (`faultline/dashboard/server.py`) |
+| Web server | Python standard library `http.server.ThreadingHTTPServer` | stdlib | No framework to install or break at the venue; the server is a thin adapter (`break_point/dashboard/server.py`) |
 | Frontend | Vanilla ES modules, no build step, no CDN, no web fonts | n/a | Works with no internet at the venue; nothing to compile; system font stack only |
 | Charts | HTML `<canvas>` (`charts.js`) | n/a | A streaming 300-point chart re-rendered every 400 ms without a charting library |
 | Dependency graph | Inline SVG (`topology.js`) | n/a | Deterministic layered layout; per-poll updates only mutate classes so animations never restart |
@@ -91,9 +91,9 @@ Every number that matters (candidate ranking, parameter bounds, abort thresholds
 | Network fault injection | Pumba + `tc netem` | `gaiaadm/pumba:latest` and `ghcr.io/alexei-led/pumba-alpine-nettools:latest` (`config/settings.yaml`) | Latency and packet loss as a sidecar container: nothing is installed in the target |
 | Metrics | Prometheus | `prom/prometheus:v2.55.1`, 5 s scrape interval (`deploy/monitoring/prometheus.yml`) | The open-source observability requirement; scrapes cAdvisor, Ditto's own metrics on port 9095 and Blackbox probes |
 | Container metrics | cAdvisor | `gcr.io/cadvisor/cadvisor:v0.49.1` | Per-container CPU, memory, network |
-| Endpoint probing | Blackbox exporter | `prom/blackbox-exporter:v0.25.0` | Probes `/alive`, `/ready` on port 7626 and MongoDB's TCP port independently of Faultline |
-| Dashboards | Grafana | `grafana/grafana:11.3.0` | Provisioned dashboard ("Faultline - Ditto resilience") as an independent second opinion on the numbers |
-| LLM transport | OpenAI-compatible chat API (also Ollama and Anthropic Messages API) | `faultline/planning/llm.py` | One client, three providers, every failure returns `None` so code always has the last word |
+| Endpoint probing | Blackbox exporter | `prom/blackbox-exporter:v0.25.0` | Probes `/alive`, `/ready` on port 7626 and MongoDB's TCP port independently of Break Point |
+| Dashboards | Grafana | `grafana/grafana:11.3.0` | Provisioned dashboard ("Break Point - Ditto resilience") as an independent second opinion on the numbers |
+| LLM transport | OpenAI-compatible chat API (also Ollama and Anthropic Messages API) | `break_point/planning/llm.py` | One client, three providers, every failure returns `None` so code always has the last word |
 | LLM on the demo machine | Groq via its OpenAI-compatible endpoint, model `openai/gpt-oss-120b` | per `HANDOFF_PROMPT.md` and the `.env` key names (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`) | Open-weights model, fast enough to sit on the critical path of a six-minute demo; `llama-3.3-70b-versatile` is not available on that account |
 | Local LLM option | Ollama with `phi4-mini` | defaults in `config/settings.yaml` | Fully offline alternative; slow on a laptop |
 | UI verification | Playwright driving installed Chrome (`channel="chrome"`) | not a project dependency (1.63.0 installed in the venv) | `scripts/verify_ui.py` screenshots five breakpoints and fails on console errors, overflow and small touch targets |
@@ -164,17 +164,17 @@ flowchart LR
 
 ### The blackboard pattern
 
-There is no message bus and no shared process between the agents. Each agent reads and writes JSON files in `reports/` (the path is `FAULTLINE_REPORTS_DIR`, default `reports`). The pydantic models in `faultline/schemas.py` are the contract. `faultline/reporting/store.py` (`ReportStore`) does all reads and writes; writes are atomic (write to `<file>.tmp`, then rename), so a reader never sees half a file.
+There is no message bus and no shared process between the agents. Each agent reads and writes JSON files in `reports/` (the path is `BREAK_POINT_REPORTS_DIR`, default `reports`). The pydantic models in `break_point/schemas.py` are the contract. `break_point/reporting/store.py` (`ReportStore`) does all reads and writes; writes are atomic (write to `<file>.tmp`, then rename), so a reader never sees half a file.
 
-Consequences you can say out loud: a crashed agent loses nothing; any agent can be re-run in isolation (`faultline risk --force`, for example); you can watch the agents work by watching the directory; and the control room and the CLI are two front ends over the same files.
+Consequences you can say out loud: a crashed agent loses nothing; any agent can be re-run in isolation (`break_point risk --force`, for example); you can watch the agents work by watching the directory; and the control room and the CLI are two front ends over the same files.
 
 ### Every file on the blackboard
 
 | File | Model | Written by | Read by |
 |---|---|---|---|
-| `topology.json` | `Topology` | Topology agent (`faultline topology`, the control room's Rebuild map job, or automatically when a session starts and no map exists) | Planner, Injector (via the session), Risk (blast-radius denominator), Scorecard (service list), Guardian (which services to watch), control room |
-| `topology.md` | Markdown with a Mermaid graph | Topology agent (`faultline/topology/render.py`) | Humans |
-| `baseline.json` | `Baseline` | `faultline baseline` or the Capture baseline job | Session (derives abort thresholds from `api.p95_ms`), control room (`/api/state`, `/api/catalog`), demo doctor |
+| `topology.json` | `Topology` | Topology agent (`break_point topology`, the control room's Rebuild map job, or automatically when a session starts and no map exists) | Planner, Injector (via the session), Risk (blast-radius denominator), Scorecard (service list), Guardian (which services to watch), control room |
+| `topology.md` | Markdown with a Mermaid graph | Topology agent (`break_point/topology/render.py`) | Humans |
+| `baseline.json` | `Baseline` | `break_point baseline` or the Capture baseline job | Session (derives abort thresholds from `api.p95_ms`), control room (`/api/state`, `/api/catalog`), demo doctor |
 | `baseline.md` | Markdown | Same | Humans |
 | `experiments/<id>.json` | `ExperimentReport` | Injector, once per experiment | Planner (history), Risk, Fix, Scorecard, Narrator, control room |
 | `experiments/<id>/` | directory: `report.md` plus `<service>.log` (last 120 log lines of the target and of every service the hypothesis expected to be affected) | Injector (`_save_logs`) | Humans; `ExperimentReport.raw_logs_ref` points here |
@@ -184,18 +184,18 @@ Consequences you can say out loud: a crashed agent loses nothing; any agent can 
 | `scorecard.json` | `Scorecard` | Scorecard agent | Control room |
 | `scorecard.md` | Markdown | Scorecard agent | Humans |
 | `live.json` | free-form dict with `updated_at` | Injector, about once per second during a run (`_live`) | Control room (the live phase, telemetry phase bands, live health), Narrator `--watch` |
-| `ACTIVE_EXPERIMENT.json` | free-form dict: experiment id, target, container, failure type, start time, `deadline`, parameters | Injector (set before inject, cleared after rollback); cleared by `faultline heal`; cleared by the Guardian if stale | Injector preflight (the lock), Guardian (what may be down and until when), control room (`deadline_in_s` countdown), demo doctor |
-| `PENDING_APPROVAL.json` | `ApprovalRequest` | Approval agent, when a decision opens and on every resend; deleted when it is decided | `faultline approvals`, `GET /api/approvals`, the control room |
+| `ACTIVE_EXPERIMENT.json` | free-form dict: experiment id, target, container, failure type, start time, `deadline`, parameters | Injector (set before inject, cleared after rollback); cleared by `break_point heal`; cleared by the Guardian if stale | Injector preflight (the lock), Guardian (what may be down and until when), control room (`deadline_in_s` countdown), demo doctor |
+| `PENDING_APPROVAL.json` | `ApprovalRequest` | Approval agent, when a decision opens and on every resend; deleted when it is decided | `break_point approvals`, `GET /api/approvals`, the control room |
 | `approvals/<approval_id>.json` | `ApprovalRequest` with its `decision` filled in | Approval agent, once the decision is answered, timed out or failed; kept for good | Humans, `GET /api/approvals`; `ExperimentReport.approval` carries the same `ApprovalDecision` for scenario B |
-| `STOP` | presence is the signal; content is reason and timestamp | `faultline stop`, `POST /api/stop`, `POST /api/jobs/cancel` for a run job, or `touch reports/STOP` | Safety monitor (every second), Guardian (every loop), CLI and control-room run loops, launcher (blocks launch), demo doctor |
-| `guardian.heartbeat.json` | free-form dict with `at`, `stop`, `active`, `actions`, `down` | Guardian, every loop | Control room (Guardian pill and pipeline row: alive if under 15 s old), `faultline status`, demo doctor |
+| `STOP` | presence is the signal; content is reason and timestamp | `break_point stop`, `POST /api/stop`, `POST /api/jobs/cancel` for a run job, or `touch reports/STOP` | Safety monitor (every second), Guardian (every loop), CLI and control-room run loops, launcher (blocks launch), demo doctor |
+| `guardian.heartbeat.json` | free-form dict with `at`, `stop`, `active`, `actions`, `down` | Guardian, every loop | Control room (Guardian pill and pipeline row: alive if under 15 s old), `break_point status`, demo doctor |
 | `logs/<agent>.log` | text | Guardian (`append_log`) | Humans |
 
 ---
 
 ## 4. The sample application: Eclipse Ditto
 
-| Service | Role in Ditto | Faultline role (`config/ditto_knowledge.yaml` and role guessing in `compose.py`) | Memory limit (`deploy/docker-compose.yml`) |
+| Service | Role in Ditto | Break Point role (`config/ditto_knowledge.yaml` and role guessing in `compose.py`) | Memory limit (`deploy/docker-compose.yml`) |
 |---|---|---|---|
 | `nginx` | reverse proxy, basic auth, the only published port (`127.0.0.1:8080`) | `proxy`, entry point | 32 MB |
 | `gateway` | HTTP and WebSocket API; deliberately no published ports | `app` | 512 MB |
@@ -211,8 +211,8 @@ The five Java services form one Pekko cluster (network alias `ditto-cluster`). E
 
 Two Compose setups exist:
 
-- `deploy/docker-compose.yml`, project name `faultline`, bundled with the repo, includes the observability stack.
-- The demo laptop instead attaches to an already-running project called `bosch-ditto` (13 containers, including a `swagger-ui` container that is not in the bundled Compose file). `.env` sets `FAULTLINE_COMPOSE_PROJECT` to that project. `FAULTLINE_COMPOSE_FILE` is not set, so the static part of the topology still comes from `deploy/docker-compose.yml`; that is why the live map reports `container bosch-ditto-swagger-ui-1 running but not declared in compose`.
+- `deploy/docker-compose.yml`, project name `break_point`, bundled with the repo, includes the observability stack.
+- The demo laptop instead attaches to an already-running project called `bosch-ditto` (13 containers, including a `swagger-ui` container that is not in the bundled Compose file). `.env` sets `BREAK_POINT_COMPOSE_PROJECT` to that project. `BREAK_POINT_COMPOSE_FILE` is not set, so the static part of the topology still comes from `deploy/docker-compose.yml`; that is why the live map reports `container bosch-ditto-swagger-ui-1 running but not declared in compose`.
 
 ---
 
@@ -220,9 +220,9 @@ Two Compose setups exist:
 
 The pipeline strip in the control room shows seven agents: Topology, Planner, Injector, Guardian, Risk, Fix, Scorecard. An eighth, the Approval agent, sits outside the strip because it waits on a human by email rather than on the stack. A ninth module, the Narrator, exists for the CLI. For each agent: inputs, outputs, algorithm, and what the LLM does versus what code decides.
 
-### 5.1 Topology agent (`faultline/topology/`)
+### 5.1 Topology agent (`break_point/topology/`)
 
-**Inputs:** the Compose file (`FAULTLINE_COMPOSE_FILE`, default `deploy/docker-compose.yml`), the nginx config (`deploy/nginx/nginx.conf`), `config/ditto_knowledge.yaml`, and live Docker state for the Compose project.
+**Inputs:** the Compose file (`BREAK_POINT_COMPOSE_FILE`, default `deploy/docker-compose.yml`), the nginx config (`deploy/nginx/nginx.conf`), `config/ditto_knowledge.yaml`, and live Docker state for the Compose project.
 
 **Output:** `topology.json` and `topology.md`.
 
@@ -247,7 +247,7 @@ The pipeline strip in the control room shows seven agents: Topology, Planner, In
 
 **LLM:** none. This agent is fully deterministic.
 
-### 5.2 Planner agent (`faultline/planning/planner.py`)
+### 5.2 Planner agent (`break_point/planning/planner.py`)
 
 **Inputs:** the topology, the policy (`config/thresholds.yaml`), the experiment history (`store.experiments()`), which helper images are present, and optionally the LLM.
 
@@ -282,7 +282,7 @@ Worked example on a fresh history: `mongodb` + `network_delay` = 9.5 x 1.5 + 0.4
 
 **Operator path (`plan_operator`):** manual mode or `--target/--failure/--param` bypasses ranking but not applicability, policy or clamping. `planned_by: operator`.
 
-### 5.3 Injector agent (`faultline/agents/injector.py`)
+### 5.3 Injector agent (`break_point/agents/injector.py`)
 
 **Inputs:** an `ExperimentSpec`, the running probes (`SampleWindow`, `HealthProbe`), the thresholds, the policy, Docker.
 
@@ -292,16 +292,16 @@ Worked example on a fresh history: `mongodb` + `network_delay` = 9.5 x 1.5 + 0.4
 
 **LLM:** none. The injector never talks to the model.
 
-### 5.4 Guardian agent (`faultline/agents/guardian.py`)
+### 5.4 Guardian agent (`break_point/agents/guardian.py`)
 
-A separate process (`faultline guardian`) with its own Docker client. It shares nothing with the injector except the blackboard files. It never injects; it only restores.
+A separate process (`break_point guardian`) with its own Docker client. It shares nothing with the injector except the blackboard files. It never injects; it only restores.
 
 Every `--interval` seconds (default 5.0):
 
 1. Read `STOP` and `ACTIVE_EXPERIMENT.json` (target and `deadline`).
 2. For each watched container (the topology's relevant services, or all project containers if there is no topology) that is not running or is paused: if it is the lock's target, before the deadline, and STOP is not set, leave it alone (that outage is the experiment). Otherwise, if STOP is set, or it has been down longer than `DOWN_GRACE_S` = 20 s, unpause or start it.
 3. If there is a lock, STOP is not set and the time is more than 30 s past the deadline, clear the stale lock.
-4. Remove Faultline helper containers (label `faultline.helper=1`) when STOP is set, when there is no lock, or when the deadline has passed, and delete the `tc` qdisc on the container the helper targeted.
+4. Remove Break Point helper containers (label `break_point.helper=1`) when STOP is set, when there is no lock, or when the deadline has passed, and delete the `tc` qdisc on the container the helper targeted.
 5. If STOP is set, reconnect any watched container that is not connected to the Compose network.
 6. Log each action to `logs/guardian.log` and write `guardian.heartbeat.json`.
 
@@ -309,15 +309,15 @@ Every `--interval` seconds (default 5.0):
 
 **LLM:** none.
 
-### 5.5 Risk agent (`faultline/agents/risk.py`)
+### 5.5 Risk agent (`break_point/agents/risk.py`)
 
 **Inputs:** `experiments/<id>.json`, the topology, optionally the LLM. **Output:** `risk/<id>.json`.
 
-**Algorithm:** a deterministic 0-10 severity (formula in [section 10.3](#103-risk-severity-faultlineagentsriskpy)), a level, and templated `summary` and `production_implication` prose. Skipped experiments get severity 0, level low.
+**Algorithm:** a deterministic 0-10 severity (formula in [section 10.3](#103-risk-severity-break_pointagentsriskpy)), a level, and templated `summary` and `production_implication` prose. Skipped experiments get severity 0, level low.
 
 **LLM:** may rewrite only the two prose fields, given the computed numbers. The answer is used only if both fields are strings of 1-599 characters; then `generated_by` becomes `llm+rules`. The model never sees or changes the severity, level or factors.
 
-### 5.6 Fix agent (`faultline/agents/fix.py`, `faultline/agents/knowledge.py`)
+### 5.6 Fix agent (`break_point/agents/fix.py`, `break_point/agents/knowledge.py`)
 
 **Inputs:** the report, its risk assessment (computed on the fly without the LLM if missing), optionally the LLM. **Outputs:** `fixes/<id>.json` and `fixes/<id>.md`.
 
@@ -327,15 +327,15 @@ Every `--interval` seconds (default 5.0):
 
 **Advisory only:** `FixRecommendation.advisory_only` is always `true` and no agent has a code path that edits the Compose file, container configuration or Ditto settings.
 
-### 5.7 Scorecard agent (`faultline/agents/scorecard.py`)
+### 5.7 Scorecard agent (`break_point/agents/scorecard.py`)
 
 **Inputs:** all experiment reports, all risk assessments, the topology. **Outputs:** `scorecard.json` and `scorecard.md`.
 
-**Algorithm:** pure arithmetic, per service, over experiments with status `completed` or `aborted` ([section 10.5](#105-resilience-scorecard-faultlineagentsscorecardpy)). Untested services are listed last with no score and a dash grade rather than a flattering default.
+**Algorithm:** pure arithmetic, per service, over experiments with status `completed` or `aborted` ([section 10.5](#105-resilience-scorecard-break_pointagentsscorecardpy)). Untested services are listed last with no score and a dash grade rather than a flattering default.
 
 **LLM:** none.
 
-### 5.8 Approval agent (`faultline/agents/approval.py`)
+### 5.8 Approval agent (`break_point/agents/approval.py`)
 
 The human in the loop, by email. Two scenarios, one mechanism: pause, notify, wait for a constrained answer, time out to a safe default.
 
@@ -347,22 +347,22 @@ The human in the loop, by email. Two scenarios, one mechanism: pause, notify, wa
 
 1. **Trigger.** `needs_pre_injection_approval(spec)` returns true when `spec.requires_approval` is set, and the run loop holds the injector for that candidate until it has an answer. Only the operator path sets the flag: `Planner.candidates` still drops a protected pair from the ranked list rather than offering it for approval, deliberately — "a gate on who authorises a specific experiment is not a licence to reopen that policy for the planner". `problem_occurred(report, risk)` returns true when `risk.level` is `high` or `critical`, or when `recovery.remediation_actions` is non-empty; this one blocks nothing by itself.
 2. **Preflight.** `preflight(settings)` names everything unset or unusable — `ADMIN_EMAIL`, each `SMTP_*` and `IMAP_*` credential, a non-positive timeout — the same discipline as the LLM client reporting `LLM_API_KEY not set`.
-3. **Open.** One `ApprovalRequest`: a 12-character `approval_id`, a correlation token `FL-xxxxxxxx` (`secrets.token_hex(4)`), the recipient, the deadline, the timeout and the timeout default. Written to `PENDING_APPROVAL.json`, the same shape and spirit as the `ACTIVE_EXPERIMENT.json` lock.
+3. **Open.** One `ApprovalRequest`: a 12-character `approval_id`, a correlation token `BP-xxxxxxxx` (`secrets.token_hex(4)`), the recipient, the deadline, the timeout and the timeout default. Written to `PENDING_APPROVAL.json`, the same shape and spirit as the `ACTIVE_EXPERIMENT.json` lock.
 4. **Send.** One plain-text mail carrying only facts other agents already wrote: for scenario A the target, failure type, clamped parameters, criticality, the planner's rationale, the hypothesis, why the admin is being asked, the planner notes and the reproduce commands; for scenario B the Narrator's prose, the Risk agent's own `summary` and `production_implication`, and the Fix agent's ranked recommendations, numbered so `FIX <n>` is unambiguous. The token goes in the subject line.
 5. **Wait.** Poll `IMAP` every `APPROVAL_POLL_SECONDS` (5 s) with one short-lived connection per poll, until an independent `safety.monitor.Watchdog` on its own thread says the deadline passed — the same reason the injector has one, so a poll stuck in a blocking socket call cannot outlive the deadline. A reply is matched by the token in the subject or by `In-Reply-To` pointing at the `Message-ID` that was sent, never by "the newest unread mail", because two decisions can be open at once.
 6. **Parse.** The first non-empty, non-quoted line of the `text/plain` body, whitespace collapsed, surrounding quotes and one trailing full stop or exclamation mark dropped, matched case-insensitively against the scenario's closed vocabulary: `APPROVE`, `APPROVE REDUCED`, `SKIP`, `STOP RUN` for `pre_injection`; `FIX <n>` (1 to the number of fixes listed), `WAIT`, `CONTINUE` for `problem_occurred`. Longest phrase first, so `APPROVE REDUCED` is never read as a bare `APPROVE`. Anything else is not an answer: one short mail re-states the options, at most `MAX_CLARIFICATIONS` = 3 times, and nothing is decided.
 7. **Act.** `APPROVE` runs the experiment as planned. `APPROVE REDUCED` halves whichever of `duration_s`, `delay_ms`, `jitter_ms`, `loss_percent`, `workers`, `writers`, `size_mb` and `rps` the experiment actually carries (floor, not round, so half an odd duration is not a fraction `pumba --duration` would have to carry), then `clamp()` in `chaos/catalog.py` enforces the catalog's own bounds and every change is recorded in `planner_notes` like any other clamped parameter — the admin never supplies a raw number by email. `SKIP` rejects the candidate and the planner moves to the next-ranked one. `FIX <n>` is a decision log entry written to the experiment's report, not an action: no agent in this project ever applies a fix, and this one is no exception. `CONTINUE` acknowledges and the run proceeds. `WAIT` and `STOP RUN` call `store.request_stop()`, which is the existing `reports/STOP` kill switch — there is no second one.
 8. **Finish.** The decision is attached to the request, the status becomes `answered`, `timed_out` or `failed`, the record is written to `reports/approvals/<approval_id>.json` and `PENDING_APPROVAL.json` is cleared.
 
-**Timeout and failing safe:** the deadline is `APPROVAL_TIMEOUT_SECONDS` (120 s, `faultline/config.py`). `TIMEOUT_DEFAULTS` in `faultline/schemas.py` gives the safe default per scenario: `pre_injection` falls to `SKIP`, `problem_occurred` to `CONTINUE`. Both record `answered: false` and the reason. `WAIT` is never a timeout default, only ever a deliberate human choice, because an unanswered post-hoc note must not pause a run. An unreachable `SMTP` or `IMAP` host, any unset credential and an unset `ADMIN_EMAIL` are all treated exactly as a timeout, so scenario A falls to `SKIP`: a gate that cannot reach the admin never becomes a no-op that approves everything. A `STOP` latched while waiting is treated the same way.
+**Timeout and failing safe:** the deadline is `APPROVAL_TIMEOUT_SECONDS` (120 s, `break_point/config.py`). `TIMEOUT_DEFAULTS` in `break_point/schemas.py` gives the safe default per scenario: `pre_injection` falls to `SKIP`, `problem_occurred` to `CONTINUE`. Both record `answered: false` and the reason. `WAIT` is never a timeout default, only ever a deliberate human choice, because an unanswered post-hoc note must not pause a run. An unreachable `SMTP` or `IMAP` host, any unset credential and an unset `ADMIN_EMAIL` are all treated exactly as a timeout, so scenario A falls to `SKIP`: a gate that cannot reach the admin never becomes a no-op that approves everything. A `STOP` latched while waiting is treated the same way.
 
 **LLM:** none. Not "none for the numbers" — none at all. This agent sends and receives mail, matches a reply against a fixed vocabulary and writes a record; there is no prompt, no model client and no prose for a model to rewrite anywhere in the file. A closed vocabulary exists precisely so that nothing has to guess what the admin meant.
 
 **Where it is called from, and what is not wired:** `cmd_run` turns the gate on with `approvals_enabled()` unless `--no-approvals` was passed, and off — saying why once — when `preflight()` finds anything unset; it then calls `gate()` before each held experiment and `run_post_experiment()` after each one that was not skipped. A spec that is marked for a decision while the gate is unusable is skipped, never injected on the grounds that nobody can be asked. `ControlPlane._job_run` has the same hold (`_gate`, which blocks the single job slot for up to the timeout while leaving `POST /api/stop`, `/api/resume` and `/api/jobs/cancel` served on their own handler threads) and builds its planner with `approval_gate` set from `gate_available()`, so `POST /api/jobs/run` with `mode: "manual"` on a protected pair and `allow_protected: false` is held rather than refused once the gate is configured. Neither browser front end sends that request today: the control room launcher and Fable both lock a protected card unless the override is ticked, and the override bypasses the gate. The Weakness Scout trigger is a documented hook, not a code path: `scout_predicted_severity(store, spec)` reads the Scout's `reports/weaknesses.json` through `store.weaknesses()` and returns the `predicted_level` of a weakness whose `suggested_experiment` matches the spec's target and failure type (or `None` when the Scout has not run), and `needs_pre_injection_approval()` documents that the call belongs in `Planner.candidates` next to the policy check, so the trigger stays in one place. Nothing calls it today (section 17).
 
-### 5.9 Narrator (`faultline/agents/narrator.py`, CLI only)
+### 5.9 Narrator (`break_point/agents/narrator.py`, CLI only)
 
-`faultline narrate [--watch] [--llm]` prints a plain-English play-by-play of each experiment from the blackboard (header, timeline, impact, recovery, hypothesis, safety, findings, risk, fix). `--watch` polls every 3 s and also prints live lines from `live.json`. With `--llm` the model may write one two-to-three sentence paragraph using only the facts provided. It writes nothing to the blackboard.
+`break_point narrate [--watch] [--llm]` prints a plain-English play-by-play of each experiment from the blackboard (header, timeline, impact, recovery, hypothesis, safety, findings, risk, fix). `--watch` polls every 3 s and also prints live lines from `live.json`. With `--llm` the model may write one two-to-three sentence paragraph using only the facts provided. It writes nothing to the blackboard.
 
 ### 5.10 Summary: who decides what
 
@@ -383,18 +383,18 @@ The human in the loop, by email. Two scenarios, one mechanism: pause, notify, wa
 
 ---
 
-## 6. How Faultline measures: the two probes
+## 6. How Break Point measures: the two probes
 
-Both probes live in `faultline/observe/probes.py` and run for the whole session: started by a CLI command that needs them, or by arming the control room.
+Both probes live in `break_point/observe/probes.py` and run for the whole session: started by a CLI command that needs them, or by arming the control room.
 
 ### 6.1 Things API probe (what users experience)
 
 - Synthetic traffic through nginx and the gateway at `probe_rps` = 4 requests/s (`config/settings.yaml`), with up to 16 requests in flight and a 5 s timeout per request.
 - Operation cycle of eight: `get_thing`, `put_property`, `get_thing`, `search`, `get_property`, `put_property`, `get_thing`, `search` (so 3:2:2:1).
-- All against one canary thing, `faultline.probe:canary`, created on start if missing.
+- All against one canary thing, `break_point.probe:canary`, created on start if missing.
 - **Data-integrity canary:** every `put_property` writes a monotonically increasing sequence number to `features/telemetry/properties/seq`, and the probe remembers the highest acknowledged one. `integrity_check()` reads `seq` back after recovery; a stored value lower than the last acknowledged write means an acknowledged write was lost.
 - Each request becomes a `Sample` (timestamp, operation, HTTP status, latency, error) in a thread-safe `SampleWindow` (deque of up to 50,000). A sample is a success if the status is 2xx; timeouts and connection errors are failures with status 0.
-- `WindowStats` (`faultline/observe/window.py`): sample count, success rate, p50/p95/p99 over successful requests only (linear-interpolation percentile), per-operation breakdown, status counts.
+- `WindowStats` (`break_point/observe/window.py`): sample count, success rate, p50/p95/p99 over successful requests only (linear-interpolation percentile), per-operation breakdown, status counts.
 
 ### 6.2 Health probe (what the platform claims)
 
@@ -406,15 +406,15 @@ Both probes live in `faultline/observe/probes.py` and run for the whole session:
 
 Comparing the two probes is the core idea: when the platform says healthy and users get errors, that is a finding.
 
-### 6.3 Baseline (`faultline/observe/baseline.py`)
+### 6.3 Baseline (`break_point/observe/baseline.py`)
 
-`faultline baseline --duration 60` (default 60 s; the control room's job clamps to 20-300 s) warms the probes for 10 s (CLI), then records the window. It stores API stats, per-service health availability and the derived thresholds. Notes are added if there were no samples, if success was below 99 %, or if any service was less than 100 % available. Without a baseline, thresholds fall back to the floors in `config/thresholds.yaml`.
+`break_point baseline --duration 60` (default 60 s; the control room's job clamps to 20-300 s) warms the probes for 10 s (CLI), then records the window. It stores API stats, per-service health availability and the derived thresholds. Notes are added if there were no samples, if success was below 99 %, or if any service was less than 100 % available. Without a baseline, thresholds fall back to the floors in `config/thresholds.yaml`.
 
 ---
 
 ## 7. The experiment lifecycle, step by step
 
-All numbers come from `config/thresholds.yaml` and `faultline/agents/injector.py`.
+All numbers come from `config/thresholds.yaml` and `break_point/agents/injector.py`.
 
 ### 7.1 State diagram
 
@@ -489,7 +489,7 @@ sequenceDiagram
 
 ### 7.3 Each step in detail
 
-**0. Session warm-up.** Probes must already be running. `faultline run` warms up for max(`pre_experiment_window_s`, 15) = 20 s. The control room's probes run continuously once armed.
+**0. Session warm-up.** Probes must already be running. `break_point run` warms up for max(`pre_experiment_window_s`, 15) = 20 s. The control room's probes run continuously once armed.
 
 **1. Plan.** As in section 5.2.
 
@@ -533,7 +533,7 @@ An exception while applying or observing sets status `failed` with the error tex
 
 **10. After-window.** Sleep 8 s and record the `after` stats.
 
-**11. Findings and hypothesis validation** ([section 10.1](#101-findings-faultlineagentsinjectorpy-_findings) and [10.2](#102-hypothesis-validation)).
+**11. Findings and hypothesis validation** ([section 10.1](#101-findings-break_pointagentsinjectorpy-_findings) and [10.2](#102-hypothesis-validation)).
 
 **12. Report.** Write `experiments/<id>.json` atomically, `experiments/<id>/report.md` and the logs, then `live.json` back to `phase: idle`. The CLI pauses `pause_between_experiments_s` = 30 s before the next iteration; the control room does the same and can be cancelled during the pause. At most `max_experiments_per_run` = 10 per run.
 
@@ -547,23 +547,23 @@ An exception while applying or observing sets status `failed` with the error tex
 
 | Limit | Value (`config/thresholds.yaml` unless noted) | Enforced in |
 |---|---|---|
-| Trailing error rate abort | > 0.30 over the last 10 probe samples since injection; evaluated only once at least max(5, 10 // 2) = 5 such samples exist | `SafetyMonitor.evaluate` (`faultline/safety/monitor.py`) |
-| Trailing p95 abort | > max(3000 ms, 5 x baseline p95) over the same samples | `SafetyMonitor.evaluate`; value from `thresholds_from` (`faultline/safety/thresholds.py`) |
+| Trailing error rate abort | > 0.30 over the last 10 probe samples since injection; evaluated only once at least max(5, 10 // 2) = 5 such samples exist | `SafetyMonitor.evaluate` (`break_point/safety/monitor.py`) |
+| Trailing p95 abort | > max(3000 ms, 5 x baseline p95) over the same samples | `SafetyMonitor.evaluate`; value from `thresholds_from` (`break_point/safety/thresholds.py`) |
 | Blast-radius abort | any chaos-relevant service outside (`expected_affected` + target) with 3 consecutive unhealthy health checks | `SafetyMonitor.evaluate` via `HealthProbe.consecutive_failures` |
 | Operator stop | `reports/STOP` present | `SafetyMonitor.evaluate` (first check, every second) |
 | Hard cap per experiment | `max_experiment_seconds` = 90 s; the fault runs min(duration_s, 90) | Injector observe loop |
 | Watchdog | fires at min(duration_s, 90) + `watchdog_grace_seconds` (15) s | `Watchdog` (`threading.Timer`) |
-| Parameter bounds | per parameter `lo`/`hi` (section 9) | `clamp()` in `faultline/chaos/catalog.py`, applied to LLM and operator input; the launcher also clamps its dials |
+| Parameter bounds | per parameter `lo`/`hi` (section 9) | `clamp()` in `break_point/chaos/catalog.py`, applied to LLM and operator input; the launcher also clamps its dials |
 | Pre-experiment health | at least 5 samples and success >= 0.95 in the last 20 s; every relevant service running | `Injector.preflight` |
 | One experiment at a time | `ACTIVE_EXPERIMENT.json` lock | `Injector.preflight`; plus one job at a time in the control room (HTTP 409) |
 | Experiments per run | `max_experiments_per_run` = 10 | `cmd_run`, `ControlPlane._job_run` |
 | Pause between experiments | 30 s | same |
 | Recovery wait cap | `timeout_seconds` = 300 s | `_wait_recovery` |
-| Approval deadline | `APPROVAL_TIMEOUT_SECONDS` = 120 s, polled every `APPROVAL_POLL_SECONDS` = 5 s (both `faultline/config.py`) | `ApprovalAgent._wait`, with an independent `Watchdog` on its own thread |
+| Approval deadline | `APPROVAL_TIMEOUT_SECONDS` = 120 s, polled every `APPROVAL_POLL_SECONDS` = 5 s (both `break_point/config.py`) | `ApprovalAgent._wait`, with an independent `Watchdog` on its own thread |
 | Protected services | `mongodb`: only `network_delay`, `network_loss`, `cpu_stress`, `disk_pressure`, `db_flood` | `Policy.allows` (planner, operator path, catalog endpoint, launcher cards) |
 | Never-targets | role `ui` (`skip_roles`) and role `other` (`chaos_relevant: false`) | `Planner.candidates`, `applicable()` |
 | Disk fill bound | `size_mb` at most 1024 | catalog |
-| Scope | only containers labelled `com.docker.compose.project=<FAULTLINE_COMPOSE_PROJECT>`; helpers labelled `faultline.helper=1` | `DockerController` (`faultline/chaos/docker_ctl.py`) |
+| Scope | only containers labelled `com.docker.compose.project=<BREAK_POINT_COMPOSE_PROJECT>`; helpers labelled `break_point.helper=1` | `DockerController` (`break_point/chaos/docker_ctl.py`) |
 | Guardian grace | restore non-expected downed containers after 20 s | `guardian.DOWN_GRACE_S` |
 | Stale lock | cleared by the Guardian 30 s after the deadline | `guardian.run` |
 
@@ -589,13 +589,13 @@ The kill switch is one file: `reports/STOP`. Ways to write it:
 | STOP button in the control-room header | `POST /api/stop` |
 | `Esc` key anywhere on the page (not while typing in a field) | `POST /api/stop`; one press, no confirmation dialog |
 | `POST /api/stop` directly | writes `STOP` with reason `dashboard`, sets the job cancel flag, logs a red "KILL SWITCH" event; always answers 200, is never queued, never blocked by a running job |
-| `faultline stop` | writes `STOP` with reason `cli` |
+| `break_point stop` | writes `STOP` with reason `cli` |
 | `touch reports/STOP` | works with nothing running at all |
 | Cancel job (for a run job) | `POST /api/jobs/cancel` also writes `STOP` (reason `dashboard-cancel`) |
 
 Who reacts: the safety monitor inside a running experiment (within about 1 s, verdict `operator_stop`, rollback); the CLI and control-room run loops (no further experiments start); the Guardian (restores everything immediately, removes helpers, reconnects partitioned containers); the launcher (refuses to launch while STOP is latched).
 
-Clearing it: `faultline resume`, `POST /api/resume` (the header button reads RESUME while STOP is latched), or `faultline run --resume-stop`. Note: a run job submitted directly to `POST /api/jobs/run` clears STOP by default (`resume_stop` defaults to true in `_job_run`); the launcher UI blocks that path by refusing to launch until you press RESUME.
+Clearing it: `break_point resume`, `POST /api/resume` (the header button reads RESUME while STOP is latched), or `break_point run --resume-stop`. Note: a run job submitted directly to `POST /api/jobs/run` clears STOP by default (`resume_stop` defaults to true in `_job_run`); the launcher UI blocks that path by refusing to launch until you press RESUME.
 
 ### 8.4 Approval gate
 
@@ -609,20 +609,20 @@ A second kind of pause, and the only one that waits on a person. The Approval ag
 | Scenario A vocabulary (`pre_injection`) | `APPROVE`, `APPROVE REDUCED`, `SKIP`, `STOP RUN` — blocks the injector for that candidate |
 | Scenario B vocabulary (`problem_occurred`) | `FIX <n>`, `WAIT`, `CONTINUE` — blocks nothing by itself |
 | How a reply is read | the first non-empty, non-quoted line of the `text/plain` body, case-insensitively, against that closed list. Anything else gets the options back once (at most `MAX_CLARIFICATIONS` = 3) and decides nothing |
-| How a reply is matched | the correlation token `FL-xxxxxxxx` in the subject, or `In-Reply-To` pointing at the sent `Message-ID`. Never "the newest unread mail": two decisions can be open at once |
+| How a reply is matched | the correlation token `BP-xxxxxxxx` in the subject, or `In-Reply-To` pointing at the sent `Message-ID`. Never "the newest unread mail": two decisions can be open at once |
 | Deadline | `APPROVAL_TIMEOUT_SECONDS` = 120 s, enforced by an independent `safety.monitor.Watchdog` timer on its own thread |
-| Timeout default | `SKIP` for scenario A, `CONTINUE` for scenario B (`TIMEOUT_DEFAULTS`, `faultline/schemas.py`); both record `answered: false` and the reason |
+| Timeout default | `SKIP` for scenario A, `CONTINUE` for scenario B (`TIMEOUT_DEFAULTS`, `break_point/schemas.py`); both record `answered: false` and the reason |
 | Unconfigured or unreachable | an unset `ADMIN_EMAIL` or credential, or an unreachable `SMTP` / `IMAP` host, is treated exactly as a timeout — so scenario A falls to `SKIP`. Not configured is not consent |
 | Side effects | `WAIT` and `STOP RUN` write `reports/STOP`, the same kill switch as section 8.3. `APPROVE REDUCED` halves duration and intensity and `clamp()` then enforces the catalog bounds. `FIX <n>` writes a decision log entry to `ExperimentReport.approval` and nothing else |
-| Where it is visible | `reports/PENDING_APPROVAL.json` while open, `reports/approvals/<approval_id>.json` once decided, `faultline approvals`, `GET /api/approvals` |
+| Where it is visible | `reports/PENDING_APPROVAL.json` while open, `reports/approvals/<approval_id>.json` once decided, `break_point approvals`, `GET /api/approvals` |
 
-`WAIT` is never a timeout default: pausing a whole run is a deliberate human choice, never something an unanswered mail does on the admin's behalf. There is deliberately no command that answers a decision from the CLI — the answer comes back by email on purpose, and a local bypass would defeat the gate; `faultline stop` and `faultline resume` already cover an operator who is physically at the laptop.
+`WAIT` is never a timeout default: pausing a whole run is a deliberate human choice, never something an unanswered mail does on the admin's behalf. There is deliberately no command that answers a decision from the CLI — the answer comes back by email on purpose, and a local bypass would defeat the gate; `break_point stop` and `break_point resume` already cover an operator who is physically at the laptop.
 
 ### 8.5 One-experiment lock and the single-job rule
 
 Two independent constraints:
 
-- `ACTIVE_EXPERIMENT.json`: any process that runs an experiment refuses while it exists. This is what stops a CLI `faultline run` in another terminal from colliding with one started in the browser.
+- `ACTIVE_EXPERIMENT.json`: any process that runs an experiment refuses while it exists. This is what stops a CLI `break_point run` in another terminal from colliding with one started in the browser.
 - The control room's job slot: `ControlPlane.submit()` refuses a second job while one is running (`JobBusy`, HTTP 409 with `'<label>' is already running`). This covers map rebuilds, baselines, analysis and heals too.
 
 ### 8.6 Protected services
@@ -639,7 +639,7 @@ The hypothesis' `expected_affected` list does two jobs: it defines which service
 
 ### 8.9 Advisory only and reproducible
 
-No agent edits the stack's configuration. Every report carries `reproduce`: the shell commands equivalent to the injection (`reproduce_commands` in `catalog.py`), so a finding can be verified by hand without Faultline. Some of these are approximations; see section 17.
+No agent edits the stack's configuration. Every report carries `reproduce`: the shell commands equivalent to the injection (`reproduce_commands` in `catalog.py`), so a finding can be verified by hand without Break Point. Some of these are approximations; see section 17.
 
 ### 8.10 What the LLM can and cannot influence
 
@@ -651,7 +651,7 @@ Can, within bounds: choose parameter values anywhere inside the catalog bounds (
 
 ## 9. The failure catalog
 
-Defined in `faultline/chaos/catalog.py` (data and bounds) and `faultline/chaos/actions.py` (mechanics).
+Defined in `break_point/chaos/catalog.py` (data and bounds) and `break_point/chaos/actions.py` (mechanics).
 
 ### 9.1 The ten failure types
 
@@ -683,11 +683,11 @@ Defined in `faultline/chaos/catalog.py` (data and bounds) and `faultline/chaos/a
 | `container_stop` | `docker stop` with a 10 s timeout (SIGTERM then SIGKILL) | Start if not running | never |
 | `container_pause` | `docker pause` (cgroup freezer). Processes freeze, TCP connections stay open, callers hang rather than fail fast | `docker unpause` | never |
 | `network_partition` | Record the container's aliases on the Compose network, then `docker network disconnect --force` | Reconnect with the same aliases if not connected | never |
-| `network_delay` | Run a Pumba helper container (label `faultline.helper=1`, name `faultline-pumba-<id8>-<service>`, Docker socket mounted) running `netem --duration <d>s --tc-image <tc> --interface eth0 delay --time <ms> --jitter <ms> --distribution normal <container>`. Pulls the images if absent; fails if Pumba exits within 2 s | Stop and remove the helper (SIGTERM, wait up to 8 s, then kill), then delete any root qdisc on the target's `eth0` with a one-shot `tc` container in the target's network namespace | when the helper stops running |
+| `network_delay` | Run a Pumba helper container (label `break_point.helper=1`, name `break_point-pumba-<id8>-<service>`, Docker socket mounted) running `netem --duration <d>s --tc-image <tc> --interface eth0 delay --time <ms> --jitter <ms> --distribution normal <container>`. Pulls the images if absent; fails if Pumba exits within 2 s | Stop and remove the helper (SIGTERM, wait up to 8 s, then kill), then delete any root qdisc on the target's `eth0` with a one-shot `tc` container in the target's network namespace | when the helper stops running |
 | `network_loss` | Same with `loss --percent <p>` | Same | same |
-| `cpu_stress` | `workers` x `docker exec -d ... timeout <d+5> sh -c 'while :; do :; done' faultline-<id8>` | Kill every process whose command line contains the marker | never |
-| `disk_pressure` | `fallocate -l <size>M /tmp/faultline-fill-<id8>` (falls back to `dd`) in the container's writable layer | `rm -f` the file | never |
-| `db_flood` | `writers` x detached `timeout <d+5> mongosh --eval` loops inserting 2 KB documents into `faultline.flood` | Kill the marked processes, then drop `faultline.flood` | never |
+| `cpu_stress` | `workers` x `docker exec -d ... timeout <d+5> sh -c 'while :; do :; done' break_point-<id8>` | Kill every process whose command line contains the marker | never |
+| `disk_pressure` | `fallocate -l <size>M /tmp/break_point-fill-<id8>` (falls back to `dd`) in the container's writable layer | `rm -f` the file | never |
+| `db_flood` | `writers` x detached `timeout <d+5> mongosh --eval` loops inserting 2 KB documents into `break_point.flood` | Kill the marked processes, then drop `break_point.flood` | never |
 | `traffic_spike` | Host-side threads: max(4, min(32, rps / 10)) workers sending authenticated GETs for the canary thing through nginx, paced to `rps`, until the duration ends | Signal the workers to stop | when all workers have ended |
 
 ### 9.4 Why each fault maps to an organisers' example
@@ -703,7 +703,7 @@ Defined in `faultline/chaos/catalog.py` (data and bounds) and `faultline/chaos/a
 
 ## 10. Findings, hypothesis validation, risk, fixes and the scorecard
 
-### 10.1 Findings (`faultline/agents/injector.py`, `_findings`)
+### 10.1 Findings (`break_point/agents/injector.py`, `_findings`)
 
 Let `sr` be the API success rate during the fault.
 
@@ -736,7 +736,7 @@ Note on Ditto issue #1865 in practice: when you crash, stop or pause `things`, t
 
 A violated hypothesis is the interesting result, not a bug: it means the system behaved differently from what the map predicted.
 
-### 10.3 Risk severity (`faultline/agents/risk.py`)
+### 10.3 Risk severity (`break_point/agents/risk.py`)
 
 ```
 user_impact = 1 - success_rate_during                (0 if missing, clamped to [0, 1])
@@ -762,7 +762,7 @@ Skipped experiments get severity 0, level low, and a "no conclusion" implication
 
 ### 10.4 Fix recommendations: the knowledge base
 
-Rules live in `RULES` in `faultline/agents/knowledge.py`. Each rule has a match block (`failure_types`, `targets`, `finding_codes`, each optional) and a recommendation (title, category, effort S/M/L, confidence, rationale, steps, verify commands, references).
+Rules live in `RULES` in `break_point/agents/knowledge.py`. Each rule has a match block (`failure_types`, `targets`, `finding_codes`, each optional) and a recommendation (title, category, effort S/M/L, confidence, rationale, steps, verify commands, references).
 
 **Matching** (`_match_level`): every non-empty criterion must match. Specificity: 0 if the rule matches on a finding code, 1 on target, 2 on failure type, 3 for a generic rule. **Ranking**: specificity, then confidence descending, then rule order; duplicate titles dropped; the Fix agent keeps the first 6.
 
@@ -793,7 +793,7 @@ Each recommendation's rationale is prefixed with an evidence sentence from the e
 
 Example: `reports/fixes/fd1b18f67001.json` (crash of `things` with the masked finding) produced rules 4, 8 and 18, in that order (finding match first, then target, then generic).
 
-### 10.5 Resilience scorecard (`faultline/agents/scorecard.py`)
+### 10.5 Resilience scorecard (`break_point/agents/scorecard.py`)
 
 Per experiment with status `completed` or `aborted`:
 
@@ -815,13 +815,13 @@ Worked example (live blackboard): `things` has two experiments. The crash (`fd1b
 
 ### 11.1 Architecture
 
-- `faultline/dashboard/control.py`: the control plane (`ControlPlane`). All state lives here. It talks no HTTP.
-- `faultline/dashboard/server.py`: a thin standard-library HTTP adapter (`ThreadingHTTPServer`, HTTP/1.1, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`). Binds `127.0.0.1` by default. No authentication: one operator on one laptop.
-- `faultline/dashboard/static/`: the browser renders; nothing in the frontend matters after a reload except which experiment rows are expanded.
+- `break_point/dashboard/control.py`: the control plane (`ControlPlane`). All state lives here. It talks no HTTP.
+- `break_point/dashboard/server.py`: a thin standard-library HTTP adapter (`ThreadingHTTPServer`, HTTP/1.1, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`). Binds `127.0.0.1` by default. No authentication: one operator on one laptop.
+- `break_point/dashboard/static/`: the browser renders; nothing in the frontend matters after a reload except which experiment rows are expanded.
 
 ### 11.2 The control plane in detail
 
-**Session.** `arm()` constructs the same `faultline.cli.Session` the CLI uses: Docker client, topology (loaded, or built if missing), policy, thresholds derived from the stored baseline, the Things API probe at 4 req/s and the health probe every 3 s. `disarm()` stops the probes. Jobs that need a session (baseline, run) arm on demand. An arming failure is caught, stored in `session.error`, shown in the launcher, and the page still renders. `GET /api/plan` does not arm (it reads `topology.json` from disk if there is no session).
+**Session.** `arm()` constructs the same `break_point.cli.Session` the CLI uses: Docker client, topology (loaded, or built if missing), policy, thresholds derived from the stored baseline, the Things API probe at 4 req/s and the health probe every 3 s. `disarm()` stops the probes. Jobs that need a session (baseline, run) arm on demand. An arming failure is caught, stored in `session.error`, shown in the launcher, and the page still renders. `GET /api/plan` does not arm (it reads `topology.json` from disk if there is no session).
 
 **Telemetry buffer.** A daemon thread samples once per second (`TELEMETRY_SAMPLE_S` = 1.0) while armed: stats over the trailing 5 s of probe samples, appended as `{t, success, p95, n}`. Points older than `TELEMETRY_WINDOW_S` = 300 s are dropped on read. The same loop maintains phase bands `{from, to, phase, experiment_id}` from `live.json` (opened when the phase changes to a non-idle one, closed when it goes idle), at most 40 kept. These are what the chart shades.
 
@@ -852,7 +852,7 @@ All JSON. Errors as `{"error": "..."}`.
 | `POST /api/jobs/baseline` | `{"duration": 60}` | clamped to 20-300 s |
 | `POST /api/jobs/run` | `{"mode":"auto"\|"manual","target","failure","params":{},"experiments":1,"llm":true,"allow_protected":false,"analyze":true}` | `experiments` capped at 10; manual runs exactly one; clears STOP unless `resume_stop: false` |
 | `POST /api/jobs/analyze` | `{"llm": true}` | risk, then fix, over every experiment without them, then scorecard |
-| `POST /api/jobs/heal` | `{"restart": false}` | runs the same code as `faultline heal` |
+| `POST /api/jobs/heal` | `{"restart": false}` | runs the same code as `break_point heal` |
 | `POST /api/jobs/cancel` | Cooperative cancel; for a run also writes STOP | always 200 |
 | `POST /api/arm`, `POST /api/disarm` | Start or stop the probes | `arm` returns the session block |
 | `POST /api/stop` | Kill switch | always 200, never queued or blocked |
@@ -861,7 +861,7 @@ All JSON. Errors as `{"error": "..."}`.
 
 ### 11.4 Frontend modules
 
-All in `faultline/dashboard/static/`, vanilla ES modules, no build step, no network beyond the local server. Each heavy module is loaded defensively: if one fails to import, the rest of the page still works and a toast names the missing module.
+All in `break_point/dashboard/static/`, vanilla ES modules, no build step, no network beyond the local server. Each heavy module is loaded defensively: if one fails to import, the rest of the page still works and a toast names the missing module.
 
 | File | What it does |
 |---|---|
@@ -907,7 +907,7 @@ Keyboard: `Esc` = kill switch, `E` = explain every panel, `Space` = pause or res
 
 - Docker Desktop with enough memory for the VM. The memory limits in `deploy/docker-compose.yml` sum to 3,136 MB for Ditto, MongoDB, the UI and nginx alone (the README says "about 2.6 GB"; plan for at least 4 GB).
 - Python 3.10 or newer (the demo venv is 3.12).
-- For network faults: the images `gaiaadm/pumba` and `ghcr.io/alexei-led/pumba-alpine-nettools` (pulled by `faultline setup`, or on first use).
+- For network faults: the images `gaiaadm/pumba` and `ghcr.io/alexei-led/pumba-alpine-nettools` (pulled by `break_point setup`, or on first use).
 - For an LLM: a Groq (or other OpenAI-compatible) API key, or Ollama with `phi4-mini` pulled. Optional.
 - For UI verification only: `pip install playwright` and an installed Chrome.
 
@@ -923,15 +923,15 @@ Use the editable install: `pyproject.toml` package data now lists the static `.c
 
 ### 12.3 Configuration (.env)
 
-Copy `.env.example` to `.env`. Precedence: process environment, then `.env`, then `config/settings.yaml`, then the defaults in `faultline/config.py`. Empty values are ignored. The server reads settings once at startup: restart it after editing `.env`.
+Copy `.env.example` to `.env`. Precedence: process environment, then `.env`, then `config/settings.yaml`, then the defaults in `break_point/config.py`. Empty values are ignored. The server reads settings once at startup: restart it after editing `.env`.
 
 | Variable | Meaning | Default if unset |
 |---|---|---|
-| `FAULTLINE_COMPOSE_PROJECT` | Compose project Faultline may touch (the safety scope) | `faultline` |
-| `FAULTLINE_COMPOSE_FILE` | Compose file for the static topology | `deploy/docker-compose.yml` |
-| `FAULTLINE_REPORTS_DIR` | Blackboard directory | `reports` |
-| `FAULTLINE_NETWORK` | Compose network name | `<project>_default` |
-| `FAULTLINE_LLM` | `false` = fully deterministic, never contact a model | `true` |
+| `BREAK_POINT_COMPOSE_PROJECT` | Compose project Break Point may touch (the safety scope) | `break_point` |
+| `BREAK_POINT_COMPOSE_FILE` | Compose file for the static topology | `deploy/docker-compose.yml` |
+| `BREAK_POINT_REPORTS_DIR` | Blackboard directory | `reports` |
+| `BREAK_POINT_NETWORK` | Compose network name | `<project>_default` |
+| `BREAK_POINT_LLM` | `false` = fully deterministic, never contact a model | `true` |
 | `DITTO_URL` | Ditto through nginx | `http://127.0.0.1:8080` |
 | `DITTO_USER`, `DITTO_PASSWORD` | Basic-auth credentials for the API | the bundled stack's defaults |
 | `PROMETHEUS_URL` | Prometheus | `http://127.0.0.1:9090` |
@@ -954,13 +954,13 @@ Copy `.env.example` to `.env`. Precedence: process environment, then `.env`, the
 | `APPROVAL_TIMEOUT_SECONDS` | How long a decision stays open before the safe default is applied | `120` |
 | `APPROVAL_POLL_SECONDS` | Interval between mailbox polls while waiting | `5` |
 
-The demo laptop's `.env` defines `FAULTLINE_COMPOSE_PROJECT`, `DITTO_URL`, `DITTO_USER`, `DITTO_PASSWORD`, `PROMETHEUS_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL` and `LLM_API_KEY` (attached to project `bosch-ditto`, Groq). Never commit `.env`.
+The demo laptop's `.env` defines `BREAK_POINT_COMPOSE_PROJECT`, `DITTO_URL`, `DITTO_USER`, `DITTO_PASSWORD`, `PROMETHEUS_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL` and `LLM_API_KEY` (attached to project `bosch-ditto`, Groq). Never commit `.env`.
 
 Other settings from `config/settings.yaml`: `llm_timeout_s` 120, `probe_rps` 4, `health_interval_s` 3, `dashboard_port` 8765, and the Pumba and tc image names.
 
 ### 12.4 Commands
 
-The console script is `faultline`; `.venv/bin/python -m faultline <command>` is equivalent and is what the handoff uses.
+The console script is `break_point`; `.venv/bin/python -m break_point <command>` is equivalent and is what the handoff uses.
 
 | Command | What it does |
 |---|---|
@@ -996,10 +996,10 @@ URLs: Ditto API `http://127.0.0.1:8080/api/2/things`, Ditto UI `http://127.0.0.1
 ### 12.6 Running the control room and the Guardian
 
 ```bash
-.venv/bin/python -m faultline dashboard --port 8777          # terminal 1
-.venv/bin/python -m faultline guardian                       # terminal 2
+.venv/bin/python -m break_point dashboard --port 8777          # terminal 1
+.venv/bin/python -m break_point guardian                       # terminal 2
 # alternative entry point, same server, with an explicit reports dir:
-.venv/bin/python -m faultline.dashboard.server --port 8777 --reports reports
+.venv/bin/python -m break_point.dashboard.server --port 8777 --reports reports
 ```
 
 ### 12.7 Pre-demo doctor
@@ -1012,7 +1012,7 @@ Read-only towards the stack. Each check runs in its own thread with a hard timeo
 
 | Check | FAIL when | WARN when |
 |---|---|---|
-| `env` | no `.env`, or `FAULTLINE_COMPOSE_PROJECT`, `DITTO_URL`, `DITTO_USER`, `DITTO_PASSWORD` missing | hosted LLM without a key |
+| `env` | no `.env`, or `BREAK_POINT_COMPOSE_PROJECT`, `DITTO_URL`, `DITTO_USER`, `DITTO_PASSWORD` missing | hosted LLM without a key |
 | `docker` | Docker unreachable, project empty, or a core service missing, paused, stopped or unhealthy | |
 | `ditto` | unreachable, or API auth rejected or erroring | `/health` not 200 or not UP |
 | `prometheus` | | unreachable (optional) |
@@ -1028,7 +1028,7 @@ Because it checks the dashboard, run it after starting terminal 1.
 
 ```bash
 .venv/bin/python scripts/seed_demo.py                 # writes reports-demo/ (default --out)
-.venv/bin/python -m faultline.dashboard.server --reports reports-demo --port 8790
+.venv/bin/python -m break_point.dashboard.server --reports reports-demo --port 8790
 ```
 
 `seed_demo.py` builds a fake but schema-valid blackboard without Docker: the topology from the real static builder (Compose + env scan + nginx, no Docker), a baseline, four experiments with fixed ids (pause of `things` with the masked-failure findings, stop of `policies`, packet loss on `mongodb` planned by the LLM, delay on `gateway`), and risk, fixes and scorecard produced by the real agents with the LLM disabled. It round-trips every file through the schemas before finishing.
@@ -1052,7 +1052,7 @@ Drives the live page in installed Chrome via Playwright at 1920x1080, 1440x900, 
 JavaScript syntax check (Node treats `.js` as CommonJS, so copy to `.mjs` first):
 
 ```bash
-cd faultline/dashboard/static && for f in *.js; do cp "$f" "/tmp/x_$f.mjs" && node --check "/tmp/x_$f.mjs" || echo "FAIL $f"; done
+cd break_point/dashboard/static && for f in *.js; do cp "$f" "/tmp/x_$f.mjs" && node --check "/tmp/x_$f.mjs" || echo "FAIL $f"; done
 ```
 
 ---
@@ -1069,11 +1069,11 @@ Three terminals, all in `/Users/dakshtyagi/Documents/bosch-hackathon-2`.
 
 ```bash
 docker compose ls                                     # bosch-ditto should be running
-.venv/bin/python -m faultline status                  # all containers running, no active experiment
-.venv/bin/python -m faultline resume                  # clear any stale STOP
-.venv/bin/python -m faultline heal --restart          # only if something looks unhealthy (1-2 min)
-.venv/bin/python -m faultline topology                # refresh the map (~5 s)
-.venv/bin/python -m faultline baseline --duration 60  # refresh the baseline (60 s); expect 100 % and p95 well under 100 ms
+.venv/bin/python -m break_point status                  # all containers running, no active experiment
+.venv/bin/python -m break_point resume                  # clear any stale STOP
+.venv/bin/python -m break_point heal --restart          # only if something looks unhealthy (1-2 min)
+.venv/bin/python -m break_point topology                # refresh the map (~5 s)
+.venv/bin/python -m break_point baseline --duration 60  # refresh the baseline (60 s); expect 100 % and p95 well under 100 ms
 ```
 
 The baseline refresh also fixes the stored recovery timeout (see section 17, item 8).
@@ -1081,13 +1081,13 @@ The baseline refresh also fixes the stored recovery timeout (see section 17, ite
 **Terminal 1 (the control room):**
 
 ```bash
-.venv/bin/python -m faultline dashboard --port 8777
+.venv/bin/python -m break_point dashboard --port 8777
 ```
 
 **Terminal 2 (the Guardian, a prop you will point at):**
 
 ```bash
-.venv/bin/python -m faultline guardian
+.venv/bin/python -m break_point guardian
 ```
 
 **Back in terminal 3:**
@@ -1111,7 +1111,7 @@ Every line should be PASS; a WARN on `llm` means plan to run deterministic (fine
 
 ### 13.3 The click-by-click script
 
-**0:00-0:40 What you are looking at.** Say: "This is Eclipse Ditto, an open-source IoT digital-twin platform: nginx in front, a gateway, four Java services in one Pekko cluster, one MongoDB. Public repo, EPL-2.0, running in Docker Compose on this laptop with Prometheus and Grafana watching it. Faultline is a team of agents that breaks it on purpose, safely, and tells us what to fix. This is its control room." Press **E**: every panel explains itself. Press **E** again to close. Point at the header: the phase ribbon ("the seven steps every experiment goes through"), the model pill, the Guardian pill ("an independent process, that terminal there"), the probe pill ("a synthetic client has been calling the Ditto API four times a second"), and STOP ("we will use that").
+**0:00-0:40 What you are looking at.** Say: "This is Eclipse Ditto, an open-source IoT digital-twin platform: nginx in front, a gateway, four Java services in one Pekko cluster, one MongoDB. Public repo, EPL-2.0, running in Docker Compose on this laptop with Prometheus and Grafana watching it. Break Point is a team of agents that breaks it on purpose, safely, and tells us what to fix. This is its control room." Press **E**: every panel explains itself. Press **E** again to close. Point at the header: the phase ribbon ("the seven steps every experiment goes through"), the model pill, the Guardian pill ("an independent process, that terminal there"), the probe pill ("a synthetic client has been calling the Ditto API four times a second"), and STOP ("we will use that").
 
 **0:40-1:20 Step 1, map.** Click **Rebuild map** (Operations, or the map panel). While the Topology agent lights in the pipeline, say: "Nobody drew this. The mapper reads the Compose file, scans every container's environment variables for hostnames, parses the nginx routes, adds the documented cluster edges and enriches it from live Docker." Point at MongoDB, the biggest node: "Compose's depends_on never mentions MongoDB. By that file it is a leaf. The environment scan finds MONGO_DB_HOSTNAME=mongodb on four services, so it is ranked the number one single point of failure: 9.5, against 5.0 for the next service." If the feed shows the topology finding about MongoDB being reached only through environment variables, read it out.
 
@@ -1131,7 +1131,7 @@ Then the ribbon moves to Recover and Soak: "The fault is gone. Soak exists becau
 
 **The #1865 moment** (section 13.6): while API success is at or near 0 %, point at `gateway`, `things-search` and `connectivity` on the map: they stay green because they keep answering `/ready` = 200.
 
-**3:30-4:15 The kill switch.** MANUAL: target **things**, failure **Network latency (tc netem)** (`network_delay`), `duration_s` **60**, `delay_ms` **1500**. Hold LAUNCH. When the ribbon reaches Observe and p95 climbs (about 10 s), press **STOP** in the header (or `Esc`). Within about a second: a red toast, a red "KILL SWITCH" line in the feed, the ribbon leaving Observe, p95 dropping back, the button turning into **RESUME**. Say: "The stop is a file on disk, reports/STOP. The safety monitor checks it every second and rolls back: here it removes the Pumba sidecar and deletes the tc qdisc. The Guardian over there has its own Docker client and would restore the container even if the injector had died. The same file is written by faultline stop or touch reports/STOP." The abort reason `operator_stop` appears in the ribbon and in the report. Click **RESUME** before the next launch (the console refuses to launch while STOP is latched).
+**3:30-4:15 The kill switch.** MANUAL: target **things**, failure **Network latency (tc netem)** (`network_delay`), `duration_s` **60**, `delay_ms` **1500**. Hold LAUNCH. When the ribbon reaches Observe and p95 climbs (about 10 s), press **STOP** in the header (or `Esc`). Within about a second: a red toast, a red "KILL SWITCH" line in the feed, the ribbon leaving Observe, p95 dropping back, the button turning into **RESUME**. Say: "The stop is a file on disk, reports/STOP. The safety monitor checks it every second and rolls back: here it removes the Pumba sidecar and deletes the tc qdisc. The Guardian over there has its own Docker client and would restore the container even if the injector had died. The same file is written by break_point stop or touch reports/STOP." The abort reason `operator_stop` appears in the ribbon and in the report. Click **RESUME** before the next launch (the console refuses to launch while STOP is latched).
 
 **4:15-5:15 Step 5, analyse and report.** Scroll to the experiments table; the analysis agents already ran after each experiment. Expand the newest row and walk down it: before, during and after numbers; hypothesis held or violated ("a violated hypothesis is the interesting result"); findings with plain-English explanations; the risk score ("zero to ten, computed by code from user impact, blast radius, recovery time, intervention and findings; the model only writes the two sentences under it"); one fix opened with its steps and verify command ("Ditto-specific, matched by finding, target and failure type, every one advisory"); the reproduce block ("the exact docker commands"). Then the scorecard: "zero to a hundred per service, graded, worst first; untested services are labelled untested."
 
@@ -1149,8 +1149,8 @@ Then the ribbon moves to Recover and Soak: "The fault is gone. Soak exists becau
 ### 13.5 Reset between runs or slots
 
 ```bash
-.venv/bin/python -m faultline resume
-.venv/bin/python -m faultline heal --restart     # lock, leftovers, qdiscs, restart in dependency order, wait for UP
+.venv/bin/python -m break_point resume
+.venv/bin/python -m break_point heal --restart     # lock, leftovers, qdiscs, restart in dependency order, wait for UP
 ```
 
 Or in the browser: **RESUME**, then **Heal sandbox** with the restart box ticked. Do not restart the dashboard between slots: that disarms the probes and loses the chart history and the feed. Reload the page instead if it looks wrong.
@@ -1165,20 +1165,20 @@ What the report will say depends on the experiment (section 10.1):
 - **A fault that leaves `things` running but unreachable** (for example `network_partition` on `things`): per the code, the target itself keeps answering `/ready` = 200 through `docker exec`, so `health_check_masked_failure` (high, cites #1865) should be emitted. Rehearse it first; this path has not been run live in the reports on disk.
 - **Seeded fallback data** (`reports-demo`): experiment `f63b02a3c8ac` (pause of `things`) carries three `health_check_masked_failure` findings, written directly by `seed_demo.py`.
 
-Script line that is true in every case: "The synthetic client saw 0 % success, and three services on the request path kept telling the platform they were ready. That is a real, documented Eclipse Ditto bug, and Faultline found it from evidence by comparing what users experience with what the health endpoints claim."
+Script line that is true in every case: "The synthetic client saw 0 % success, and three services on the request path kept telling the platform they were ready. That is a real, documented Eclipse Ditto bug, and Break Point found it from evidence by comparing what users experience with what the health endpoints claim."
 
 ### 13.7 Fallback paths
 
 | Problem | What to do | What to say |
 |---|---|---|
-| LLM slow, offline or no key | Turn off the LLM toggle in the injection console, or use MANUAL mode. CLI: `--no-llm` on `plan`, `run`, `rerun`, `risk`, `fix`, `demo`; or `FAULTLINE_LLM=false` | "The model is optional by design: it picks from a list the code produced. Every number is computed either way." |
+| LLM slow, offline or no key | Turn off the LLM toggle in the injection console, or use MANUAL mode. CLI: `--no-llm` on `plan`, `run`, `rerun`, `risk`, `fix`, `demo`; or `BREAK_POINT_LLM=false` | "The model is optional by design: it picks from a list the code produced. Every number is computed either way." |
 | Recovery takes long | Expected for crash-type faults (60-120 s JVM restart and cluster rejoin). Press E and read a panel, or switch to Grafana. Do not launch another (409 / lock) | "Recovery waiting is capped at 300 s with escalation at 150 s and 240 s, and every intervention counts against the score." |
 | A job fails | Red toast and red feed line; traceback is in terminal 1 and in the event data. **Cancel job**, then **Heal sandbox** | |
 | Page looks wrong | Reload; state lives in the server, the feed comes back (last 300 events) | |
 | Page says offline | The server died: restart terminal 1, then Arm again (chart and feed history are lost; reports on disk survive) | |
-| Stack unhealthy | `faultline heal`, then `heal --restart`, then restart a single service with `docker restart bosch-ditto-<service>-1` | |
+| Stack unhealthy | `break_point heal`, then `heal --restart`, then restart a single service with `docker restart bosch-ditto-<service>-1` | |
 | Pumba images missing | Network faults show as unavailable; use Process freeze on `things` for the kill-switch segment | |
-| Docker or the laptop fails | Fallback server on seeded data: `.venv/bin/python scripts/seed_demo.py` then `.venv/bin/python -m faultline.dashboard.server --reports reports-demo --port 8790`. Walk through the map, the experiments table, the fixes and the scorecard | "This is captured data; nothing is running." |
+| Docker or the laptop fails | Fallback server on seeded data: `.venv/bin/python scripts/seed_demo.py` then `.venv/bin/python -m break_point.dashboard.server --reports reports-demo --port 8790`. Walk through the map, the experiments table, the fixes and the scorecard | "This is captured data; nothing is running." |
 
 **Warning for the fallback server:** it still points at the live stack through `.env`. Nobody should press Arm, any Operations button, or LAUNCH on port 8790.
 
@@ -1194,15 +1194,15 @@ Script line that is true in every case: "The synthetic client saw 0 % success, a
 
 **The header says "rules only".** The LLM is disabled or unavailable; hover the pill for the reason (`LLM_API_KEY not set`, a model not in `ollama list`, a network error). Planning is deterministic.
 
-**Network faults are greyed out.** Pumba or the tc image is missing. `faultline setup` pulls them (needs network once).
+**Network faults are greyed out.** Pumba or the tc image is missing. `break_point setup` pulls them (needs network once).
 
 **"pumba exited immediately".** The helper container could not start the netem command; the last 400 characters of its log are in the error. Usually an image or Docker socket problem.
 
-**A `tc` delay seems stuck after an experiment.** `faultline heal` deletes the qdisc on the core services; the Guardian removes helpers and their qdiscs after the deadline or on STOP.
+**A `tc` delay seems stuck after an experiment.** `break_point heal` deletes the qdisc on the core services; the Guardian removes helpers and their qdiscs after the deadline or on STOP.
 
-**A container is still paused or disconnected.** `faultline heal` unpauses, reconnects and starts containers; the Guardian does the same on STOP or after 20 s of unexpected downtime.
+**A container is still paused or disconnected.** `break_point heal` unpauses, reconnects and starts containers; the Guardian does the same on STOP or after 20 s of unexpected downtime.
 
-**The Guardian pill is grey.** Its heartbeat is older than 15 s: start `faultline guardian` in a second terminal.
+**The Guardian pill is grey.** Its heartbeat is older than 15 s: start `break_point guardian` in a second terminal.
 
 **`/api/plan` returns 500 "no application map yet".** There is no `topology.json` and no session: Rebuild map first.
 
@@ -1261,21 +1261,21 @@ The code wins in every case below.
 11. **Memory.** README: Ditto limits "sum to about 2.6 GB". `deploy/docker-compose.yml`: 3,136 MB for Ditto, MongoDB, UI and nginx.
 12. **LLM limits wording.** README: "a model can make an experiment shorter or lighter, never longer or heavier". Code: parameters are clamped to catalog bounds only (the model may choose the maximum), and the model-authored `expected_affected` sets the blast-radius abort's scope.
 13. **RESUME before the next launch.** `docs/DEMO.md` says the next launch is refused while STOP is latched. True for the launcher UI; the backend `POST /api/jobs/run` clears STOP by default (`resume_stop` defaults to true).
-14. **Reproduce commands are approximations.** `disk_pressure` reproduces with `/tmp/fill` while the action writes `/tmp/faultline-fill-<id8>`; `cpu_stress` and `db_flood` reproduce with `timeout <d>` while the actions use `timeout <d+5>`; `db_flood` reproduces into the default database's `flood` collection while the action writes 2 KB documents into `faultline.flood`; the partition reproduce line contains a placeholder for aliases.
+14. **Reproduce commands are approximations.** `disk_pressure` reproduces with `/tmp/fill` while the action writes `/tmp/break_point-fill-<id8>`; `cpu_stress` and `db_flood` reproduce with `timeout <d>` while the actions use `timeout <d+5>`; `db_flood` reproduces into the default database's `flood` collection while the action writes 2 KB documents into `break_point.flood`; the partition reproduce line contains a placeholder for aliases.
 15. **Tests.** HANDOFF: "84 passing, 1 xfail" and "no automated tests cover control.py". Now: 148 tests, `tests/test_control.py` and `tests/test_server.py` exist, and the one xfail now XPASSes.
 16. **Drawer toggle.** ARCHITECTURE says `.drawer-toggle` is styled but not rendered. `index.html` now contains the button and `app.js` wires it.
 17. **UI contract details.** `docs/UI_CONTRACT.md` lists `plan` among job kinds, but there is no `POST /api/jobs/plan`; it gives the 409 message as "a job is already running", the code says `'<label>' is already running`; its candidate priority example (13.75) predates the `INFORMATIVENESS` tie-breaker (the same candidate now scores 14.15).
 18. **Ports.** Not a contradiction but a common confusion: the default port is 8765 (`config/settings.yaml`, README, DEMO, Makefile), while the handoff, the doctor's default `--url` and this guide use 8777 for the demo; the seeded fallback uses 8790.
-19. **`faultline demo` baseline.** README implies 60 s; the `demo` subcommand's default `--baseline` is 45 s.
+19. **`break_point demo` baseline.** README implies 60 s; the `demo` subcommand's default `--baseline` is 45 s.
 20. **Package data.** README's known limitations say `pyproject.toml` ships only `static/*.html`; it now also lists `static/*.css`, `static/*.js` and `static/*.svg`.
 21. **Screen layout.** README and UI_CONTRACT describe a no-scroll three-column grid with the experiments row at the bottom; the layout is being changed to a scrolling page (section 11.5).
-22. **The approval gate's reach is narrower than "the policy requires a decision" suggests.** `README.md` and section 8.4 describe an experiment the protected-services policy would have refused as being held for an admin. Only the operator path does that: `Planner.plan_operator` sets `ExperimentSpec.requires_approval` when the policy refuses the pair and the planner was built with `approval_gate=True`, while `Planner.candidates` still drops a protected pair from the ranked list, so an AI-planned `faultline run` never reaches the gate. The weakness-aware ranking and the LangGraph planner in `faultline_langgraph/` both rank through the same `Planner.candidates`, so neither reaches the gate either (and the LangGraph CLI only plans, it never runs). In the control room `ControlPlane._job_run` passes `approval_gate` and holds a manual protected launch sent over HTTP, but the launcher and Fable both lock a protected card unless the override is ticked, so no button in either UI produces that request. `scout_predicted_severity()`, which would widen the trigger, now reads the Scout's real `reports/weaknesses.json` and is still uncalled by design.
+22. **The approval gate's reach is narrower than "the policy requires a decision" suggests.** `README.md` and section 8.4 describe an experiment the protected-services policy would have refused as being held for an admin. Only the operator path does that: `Planner.plan_operator` sets `ExperimentSpec.requires_approval` when the policy refuses the pair and the planner was built with `approval_gate=True`, while `Planner.candidates` still drops a protected pair from the ranked list, so an AI-planned `break_point run` never reaches the gate. The weakness-aware ranking and the LangGraph planner in `break_point_langgraph/` both rank through the same `Planner.candidates`, so neither reaches the gate either (and the LangGraph CLI only plans, it never runs). In the control room `ControlPlane._job_run` passes `approval_gate` and holds a manual protected launch sent over HTTP, but the launcher and Fable both lock a protected card unless the override is ticked, so no button in either UI produces that request. `scout_predicted_severity()`, which would widen the trigger, now reads the Scout's real `reports/weaknesses.json` and is still uncalled by design.
 
 ---
 
 ## 18. Glossary
 
-| Term | Meaning in Faultline |
+| Term | Meaning in Break Point |
 |---|---|
 | Chaos engineering | Deliberately injecting failures into a system to learn how it behaves, before real incidents teach you |
 | Steady state | Normal behaviour, measured as the baseline (success rate, p95) before any fault |
@@ -1284,7 +1284,7 @@ The code wins in every case below.
 | Blast radius | The set of services affected by a fault; predicted (`expected_affected`) versus observed |
 | Cascade | A failure spreading beyond the predicted blast radius (`cascade_beyond_hypothesis`) |
 | Single point of failure | A component whose loss takes down everything that depends on it (MongoDB here) |
-| Criticality | Faultline's score for how much breaks if a service fails (section 5.1) |
+| Criticality | Break Point's score for how much breaks if a service fails (section 5.1) |
 | Experiment | One planned, bounded fault injection with observation, rollback, recovery and a report |
 | Injection | Applying the fault (kill, pause, netem, etc.) |
 | Rollback | Removing the fault (`Handle.revert()`) |
@@ -1292,9 +1292,9 @@ The code wins in every case below.
 | Kill switch | `reports/STOP`; aborts and rolls back everything |
 | Watchdog | An independent timer that forces rollback at the hard deadline even if the main loop hangs |
 | Guardian | A separate process that only restores the sandbox |
-| Approval gate | The human-in-the-loop pause: Faultline emails `ADMIN_EMAIL` a closed set of replies and waits for one of them or for the deadline (section 8.4) |
-| Correlation token | `FL-xxxxxxxx`, carried in an approval email's subject line; how a reply is matched to the decision it answers, rather than to the newest unread mail |
-| Timeout default (safe default) | The answer applied when nobody replies within `APPROVAL_TIMEOUT_SECONDS`, or when the gate cannot reach the admin at all: `SKIP` before injection, `CONTINUE` after. Not "escalation", which in Faultline means the injector's recovery ladder |
+| Approval gate | The human-in-the-loop pause: Break Point emails `ADMIN_EMAIL` a closed set of replies and waits for one of them or for the deadline (section 8.4) |
+| Correlation token | `BP-xxxxxxxx`, carried in an approval email's subject line; how a reply is matched to the decision it answers, rather than to the newest unread mail |
+| Timeout default (safe default) | The answer applied when nobody replies within `APPROVAL_TIMEOUT_SECONDS`, or when the gate cannot reach the admin at all: `SKIP` before injection, `CONTINUE` after. Not "escalation", which in Break Point means the injector's recovery ladder |
 | Clarification | The one short mail sent back when a reply is not one of the options; it re-states them and decides nothing |
 | Recovery | Return to steady state: 3 consecutive good checks plus a 20 s soak |
 | Soak | Extra observation after apparent recovery to catch relapses |
@@ -1305,8 +1305,8 @@ The code wins in every case below.
 | p95 / p99 latency | The latency 95 % / 99 % of successful requests are faster than |
 | Error rate | 1 - success rate over a window |
 | Trailing window | The most recent N probe samples (N = 10 for safety and recovery) |
-| Synthetic probe | Faultline's own client traffic against the Ditto API, standing in for real users |
-| Canary | The probe's dedicated thing, `faultline.probe:canary`, whose sequence number detects lost writes |
+| Synthetic probe | Break Point's own client traffic against the Ditto API, standing in for real users |
+| Canary | The probe's dedicated thing, `break_point.probe:canary`, whose sequence number detects lost writes |
 | Liveness / readiness | `/alive`: the process is up; `/ready`: it claims it can serve traffic. Ditto #1865: both ignore subsystem health |
 | Degrade-only | A fault that slows or stresses a service without taking it away; the only kind allowed on MongoDB |
 | Protected service | A service with restricted failure types (MongoDB) |

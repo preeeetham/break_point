@@ -72,8 +72,8 @@ export function CaptureControl() {
   const armed = !!s?.session.armed;
 
   const blocked =
-    conn === "replay" ? "Replay data: the Faultline server is not reachable, so nothing can be measured."
-    : conn !== "live" ? "Connecting to the Faultline server."
+    conn === "replay" ? "Replay data: the Break Point server is not reachable, so nothing can be measured."
+    : conn !== "live" ? "Connecting to the Break Point server."
     : !armed ? "Arm the probes first. The baseline is measured from their samples."
     : isRunActive(s) ? "An experiment is running. Measure calm after it has finished."
     : otherJob ? `${clean(otherJob.label)} is running. One job runs at a time.`

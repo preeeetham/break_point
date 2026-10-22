@@ -26,7 +26,7 @@ export function useChecks(draft: Draft | null): { checks: Check[]; blocked: stri
     conn === "live"
       ? { id: "server", tone: "ok", word: "ok", label: "Server live", blocks: null }
       : conn === "replay"
-        ? { id: "server", tone: "blocked", word: "blocked", label: "Server not reachable", detail: "Showing recorded data. Start it with faultline dashboard --port 8777.", blocks: "The Faultline server is not reachable." }
+        ? { id: "server", tone: "blocked", word: "blocked", label: "Server not reachable", detail: "Showing recorded data. Start it with break_point dashboard --port 8777.", blocks: "The Break Point server is not reachable." }
         : { id: "server", tone: "wait", word: "wait", label: "Connecting to the server", blocks: "Still connecting to the server." },
   );
 
@@ -65,7 +65,7 @@ export function useChecks(draft: Draft | null): { checks: Check[]; blocked: stri
     age != null && age < 15
       ? { id: "guardian", tone: "ok", word: "ok", label: `Guardian on, heartbeat ${Math.max(0, Math.round(age))} s ago`, blocks: null }
       : {
-          id: "guardian", tone: "note", word: "off", label: "Guardian off: start faultline guardian",
+          id: "guardian", tone: "note", word: "off", label: "Guardian off: start break_point guardian",
           detail: "The in-process safety monitor still guards the test. The Guardian is the second, independent kill switch.", blocks: null,
         },
   );

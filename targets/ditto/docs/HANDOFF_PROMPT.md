@@ -1,4 +1,4 @@
-# Faultline — continuation prompt for a fresh Claude session
+# Break Point — continuation prompt for a fresh Claude session
 
 Paste this whole file as your first message in a new Claude Code session, with the working
 directory set to `/Users/dakshtyagi/Documents/bosch-hackathon-2`.
@@ -7,11 +7,11 @@ directory set to `/Users/dakshtyagi/Documents/bosch-hackathon-2`.
 
 ## Who you are and what this is
 
-You are continuing work on **Faultline**, a hackathon project for the **Bosch hackathon**, problem
+You are continuing work on **Break Point**, a hackathon project for the **Bosch hackathon**, problem
 statement *"AI-Driven Chaos Engineering for Cloud-Native Resilience"*. It is due imminently and the
 user (Daksh) demos it to judges. Move fast, verify with real tools, and do not break what works.
 
-Faultline deliberately breaks a real open-source cloud-native app — **Eclipse Ditto 3.9.8** (IoT
+Break Point deliberately breaks a real open-source cloud-native app — **Eclipse Ditto 3.9.8** (IoT
 digital-twin platform, EPL-2.0, https://github.com/eclipse-ditto/ditto) — measures the damage and
 recovery, and reports weaknesses with recommended fixes. It is driven from a web "Control Room".
 
@@ -26,7 +26,7 @@ recovery, and reports weaknesses with recommended fixes. It is driven from a web
    contracts. If backend and frontend disagree, this file wins.
 3. `docs/ARCHITECTURE.md` — module map and the experiment lifecycle.
 4. `docs/DEMO.md` — the 6-minute demo runbook.
-5. `faultline/schemas.py` — every data contract (pydantic v2). Nothing crosses a boundary that
+5. `break_point/schemas.py` — every data contract (pydantic v2). Nothing crosses a boundary that
    isn't in here.
 
 ---
@@ -41,11 +41,11 @@ source .venv/bin/activate            # Python 3.12 venv, deps already installed
 docker compose ls                     # should show bosch-ditto with 13 containers
 
 # The control room (this is the demo)
-.venv/bin/python -m faultline dashboard --port 8777
+.venv/bin/python -m break_point dashboard --port 8777
 # -> http://127.0.0.1:8777
 
 # Independent watchdog, in a second terminal (judges like seeing this)
-.venv/bin/python -m faultline guardian
+.venv/bin/python -m break_point guardian
 
 # Health check before demoing
 .venv/bin/python scripts/demo_doctor.py          # may still be being written; see §6
@@ -57,7 +57,7 @@ docker compose ls                     # should show bosch-ditto with 13 containe
 **Groq** for the LLM:
 
 ```
-FAULTLINE_COMPOSE_PROJECT=bosch-ditto
+BREAK_POINT_COMPOSE_PROJECT=bosch-ditto
 DITTO_URL=http://127.0.0.1:8080
 DITTO_USER=hackathon
 DITTO_PASSWORD=<set>
@@ -96,18 +96,18 @@ reports/
 
 | Agent | File | Job |
 |---|---|---|
-| Topology | `faultline/topology/` | Maps services from compose `depends_on` + **env-var scan** + nginx `proxy_pass` + live `docker inspect`. Computes criticality. |
-| Planner | `faultline/planning/planner.py` | Ranks (service, failure) pairs; the LLM picks from the top 5 and writes a falsifiable hypothesis. |
-| Injector | `faultline/agents/injector.py` | Runs one experiment end to end: preflight → inject → observe → rollback → recover → soak → report. |
-| Guardian | `faultline/agents/guardian.py` | Separate process. Restores the sandbox even if the injector dies. |
-| Risk | `faultline/agents/risk.py` | Deterministic 0-10 severity. LLM only writes prose. |
-| Fix | `faultline/agents/fix.py` | 18 Ditto-specific rules in `knowledge.py` + ≤2 LLM extras. **Never applies anything.** |
-| Scorecard | `faultline/agents/scorecard.py` | 0-100 per service, worst first, untested shown as untested. |
-| Approval | `faultline/agents/approval.py` | Human in the loop, by email. Blocks an experiment that would have needed `--allow-protected`; asks again after a high/critical result. Closed reply vocabulary, 120 s deadline, safe default on timeout. **No LLM. Applies nothing.** |
+| Topology | `break_point/topology/` | Maps services from compose `depends_on` + **env-var scan** + nginx `proxy_pass` + live `docker inspect`. Computes criticality. |
+| Planner | `break_point/planning/planner.py` | Ranks (service, failure) pairs; the LLM picks from the top 5 and writes a falsifiable hypothesis. |
+| Injector | `break_point/agents/injector.py` | Runs one experiment end to end: preflight → inject → observe → rollback → recover → soak → report. |
+| Guardian | `break_point/agents/guardian.py` | Separate process. Restores the sandbox even if the injector dies. |
+| Risk | `break_point/agents/risk.py` | Deterministic 0-10 severity. LLM only writes prose. |
+| Fix | `break_point/agents/fix.py` | 18 Ditto-specific rules in `knowledge.py` + ≤2 LLM extras. **Never applies anything.** |
+| Scorecard | `break_point/agents/scorecard.py` | 0-100 per service, worst first, untested shown as untested. |
+| Approval | `break_point/agents/approval.py` | Human in the loop, by email. Blocks an experiment that would have needed `--allow-protected`; asks again after a high/critical result. Closed reply vocabulary, 120 s deadline, safe default on timeout. **No LLM. Applies nothing.** |
 
 **The governing principle: "LLM proposes, code disposes."** Every number (severity, score, ranking,
 thresholds) is computed by code. The model may make an experiment *safer* (shorter, lighter) but can
-never raise a safety limit. Everything works with `--no-llm` / `FAULTLINE_LLM=false`.
+never raise a safety limit. Everything works with `--no-llm` / `BREAK_POINT_LLM=false`.
 
 **The project's headline insight:** Compose's `depends_on` never mentions MongoDB, yet every Ditto
 service needs it via `MONGO_DB_HOSTNAME`. Only the env-var scan reveals it is the #1 single point of
@@ -121,7 +121,7 @@ even if the main loop hangs; one experiment at a time; MongoDB is **degrade-only
 Recovery requires 3 consecutive good checks **plus a 20 s soak** (a relapse resets it); escalation
 restarts the target at 50% of the 300 s timeout and its dependents at 80%.
 
-**Failure catalog (10)** in `faultline/chaos/catalog.py`: `container_crash`, `container_stop`,
+**Failure catalog (10)** in `break_point/chaos/catalog.py`: `container_crash`, `container_stop`,
 `container_pause`, `network_delay`, `network_loss` (Pumba + tc netem sidecar), `network_partition`,
 `cpu_stress`, `disk_pressure`, `db_flood`, `traffic_spike`.
 
@@ -129,12 +129,12 @@ restarts the target at 50% of the 300 s timeout and its dependents at 80%.
 
 ## 4. The dashboard (the thing being actively worked on)
 
-- `faultline/dashboard/control.py` (~690 lines) — the control plane. Owns a **long-lived session**
+- `break_point/dashboard/control.py` (~690 lines) — the control plane. Owns a **long-lived session**
   (synthetic Ditto API probe ~4 req/s + health monitor every 3 s via `docker exec` on `/alive` and
   `/ready` port 7626, plus `mongosh ping`), samples telemetry at **1 Hz into a 300 s buffer**, and
   runs operator actions as **one-at-a-time jobs**. Has an event log with monotonic sequence numbers.
-- `faultline/dashboard/server.py` (161 lines) — thin stdlib HTTP adapter. No framework.
-- `faultline/dashboard/static/` — vanilla ES modules, **no build step, no CDN, no web fonts**
+- `break_point/dashboard/server.py` (161 lines) — thin stdlib HTTP adapter. No framework.
+- `break_point/dashboard/static/` — vanilla ES modules, **no build step, no CDN, no web fonts**
   (venue wifi may not exist):
 
 | File | Lines | Owner/purpose |
@@ -173,7 +173,7 @@ rationale and hypothesis, the hypothesis held, and 7 fix recommendations were ge
 .venv/bin/python -m pytest -q tests
 
 # JS syntax (node --check treats .js as CJS and WILL pass broken ES modules — copy to .mjs first)
-cd faultline/dashboard/static && for f in *.js; do cp "$f" "/tmp/x_$f.mjs" && node --check "/tmp/x_$f.mjs" || echo "FAIL $f"; done
+cd break_point/dashboard/static && for f in *.js; do cp "$f" "/tmp/x_$f.mjs" && node --check "/tmp/x_$f.mjs" || echo "FAIL $f"; done
 
 # Real browser: screenshots 5 breakpoints, fails on console errors, overflow, tiny touch targets
 .venv/bin/python scripts/verify_ui.py --url http://127.0.0.1:8777 --out /tmp/flui --settle 4 --expand
@@ -196,7 +196,7 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
 - Docs: `README.md`, `docs/DEMO.md`, `docs/ARCHITECTURE.md`, `docs/UI_CONTRACT.md`.
 
 ### Approval agent — landed and wired on the CLI path
-- `faultline/agents/approval.py`: two scenarios (`pre_injection`, `problem_occurred`), one mechanism
+- `break_point/agents/approval.py`: two scenarios (`pre_injection`, `problem_occurred`), one mechanism
   — pause, email `ADMIN_EMAIL`, wait for one of a closed set of replies or for the
   `APPROVAL_TIMEOUT_SECONDS` (120 s) deadline on an independent `Watchdog`, record what happened and
   why. Safe default on timeout, on an unreachable mailbox and on any unset credential: `SKIP` before
@@ -209,10 +209,10 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
 - **Wired:** `cmd_run` enables the gate via `approvals_enabled()` unless `--no-approvals`, calls
   `gate()` before a held experiment and `run_post_experiment()` after each non-skipped one;
   `Planner.plan_operator` sets `requires_approval` when the policy refuses the pair and
-  `approval_gate=True`; `faultline approvals [--resend ID] [--limit 5]` and `GET /api/approvals` are
+  `approval_gate=True`; `break_point approvals [--resend ID] [--limit 5]` and `GET /api/approvals` are
   read-only views.
 - **Not wired, check these:** `Planner.candidates` (weakness-aware or not, and therefore the
-  LangGraph planner in `faultline_langgraph/` too) deliberately never marks a protected pair for
+  LangGraph planner in `break_point_langgraph/` too) deliberately never marks a protected pair for
   approval, so an AI-planned run never reaches the gate — only an operator-chosen one does.
   `ControlPlane._job_run` passes `approval_gate` and holds a manual protected launch sent to
   `POST /api/jobs/run`, but the launcher and Fable both lock a protected card unless the override is
@@ -225,7 +225,7 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
   itself unconfigured and applies the safe default rather than approving anything. Use
   `admin@example.invalid` in examples.
 - There is deliberately no way to answer a decision from the CLI or over HTTP. The answer comes back
-  by email on purpose; a local bypass would defeat the gate, and `faultline stop` / `resume` already
+  by email on purpose; a local bypass would defeat the gate, and `break_point stop` / `resume` already
   cover an operator at the laptop.
 
 ### In flight when the session ended — CHECK THESE FIRST
@@ -265,9 +265,9 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
 - **Match the existing style.** Dense, precise, few comments — and only comments that explain *why*,
   never *what*. No emojis anywhere. No marketing language in docs.
 - **Never put a raw hex colour in `app.css`** — only in `tokens.css`.
-  Check: `grep -nE "#[0-9a-fA-F]{3,8}" faultline/dashboard/static/app.css` must return nothing.
+  Check: `grep -nE "#[0-9a-fA-F]{3,8}" break_point/dashboard/static/app.css` must return nothing.
 - **Never let the model override a safety limit.** New thresholds go in `config/thresholds.yaml`
-  and are enforced in `faultline/safety/`.
+  and are enforced in `break_point/safety/`.
 - **Advisory only** — the Fix agent must never mutate the target system.
 - Frontend modules must be side-effect free on import and export a factory returning
   `{update(...), destroy()}`; `update()` is called every poll and must be cheap and idempotent
@@ -290,14 +290,14 @@ Playwright uses the installed Chrome via `channel="chrome"` (no browser download
 ## 9. Demo-day cheat sheet
 
 ```bash
-faultline heal --restart     # reset the sandbox between runs
-faultline dashboard          # the demo
-faultline guardian           # second terminal
-faultline run --no-llm ...   # fallback if Groq is slow or offline
+break_point heal --restart     # reset the sandbox between runs
+break_point dashboard          # the demo
+break_point guardian           # second terminal
+break_point run --no-llm ...   # fallback if Groq is slow or offline
 ```
 
 Fallback if the live stack misbehaves mid-demo: serve the seeded blackboard instead —
-`.venv/bin/python -m faultline.dashboard.server --reports reports-demo --port 8790`.
+`.venv/bin/python -m break_point.dashboard.server --reports reports-demo --port 8790`.
 
 The single best moment to show a judge: kill `things`, and point out that the platform kept
 reporting itself **healthy** (`/ready` = 200) while the API returned 0% success — a real, documented
@@ -308,29 +308,29 @@ system discovered on its own from evidence.
 
 ## 10. Repo Onboarding Agent (newest work — read this if you are continuing it)
 
-**Why it exists.** Everything else in Faultline is repo-agnostic except one thing: the topology
+**Why it exists.** Everything else in Break Point is repo-agnostic except one thing: the topology
 mapper's richest signal is a hand-authored knowledge file, `config/ditto_knowledge.yaml`, that a
-human wrote by reading Eclipse Ditto's architecture pages. Point Faultline at a different app and
-you lose documented edges entirely. `faultline onboard` generates that file for any Compose repo,
+human wrote by reading Eclipse Ditto's architecture pages. Point Break Point at a different app and
+you lose documented edges entirely. `break_point onboard` generates that file for any Compose repo,
 which is what makes "point it at any compliant repo" true rather than aspirational.
 
-**Files:** `faultline/onboarding/source.py` (resolve a reference → local checkout; find the compose
-file, README and architecture docs), `faultline/onboarding/agent.py` (extract → one bounded LLM
+**Files:** `break_point/onboarding/source.py` (resolve a reference → local checkout; find the compose
+file, README and architecture docs), `break_point/onboarding/agent.py` (extract → one bounded LLM
 pass → validate → write → compare), `RepoKnowledge` / `DocumentedEdge` / `OnboardingReport` at the
-end of `faultline/schemas.py`, `cmd_onboard` in `faultline/cli.py`, `tests/test_onboarding.py`
+end of `break_point/schemas.py`, `cmd_onboard` in `break_point/cli.py`, `tests/test_onboarding.py`
 (89 tests, fully offline).
 
 **Commands**
 ```bash
-faultline onboard eclipse-ditto/ditto --compare-to config/ditto_knowledge.yaml
-faultline onboard https://github.com/owner/app --out config
-faultline onboard .                      # the compose file you actually run
-faultline topology --knowledge config/<slug>_knowledge.yaml
+break_point onboard eclipse-ditto/ditto --compare-to config/ditto_knowledge.yaml
+break_point onboard https://github.com/owner/app --out config
+break_point onboard .                      # the compose file you actually run
+break_point topology --knowledge config/<slug>_knowledge.yaml
 # flags: --compose --ref --cache-dir --dry-run --json --force --no-llm
 ```
 
 **The real schema** (do not invent fields — only these are consumed):
-`roles`, `health_port`, `documented_edges` are read by `faultline/topology/compose.py`;
+`roles`, `health_port`, `documented_edges` are read by `break_point/topology/compose.py`;
 `cluster_alias` is read by `topology/render.py` for the Mermaid cluster subgraph; `references` is
 for humans. There is deliberately no per-service description, no app summary and no `protected`
 list — protection lives in `config/thresholds.yaml` and the rest would be dead weight.
@@ -370,11 +370,11 @@ observability role overrides.
 - No merge: onboarding the upstream repo gives you the edges, onboarding your deployment wrapper
   gives you the observability role overrides, and combining them is currently manual.
 - Compose-only. No Kubernetes/Helm support.
-- Still Ditto-shaped after onboarding: the remediation rules in `faultline/agents/knowledge.py` and
+- Still Ditto-shaped after onboarding: the remediation rules in `break_point/agents/knowledge.py` and
   the protected-service policy in `config/thresholds.yaml`. Those are separate pieces of work.
 - Output is a **draft for review**. Documented edges change the criticality ranking and therefore
   what gets broken first.
 
-**Note:** a separate **Weakness Scout** (`faultline/agents/scout.py`, `reconcile.py`,
-`faultline scout`) was built in a parallel session and predicts weaknesses before anything is
+**Note:** a separate **Weakness Scout** (`break_point/agents/scout.py`, `reconcile.py`,
+`break_point scout`) was built in a parallel session and predicts weaknesses before anything is
 injected. It is unrelated to onboarding but shares the topology output; do not confuse the two.

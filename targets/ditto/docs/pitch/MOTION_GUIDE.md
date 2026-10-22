@@ -1,4 +1,4 @@
-# Motion finishing guide: `faultline-six-section-deck.pptx`
+# Motion finishing guide: `break_point-six-section-deck.pptx`
 
 The deck ships with **no transitions and no animations**. Every slide is complete as a static slide, so it presents correctly even if you skip this guide. This guide adds the motion by hand in PowerPoint. It takes about five minutes.
 

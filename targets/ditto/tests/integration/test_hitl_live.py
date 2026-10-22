@@ -1,10 +1,10 @@
 """LIVE integration tests for human-approved AI fixes, against the real Ditto stack (compose project `bosch-ditto`).
 
-Skipped unless FAULTLINE_LIVE=1 AND Docker is reachable AND the configured compose project has containers, so the
-normal suite stays Docker-free. They drive the real CLI (`python -m faultline ...`) as subprocesses and assert on
-the reports/ blackboard, the Faultline override file and `docker inspect`.
+Skipped unless BREAK_POINT_LIVE=1 AND Docker is reachable AND the configured compose project has containers, so the
+normal suite stays Docker-free. They drive the real CLI (`python -m break_point ...`) as subprocesses and assert on
+the reports/ blackboard, the Break Point override file and `docker inspect`.
 
-    FAULTLINE_LIVE=1 FAULTLINE_TARGET=ditto .venv/bin/python -m pytest -q targets/ditto/tests/integration -x -s
+    BREAK_POINT_LIVE=1 BREAK_POINT_TARGET=ditto .venv/bin/python -m pytest -q targets/ditto/tests/integration -x -s
 
 They take minutes (each apply recreates Ditto services, which need 60-120 s to rejoin the cluster). Every test
 restores the stack in a `finally`: STOP cleared, the override back to its pre-test bytes (absent if it was absent),
@@ -39,13 +39,13 @@ EXPERIMENT_ATTEMPTS = (("things", "container_crash"), ("policies", "container_st
 
 # ---------------------------------------------------------------------- skip gate
 def _live_reason() -> Optional[str]:
-    """None when the live tests may run, else why they are skipped. Touches Docker only when FAULTLINE_LIVE=1."""
-    if os.environ.get("FAULTLINE_LIVE", "").strip() != "1":
-        return "live Docker test: set FAULTLINE_LIVE=1 to run against the real Ditto stack"
+    """None when the live tests may run, else why they are skipped. Touches Docker only when BREAK_POINT_LIVE=1."""
+    if os.environ.get("BREAK_POINT_LIVE", "").strip() != "1":
+        return "live Docker test: set BREAK_POINT_LIVE=1 to run against the real Ditto stack"
     if shutil.which("docker") is None:
         return "docker CLI not found"
     try:
-        from faultline.config import load_settings
+        from break_point.config import load_settings
         project = load_settings().compose_project
         res = subprocess.run(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={project}"],
                              capture_output=True, text=True, timeout=20)
@@ -64,28 +64,28 @@ pytestmark = pytest.mark.skipif(_REASON is not None, reason=_REASON or "")
 
 # ---------------------------------------------------------------------- helpers
 def _settings():
-    from faultline.config import load_settings
+    from break_point.config import load_settings
     return load_settings()
 
 
 def _store(s=None):
-    from faultline.reporting.store import ReportStore
+    from break_point.reporting.store import ReportStore
     return ReportStore((s or _settings()).reports_dir)
 
 
 def cli(*args: str, timeout: float = 900, env: Optional[dict] = None, check: bool = False) -> subprocess.CompletedProcess:
-    """Run `python -m faultline <args>` from the repo root, echo its output (visible with -s)."""
+    """Run `python -m break_point <args>` from the repo root, echo its output (visible with -s)."""
     full_env = {**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})}
-    full_env.pop("FAULTLINE_LIVE", None)
+    full_env.pop("BREAK_POINT_LIVE", None)
     t0 = time.time()
-    print(f"\n$ faultline {' '.join(args)}", flush=True)
-    res = subprocess.run([PY, "-m", "faultline", *args], cwd=ROOT, capture_output=True, text=True, timeout=timeout,
+    print(f"\n$ break_point {' '.join(args)}", flush=True)
+    res = subprocess.run([PY, "-m", "break_point", *args], cwd=ROOT, capture_output=True, text=True, timeout=timeout,
                          env=full_env)
     out = (res.stdout or "") + (res.stderr or "")
     print(out.rstrip()[-6000:], flush=True)
     print(f"  -> exit {res.returncode} in {time.time() - t0:.0f}s", flush=True)
     if check:
-        assert res.returncode == 0, f"faultline {' '.join(args)} exited {res.returncode}:\n{out[-3000:]}"
+        assert res.returncode == 0, f"break_point {' '.join(args)} exited {res.returncode}:\n{out[-3000:]}"
     return res
 
 
@@ -179,7 +179,7 @@ def wait_stack_healthy(s, timeout: float = 600, label: str = "") -> None:
 def restore_stack(s, orig: dict, label: str = "") -> list[str]:
     """Put the stack back to `orig` (see the `original` fixture). Returns what it did. Never deletes volumes or
     other projects' containers; only `docker compose up -d --no-deps --force-recreate <svc>` on our project."""
-    from faultline.remediation import override as ov
+    from break_point.remediation import override as ov
     store, did = _store(s), []
     store.clear_stop()
     path = Path(s.remediation_override_file)
@@ -207,8 +207,8 @@ def restore_stack(s, orig: dict, label: str = "") -> list[str]:
         assert ok, f"recreating {moved} failed: {out[-1500:]}"
         # the same proxy refresh the apply engine does after a recreate (nginx caches the old container IPs)
         from types import SimpleNamespace
-        from faultline.chaos.docker_ctl import DockerController
-        from faultline.remediation import apply as A
+        from break_point.chaos.docker_ctl import DockerController
+        from break_point.remediation import apply as A
         deps = SimpleNamespace(topology=store.topology(), docker=DockerController(s.compose_project, s.compose_network))
         reloaded = A._refresh_proxies(deps, moved, lambda m: print(f"  [restore] {m}", flush=True))
         if reloaded:
@@ -266,10 +266,10 @@ def make_proposal(s, eid: str, fix_id: str, services: list[str], finding_code: s
     """A pending proposal for exactly `services`, built through the same code path propose.build_proposals uses
     (catalog build against the live base config + the current override, catalog.preview, change_hash). Used where
     the CLI would pick other targets (the test-only entry on `things`) or where an equal proposal is blocked."""
-    from faultline.remediation import catalog
-    from faultline.remediation import proposals as P
-    from faultline.remediation import propose
-    from faultline.schemas import Finding, FixProposal, ProposalAuditEntry
+    from break_point.remediation import catalog
+    from break_point.remediation import proposals as P
+    from break_point.remediation import propose
+    from break_point.schemas import Finding, FixProposal, ProposalAuditEntry
 
     store = _store(s)
     report = store.experiment(eid)
@@ -295,7 +295,7 @@ def make_proposal(s, eid: str, fix_id: str, services: list[str], finding_code: s
         explanation=propose.template_explanation(report, cand, metrics), expected_metrics=metrics,
         requires_allow_protected=cand.requires_allow_protected, rank=1, ranked_by="code", status="pending",
         expires_at=P.expires_at(s.fix_proposal_timeout_s),
-        audit=[ProposalAuditEntry(actor="faultline", from_status=None, to_status="pending",
+        audit=[ProposalAuditEntry(actor="break_point", from_status=None, to_status="pending",
                                   note="proposed by the live integration test")],
     )
     store.write_proposal(p)
@@ -315,7 +315,7 @@ def s():
 def original(s):
     """The stack as it was before any test, and a final check that the module leaves it exactly so."""
     store = _store(s)
-    assert not store.stop_requested(), "STOP is present before the live tests; clear it (`faultline resume`) first"
+    assert not store.stop_requested(), "STOP is present before the live tests; clear it (`break_point resume`) first"
     assert not store.active(), f"an experiment is active ({store.active()}); wait for it to finish"
     assert not store.fix_lock_file.exists(), "FIX_IN_FLIGHT.json is present; another fix is in flight"
     wait_stack_healthy(s, 600, "before the live tests")
@@ -408,7 +408,7 @@ def test_1_full_approve_flow(s, clean_stack):
     assert p.decided_by and p.reason == "integration test"
     assert p.override_backup and Path(p.override_backup).is_file(), "no override backup recorded"
     if override_before is None:
-        assert Path(p.override_backup).read_bytes().startswith(b"# faultline: override did not exist")
+        assert Path(p.override_backup).read_bytes().startswith(b"# break_point: override did not exist")
 
     if "applied" in statuses:
         assert p.applied_at is not None
@@ -491,12 +491,12 @@ def test_3_bad_fix_rolls_back(s, clean_stack):
     override_before = file_bytes(ovr)
     orig_hc = clean_stack["containers"]["things"]["healthcheck"]
     assert any("/alive" in str(x) for x in orig_hc), orig_hc
-    os.environ["FAULTLINE_TEST_CATALOG"] = "1"     # for make_proposal's catalog lookup in this process only
+    os.environ["BREAK_POINT_TEST_CATALOG"] = "1"     # for make_proposal's catalog lookup in this process only
     try:
         p = make_proposal(s, eid, "break_healthcheck_for_test", ["things"], "health_check_masked_failure",
                           include_test=True)
     finally:
-        os.environ.pop("FAULTLINE_TEST_CATALOG", None)
+        os.environ.pop("BREAK_POINT_TEST_CATALOG", None)
     show(p)
     assert p.target_services == ["things"] and "exit 1" in p.change_preview
 
@@ -514,7 +514,7 @@ def test_3_bad_fix_rolls_back(s, clean_stack):
     wait_stack_healthy(s, 600, "before bad fix")
     t0 = time.time()
     res = cli("approve", p.proposal_id, "--hash", p.change_hash, "--reason", "integration test", timeout=1800,
-              env={"FAULTLINE_TEST_CATALOG": "1"})
+              env={"BREAK_POINT_TEST_CATALOG": "1"})
     p = store.proposal(p.proposal_id)
     show(p)
     statuses = audit_statuses(p)

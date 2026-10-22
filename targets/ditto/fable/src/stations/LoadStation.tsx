@@ -18,8 +18,8 @@ const TRUTH = "config/ditto_knowledge.yaml";
 const DITTO = /(^|[/:])eclipse-ditto\/ditto(\.git)?\/?$/i;
 
 const PICKS: { value: string; label: string; title: string }[] = [
-  { value: "eclipse-ditto/ditto", label: "eclipse-ditto/ditto", title: "Eclipse Ditto, the stack Faultline tests. Has a hand-written file to grade against." },
-  { value: ".", label: "this repo (.)", title: "Faultline's own compose file, read from disk" },
+  { value: "eclipse-ditto/ditto", label: "eclipse-ditto/ditto", title: "Eclipse Ditto, the stack Break Point tests. Has a hand-written file to grade against." },
+  { value: ".", label: "this repo (.)", title: "Break Point's own compose file, read from disk" },
   { value: "dockersamples/example-voting-app", label: "dockersamples/example-voting-app", title: "A small demo app the agent has never seen" },
 ];
 
@@ -29,15 +29,15 @@ function failFix(error: string): string {
   if (/no docker-compose file found|compose file .* (does not exist|is not a usable)/i.test(error)) return "Open Advanced, point the compose path at the file you run, then load again.";
   if (/neither an existing path nor a recognisable git repository/i.test(error)) return "Use a GitHub URL, owner/name such as eclipse-ditto/ditto, or a path that exists on the server's disk.";
   if (/git clone failed/i.test(error)) return "Check the name and that the repository is public, or clone it yourself and pass the local path.";
-  if (/git is required/i.test(error)) return "Install git on the machine running Faultline, or pass a local path.";
+  if (/git is required/i.test(error)) return "Install git on the machine running Break Point, or pass a local path.";
   if (/already running/i.test(error)) return "Wait for that job to finish, then load again.";
-  if (/replay/i.test(error)) return "Start the server with faultline dashboard --port 8777.";
+  if (/replay/i.test(error)) return "Start the server with break_point dashboard --port 8777.";
   return "Read the last transcript line for the step that failed, fix it, then load again.";
 }
 
 function commandLine(body: { repo: string; compare_to: string | null; no_llm: boolean; compose: string | null }): string {
   return [
-    "faultline onboard", body.repo, "--out", OUT_DIR,
+    "break_point onboard", body.repo, "--out", OUT_DIR,
     body.compare_to ? `--compare-to ${body.compare_to}` : "",
     body.compose ? `--compose ${body.compose}` : "",
     body.no_llm ? "--no-llm" : "",

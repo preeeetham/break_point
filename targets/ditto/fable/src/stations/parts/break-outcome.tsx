@@ -20,8 +20,8 @@ function skipFixes(detail: string): string[] {
   const out: string[] = [];
   if (/STOP/i.test(detail)) out.push("Press Resume in the header to clear STOP.");
   if (/probe samples/i.test(detail)) out.push("Arm the probes and let them run a few seconds.");
-  if (/not steady/i.test(detail)) out.push("Faultline does not break a sick system. Heal the sandbox, wait for a flat trace, then launch again.");
-  if (/not running|refusing to inject/i.test(detail)) out.push("Start the stack with scripts/up.sh, or run faultline heal, then launch again.");
+  if (/not steady/i.test(detail)) out.push("Break Point does not break a sick system. Heal the sandbox, wait for a flat trace, then launch again.");
+  if (/not running|refusing to inject/i.test(detail)) out.push("Start the stack with scripts/up.sh, or run break_point heal, then launch again.");
   if (/another experiment is active/i.test(detail)) out.push("Wait for the active experiment to finish. The Guardian clears a stale lock after its deadline.");
   return out;
 }

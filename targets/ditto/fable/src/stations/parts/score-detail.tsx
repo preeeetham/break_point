@@ -367,7 +367,7 @@ function Reproduce({ lines }: { lines: string[] }) {
     <SheetSection label="Reproduce it by hand">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-[56ch] text-[13px] leading-snug text-fg-2">
-          The same fault without Faultline. Run by hand, nothing watches the error rate or rolls the fault back for you.
+          The same fault without Break Point. Run by hand, nothing watches the error rate or rolls the fault back for you.
         </p>
         <CopyButton text={text} label="Copy commands" />
       </div>

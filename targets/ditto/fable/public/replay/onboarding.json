@@ -384,7 +384,7 @@
    "ts": 1791677161.423342,
    "level": "success",
    "source": "onboarding",
-   "text": "Wrote .cache/onboarding/knowledge/ditto_knowledge.yaml. Use it with: faultline topology --knowledge .cache/onboarding/knowledge/ditto_knowledge.yaml",
+   "text": "Wrote .cache/onboarding/knowledge/ditto_knowledge.yaml. Use it with: break_point topology --knowledge .cache/onboarding/knowledge/ditto_knowledge.yaml",
    "data": {}
   },
   {

@@ -101,7 +101,7 @@ export function abortExplain(e: ExperimentSummary): { at: number | null; text: s
   return { at: entry ? entry.t_plus_s : null, text };
 }
 
-// ---------------------------------------------------------------- risk arithmetic (faultline/agents/risk.py)
+// ---------------------------------------------------------------- risk arithmetic (break_point/agents/risk.py)
 
 export const FACTOR_ORDER = ["impact", "blast", "recovery", "intervention", "findings"];
 
@@ -133,6 +133,6 @@ export function orderedFactors(f: Record<string, number> | null | undefined): [s
   return [...known, ...rest];
 }
 
-// ---------------------------------------------------------------- scorecard (faultline/agents/scorecard.py)
+// ---------------------------------------------------------------- scorecard (break_point/agents/scorecard.py)
 
 export const GRADE_EDGES = [50, 65, 80, 90];

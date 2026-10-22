@@ -1,5 +1,5 @@
 // The Scorecard: every tested service graded worst first; untested services last, with no score and
-// no bar, never a flattering default. Mirrors faultline/agents/scorecard.py.
+// no bar, never a flattering default. Mirrors break_point/agents/scorecard.py.
 import { motion } from "motion/react";
 import { CircleDashed } from "@phosphor-icons/react";
 import type { ScoreRow, Scorecard } from "../../lib/types";

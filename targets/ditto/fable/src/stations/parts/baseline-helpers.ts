@@ -17,7 +17,7 @@ export function fixFor(error: string | null | undefined, again: string): string 
   }
   if (/already running/i.test(e)) return `One job runs at a time. Wait for it to finish, or press Stop everything, then ${again}.`;
   if (/no application map|topology/i.test(e)) return `There is no map yet. Map the system, then ${again}.`;
-  return `The full error is in the terminal running faultline dashboard. Fix it there, then ${again}.`;
+  return `The full error is in the terminal running break_point dashboard. Fix it there, then ${again}.`;
 }
 
 /** Arm and disarm the probes, with the failure reason kept visible until the next good arm. */

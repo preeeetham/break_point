@@ -89,7 +89,7 @@ function RigFrame({ status }: { status: "connecting" | "empty" }) {
       <RigHeader meta={status === "connecting" ? "connecting" : "no map"} />
       <div className="mm-grid flex h-[380px] flex-col items-start justify-end gap-3 p-5 xl:h-[440px]">
         {status === "connecting" ? (
-          <p className="text-[14px] text-fg-2">Reading the system map from the Faultline server…</p>
+          <p className="text-[14px] text-fg-2">Reading the system map from the Break Point server…</p>
         ) : (
           <>
             <p className="max-w-[40ch] text-[15px] text-fg">No map yet. Map the system to draw the rig, then come back and hit a service.</p>

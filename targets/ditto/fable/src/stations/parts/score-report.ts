@@ -109,7 +109,7 @@ function header(s: State, exps: ExperimentSummary[]): string[] {
     ? `run window ${utc(starts[0])} to ${ends.length ? utc(ends[ends.length - 1]) : "still running"} UTC`
     : "no experiments recorded";
   return [
-    `# Faultline findings report: ${t(project)}`,
+    `# Break Point findings report: ${t(project)}`,
     "",
     `Project \`${t(project)}\`, ${window}.`,
     "",
@@ -137,7 +137,7 @@ function summary(s: State, exps: ExperimentSummary[]): string[] {
       (worst ? `; the worst is ${code(worst.failure_type)} on ${code(worst.target_service)} at **${n(worst.risk!.severity)}/10 (${t(worst.risk!.level)})**.` : "."),
   );
   out.push(`- **${plural(stops.length, "experiment")} stopped automatically** by ${stoppedBy} and rolled back.`);
-  out.push("- Every recommendation is advisory only; Faultline never changes the system under test.");
+  out.push("- Every recommendation is advisory only; Break Point never changes the system under test.");
   out.push("");
   return out;
 }
@@ -304,11 +304,11 @@ export function buildFindingsReport(s: State): string {
   return md.replace(ANY_DASH, "-");
 }
 
-/** Save the report as faultline-findings-<project>-<date>.md through a Blob URL that is revoked after use. */
+/** Save the report as break_point-findings-<project>-<date>.md through a Blob URL that is revoked after use. */
 export function downloadFindingsReport(s: State): string {
   const md = buildFindingsReport(s);
-  const project = (s.target?.project ?? s.session?.project ?? "faultline").replace(/[^\w.-]+/g, "-");
-  const name = `faultline-findings-${project}-${new Date().toISOString().slice(0, 10)}.md`;
+  const project = (s.target?.project ?? s.session?.project ?? "break_point").replace(/[^\w.-]+/g, "-");
+  const name = `break_point-findings-${project}-${new Date().toISOString().slice(0, 10)}.md`;
   const url = URL.createObjectURL(new Blob([md], { type: "text/markdown;charset=utf-8" }));
   const a = document.createElement("a");
   a.href = url;

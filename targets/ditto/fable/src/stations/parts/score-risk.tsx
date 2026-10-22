@@ -1,5 +1,5 @@
 // Risk as visible arithmetic: each factor is a step in a waterfall on the 0 to 10 scale, the level
-// bands drawn behind it, the sum written out underneath. Mirrors faultline/agents/risk.py.
+// bands drawn behind it, the sum written out underneath. Mirrors break_point/agents/risk.py.
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
 import type { Finding, Risk } from "../../lib/types";

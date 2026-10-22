@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from faultline.remediation import catalog as C
-from faultline.remediation import override as ov
-from faultline.schemas import Finding
-from faultline.topology.compose import load_compose
-from faultline.topology.graph import build
+from break_point.remediation import catalog as C
+from break_point.remediation import override as ov
+from break_point.schemas import Finding
+from break_point.topology.compose import load_compose
+from break_point.topology.graph import build
 
 from conftest import APPS as DITTO, COMPOSE, KNOWLEDGE, NGINX, THRESHOLDS  # noqa: E402
 
-from faultline.topology import datastores
+from break_point.topology import datastores
 
 LABEL = "deploy/docker-compose.override.yml"
 PROTECTED = C.protected_services(thresholds_file=str(THRESHOLDS))

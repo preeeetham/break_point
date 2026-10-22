@@ -1,8 +1,8 @@
-"""The Ditto target directory reproduces what Faultline hardcoded for Ditto before the core/target split.
+"""The Ditto target directory reproduces what Break Point hardcoded for Ditto before the core/target split.
 
 Each test names the pre-split behaviour it pins: the Things-API probe (OPS, OP_ROUTES, canary, integrity),
 the 18-rule fix library and its ranking, the `mongodb` protection, the Pekko cluster in topology.md, the
-outage error rates of the default hypothesis, and the restart order of `faultline heal --restart`."""
+outage error rates of the default hypothesis, and the restart order of `break_point heal --restart`."""
 from __future__ import annotations
 
 import pytest
@@ -10,39 +10,39 @@ import yaml
 
 from conftest import APPS, COMPOSE, KNOWLEDGE, NGINX, PROBE, RULES, TARGET, THRESHOLDS  # noqa: E402
 
-from faultline.agents import fix
-from faultline.agents import knowledge as K
-from faultline.chaos.catalog import CATALOG, applicable, entry_tier
-from faultline.config import load_settings
-from faultline.observe import probes as P
-from faultline.planning.planner import Planner, Policy
-from faultline.remediation.catalog import protected_services
-from faultline.safety.thresholds import load_policy
-from faultline.schemas import RepoKnowledge
-from faultline.topology import quality
-from faultline.topology.graph import build, start_order, system_summary
-from faultline.topology.render import markdown
+from break_point.agents import fix
+from break_point.agents import knowledge as K
+from break_point.chaos.catalog import CATALOG, applicable, entry_tier
+from break_point.config import load_settings
+from break_point.observe import probes as P
+from break_point.planning.planner import Planner, Policy
+from break_point.remediation.catalog import protected_services
+from break_point.safety.thresholds import load_policy
+from break_point.schemas import RepoKnowledge
+from break_point.topology import quality
+from break_point.topology.graph import build, start_order, system_summary
+from break_point.topology.render import markdown
 
 # What the pre-split ThingsApiProbe sent, verbatim.
 OLD_OPS = ("get_thing", "put_property", "get_thing", "search", "get_property", "put_property", "get_thing", "search")
 OLD_ROUTES = {"get_thing": ["nginx", "gateway", "things"], "put_property": ["nginx", "gateway", "things"],
               "get_property": ["nginx", "gateway", "things"], "search": ["nginx", "gateway", "things-search"]}
-OLD_CANARY_BODY = {"attributes": {"kind": "faultline-canary"},
+OLD_CANARY_BODY = {"attributes": {"kind": "break_point-canary"},
                    "features": {"telemetry": {"properties": {"seq": 0, "temperature": 20.0}}}}
 
 
 # ---------------------------------------------------------------- the target resolves
-def test_faultline_target_ditto_resolves_every_file(monkeypatch):
-    for key in ("FAULTLINE_COMPOSE_FILE", "FAULTLINE_KNOWLEDGE_FILE", "FAULTLINE_PROBE_FILE", "FAULTLINE_RULES_FILE",
-                "FAULTLINE_NGINX_CONF", "FAULTLINE_COMPOSE_PROJECT", "TARGET_URL", "TARGET_USER", "TARGET_PASSWORD"):
+def test_break_point_target_ditto_resolves_every_file(monkeypatch):
+    for key in ("BREAK_POINT_COMPOSE_FILE", "BREAK_POINT_KNOWLEDGE_FILE", "BREAK_POINT_PROBE_FILE", "BREAK_POINT_RULES_FILE",
+                "BREAK_POINT_NGINX_CONF", "BREAK_POINT_COMPOSE_PROJECT", "TARGET_URL", "TARGET_USER", "TARGET_PASSWORD"):
         monkeypatch.setenv(key, "")
-    monkeypatch.setenv("FAULTLINE_TARGET", "ditto")
+    monkeypatch.setenv("BREAK_POINT_TARGET", "ditto")
     s = load_settings()
     assert s.target_error == "" and s.target_dir == TARGET
     assert (s.compose_file, s.nginx_conf, s.knowledge_file, s.probe_file, s.rules_file, s.thresholds_file) == tuple(
         str(p) for p in (COMPOSE, NGINX, KNOWLEDGE, PROBE, RULES, THRESHOLDS))
     assert (s.compose_project, s.target_url, s.target_user, s.target_password) == (
-        "faultline", "http://127.0.0.1:8080", "ditto", "ditto")
+        "break_point", "http://127.0.0.1:8080", "ditto", "ditto")
     assert s.remediation_override_file == str(TARGET / "deploy" / "docker-compose.override.yml")
 
 
@@ -79,10 +79,10 @@ def test_probe_sends_the_old_requests(ditto_topology):
     probe.send(spec.operations["put_property"], seq=7, session=Session())
     base = "http://127.0.0.1:8080/api/2"
     assert sent == [
-        ("GET", f"{base}/things/faultline.probe:canary", None, None),
-        ("GET", f"{base}/things/faultline.probe:canary/features/telemetry/properties/seq", None, None),
-        ("GET", f"{base}/search/things", {"filter": 'eq(attributes/kind,"faultline-canary")', "option": "size(1)"}, None),
-        ("PUT", f"{base}/things/faultline.probe:canary/features/telemetry/properties/seq", None, 7),
+        ("GET", f"{base}/things/break_point.probe:canary", None, None),
+        ("GET", f"{base}/things/break_point.probe:canary/features/telemetry/properties/seq", None, None),
+        ("GET", f"{base}/search/things", {"filter": 'eq(attributes/kind,"break_point-canary")', "option": "size(1)"}, None),
+        ("PUT", f"{base}/things/break_point.probe:canary/features/telemetry/properties/seq", None, 7),
     ]
     assert probe.auth == ("ditto", "ditto")
 
@@ -117,7 +117,7 @@ def test_masked_failure_fix_still_cites_issue_1865(make_report, ditto_topology):
 # ---------------------------------------------------------------- topology, protection, planning
 def test_real_compose_maps_as_before(ditto_topology):
     audit = quality.Audit()
-    audited = build(str(COMPOSE), "faultline", str(NGINX), str(KNOWLEDGE), live=False, audit=audit)
+    audited = build(str(COMPOSE), "break_point", str(NGINX), str(KNOWLEDGE), live=False, audit=audit)
     assert audit.issues == [] and (len(audited.services), len(audited.edges)) == (12, 21)
     db = ditto_topology.services["mongodb"]
     assert (db.engine, db.engine_evidence) == ("mongo", "image docker.io/mongo:7.0")
@@ -136,7 +136,7 @@ def test_mongodb_is_protected_and_degrade_only(ditto_topology):
 
 
 def test_planner_and_catalog_keep_the_old_ditto_behaviour(ditto_topology, monkeypatch):
-    monkeypatch.setenv("FAULTLINE_TARGET", "ditto")
+    monkeypatch.setenv("BREAK_POINT_TARGET", "ditto")
     s = load_settings()
     p = Planner(ditto_topology, Policy(load_policy(str(THRESHOLDS))), [], None, s, {"pumba", "tc"})
     rate = lambda svc: p.default_hypothesis(svc, CATALOG["container_stop"], {}).expected_max_error_rate  # noqa: E731

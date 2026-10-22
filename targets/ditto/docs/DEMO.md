@@ -1,4 +1,4 @@
-# Faultline: 6-minute live demo runbook
+# Break Point: 6-minute live demo runbook
 
 Audience: hackathon judges. Goal: show all five required steps (map, plan, inject safely, observe, report) plus a deliberately tripped kill switch, in six minutes, almost entirely on one screen.
 
@@ -10,20 +10,20 @@ The full six-minute sequence below does not fit a 3-minute video: the speaking b
 
 The same five steps, driven from the terminal with the CLI commands the control room runs underneath, so each one is a single command that is easy to cut around. The dashboard stays on screen for the kill switch and the results.
 
-Before recording: finish the pre-demo checklist, start the dashboard and the Guardian, and start the narrator in a fourth terminal (`faultline narrate --watch`); Terminal 3 is where you type the commands. If you want a dramatic `policies` result in the scorecard, run `faultline run --target policies --failure container_stop --param duration_s=30` off camera and let it write its report. Do not run it on camera; its recovery alone takes most of the budget.
+Before recording: finish the pre-demo checklist, start the dashboard and the Guardian, and start the narrator in a fourth terminal (`break_point narrate --watch`); Terminal 3 is where you type the commands. If you want a dramatic `policies` result in the scorecard, run `break_point run --target policies --failure container_stop --param duration_s=30` off camera and let it write its report. Do not run it on camera; its recovery alone takes most of the budget.
 
 | Time | Step (section below) | On screen | Budget |
 |---|---|---|---|
-| 0:00-0:20 | What you are looking at (shortened) | Faultline dashboard; one sentence on Ditto (nginx, gateway, four Java services in one Pekko cluster, one MongoDB) and Faultline | 20 s |
-| 0:20-0:50 | Step 1: `faultline topology` | Terminal 3: criticality table and the `mongodb: not referenced by any depends_on` finding | 30 s |
-| 0:50-1:20 | Step 2: `faultline plan` | Terminal 3: ranked candidates, the pick, rationale and hypothesis; "LLM proposes, code disposes" | 30 s |
-| 1:20-2:20 | Steps 3-4 + kill switch: `faultline run --target things --failure network_delay --param duration_s=60 --param delay_ms=1500` | Narrator shows `▶ injecting`; about 10 s later press STOP on the dashboard; narrator and report show `status: aborted`, `abort_reason: operator_stop` | 60 s on screen (about 70-80 s wall clock: trim the 20 s probe warm-up and the 20 s soak in the edit, or talk over them) |
-| 2:20-2:50 | Step 5: `faultline risk && faultline fix && faultline scorecard` | Terminal 3 output, then expand the experiment on the dashboard: risk level, findings, first fix recommendation (advisory). With a slow local model, add `--no-llm` to `risk` and `fix` to stay inside the budget | 30 s |
+| 0:00-0:20 | What you are looking at (shortened) | Break Point dashboard; one sentence on Ditto (nginx, gateway, four Java services in one Pekko cluster, one MongoDB) and Break Point | 20 s |
+| 0:20-0:50 | Step 1: `break_point topology` | Terminal 3: criticality table and the `mongodb: not referenced by any depends_on` finding | 30 s |
+| 0:50-1:20 | Step 2: `break_point plan` | Terminal 3: ranked candidates, the pick, rationale and hypothesis; "LLM proposes, code disposes" | 30 s |
+| 1:20-2:20 | Steps 3-4 + kill switch: `break_point run --target things --failure network_delay --param duration_s=60 --param delay_ms=1500` | Narrator shows `▶ injecting`; about 10 s later press STOP on the dashboard; narrator and report show `status: aborted`, `abort_reason: operator_stop` | 60 s on screen (about 70-80 s wall clock: trim the 20 s probe warm-up and the 20 s soak in the edit, or talk over them) |
+| 2:20-2:50 | Step 5: `break_point risk && break_point fix && break_point scorecard` | Terminal 3 output, then expand the experiment on the dashboard: risk level, findings, first fix recommendation (advisory). With a slow local model, add `--no-llm` to `risk` and `fix` to stay inside the budget | 30 s |
 | 2:50-3:00 | Close (one sentence) | Dashboard | 10 s |
 
-After recording: `faultline resume` to clear the STOP file.
+After recording: `break_point resume` to clear the STOP file.
 
-**Alternative for the 1:20-2:20 slot, no button press: an automatic threshold abort.** `faultline run --target things --failure container_crash --duration 30` shows the *automatic* stop the brief asks for ("stop if impact exceeds defined thresholds"). In the Day-2 verification run (experiment `1de6fb6a0969`, see [FINDINGS.md](FINDINGS.md#safety-the-kill-switch-fired-for-real)) the narrator showed `injected` at +0.8 s, `safety_abort — error_rate` (100% errors > 30% threshold) and `rollback_done` at +7.2-7.6 s, then `recovered` at +53.8 s after Docker restarted `things` and the 20 s soak passed. The abort itself is on screen within 10 s of launch; cut or talk over the recovery wait. `faultline resume` is not needed afterwards because no STOP file is written.
+**Alternative for the 1:20-2:20 slot, no button press: an automatic threshold abort.** `break_point run --target things --failure container_crash --duration 30` shows the *automatic* stop the brief asks for ("stop if impact exceeds defined thresholds"). In the Day-2 verification run (experiment `1de6fb6a0969`, see [FINDINGS.md](FINDINGS.md#safety-the-kill-switch-fired-for-real)) the narrator showed `injected` at +0.8 s, `safety_abort — error_rate` (100% errors > 30% threshold) and `rollback_done` at +7.2-7.6 s, then `recovered` at +53.8 s after Docker restarted `things` and the 20 s soak passed. The abort itself is on screen within 10 s of launch; cut or talk over the recovery wait. `break_point resume` is not needed afterwards because no STOP file is written.
 
 ## Setup
 
@@ -31,14 +31,14 @@ Three terminals, three browser tabs. Tab 1 is the demo; tabs 2 and 3 exist only 
 
 | Window | Command / URL | Started |
 |---|---|---|
-| Terminal 1 | `cd <repo> && . .venv/bin/activate && faultline dashboard` | before demo |
-| Terminal 2 | `cd <repo> && . .venv/bin/activate && faultline guardian` | before demo |
+| Terminal 1 | `cd <repo> && . .venv/bin/activate && break_point dashboard` | before demo |
+| Terminal 2 | `cd <repo> && . .venv/bin/activate && break_point guardian` | before demo |
 | Terminal 3 | `cd <repo> && . .venv/bin/activate` — left idle, with the onboarding commands in its history; only needed for the optional segment | before demo |
-| Browser tab 1 | **Faultline control room** http://127.0.0.1:8765 — full screen, this is the demo | before demo |
-| Browser tab 2 | Grafana http://127.0.0.1:3000 (home dashboard "Faultline — Ditto resilience", time range last 15 min, refresh 5 s) | before demo |
+| Browser tab 1 | **Break Point control room** http://127.0.0.1:8765 — full screen, this is the demo | before demo |
+| Browser tab 2 | Grafana http://127.0.0.1:3000 (home dashboard "Break Point — Ditto resilience", time range last 15 min, refresh 5 s) | before demo |
 | Browser tab 3 | Ditto UI http://127.0.0.1:8080/ui/ (basic auth from `.env`; the bundled stack uses `ditto` / `ditto`) | before demo |
 
-Leave the first two terminals visible but small — the Guardian terminal is a prop you will point at once. If you need a third port (a second browser on a projector, say) start the server explicitly: `python -m faultline.dashboard.server --port 8777`. It binds `127.0.0.1` only, so it is not reachable from another machine.
+Leave the first two terminals visible but small — the Guardian terminal is a prop you will point at once. If you need a third port (a second browser on a projector, say) start the server explicitly: `python -m break_point.dashboard.server --port 8777`. It binds `127.0.0.1` only, so it is not reachable from another machine.
 
 The control room needs no internet: no CDN, no web fonts, system font stack. Venue wifi being down does not affect it. A hosted LLM does need network — see the fallback below.
 
@@ -47,17 +47,17 @@ The control room needs no internet: no CDN, no web fonts, system font stack. Ven
 ```bash
 cd <repo> && . .venv/bin/activate
 
-scripts/up.sh                                  # bundled stack only (skip when attaching via FAULTLINE_COMPOSE_PROJECT);
+scripts/up.sh                                  # bundled stack only (skip when attaching via BREAK_POINT_COMPOSE_PROJECT);
                                                # idempotent; waits for /health = UP (cold start ~2 min)
-faultline heal --restart                       # reset: clear the lock, drop chaos leftovers and tc qdiscs,
+break_point heal --restart                       # reset: clear the lock, drop chaos leftovers and tc qdiscs,
                                                # restart the Ditto services in dependency order, wait for UP
-faultline resume                               # make sure no stale reports/STOP is latched
-faultline setup                                # Docker ok, stack ok, Pumba images present, prints "llm <provider>:<model>: available"
-faultline status                               # every container running, guardian offline (not started yet), no active experiment
-faultline approvals                            # expect "no decision is pending"; ADMIN_EMAIL is a placeholder, so the gate is unconfigured by design
+break_point resume                               # make sure no stale reports/STOP is latched
+break_point setup                                # Docker ok, stack ok, Pumba images present, prints "llm <provider>:<model>: available"
+break_point status                               # every container running, guardian offline (not started yet), no active experiment
+break_point approvals                            # expect "no decision is pending"; ADMIN_EMAIL is a placeholder, so the gate is unconfigured by design
 ```
 
-Read the `llm ...` line from `faultline setup` carefully. It is the single most common demo surprise:
+Read the `llm ...` line from `break_point setup` carefully. It is the single most common demo surprise:
 
 - `available` — the planner will use the model. Good.
 - `NOT available (LLM_API_KEY not set)` — a hosted provider is configured but has no key. Fill it in or plan to run deterministically; see the fallback section. At the time of writing, `.env` on the demo machine has `LLM_PROVIDER=openai` with the Groq base URL and model but an **empty** `LLM_API_KEY`, so out of the box the planner is deterministic.
@@ -66,42 +66,42 @@ Read the `llm ...` line from `faultline setup` carefully. It is the single most 
 Then capture the two slow things up front, because neither is worth 60 seconds of demo time:
 
 ```bash
-faultline topology                             # ~5 s; you will re-run this live anyway, it is the hook
-faultline baseline --duration 60               # expect success >= 99 % and no notes; note the p95: the latency abort is max(3000 ms, 5 x p95)
-faultline plan                                 # confirms the planner answers; warms a local model if you use one
+break_point topology                             # ~5 s; you will re-run this live anyway, it is the hook
+break_point baseline --duration 60               # expect success >= 99 % and no notes; note the p95: the latency abort is max(3000 ms, 5 x p95)
+break_point plan                                 # confirms the planner answers; warms a local model if you use one
 ```
 
 If you intend to run the optional onboarding segment, warm it now. The first clone needs network and the segment is only worth doing from a warm cache:
 
 ```bash
-mkdir -p /tmp/faultline-onboard
-cp config/ditto_knowledge.yaml /tmp/faultline-onboard/ditto_knowledge.hand.yaml   # insurance
+mkdir -p /tmp/break_point-onboard
+cp config/ditto_knowledge.yaml /tmp/break_point-onboard/ditto_knowledge.hand.yaml   # insurance
 
-faultline onboard eclipse-ditto/ditto \
-  --compare-to config/ditto_knowledge.yaml --out /tmp/faultline-onboard \
-  | tee /tmp/faultline-onboard/transcript.txt      # clone + one LLM call; 20-40 s cold, a few seconds warm
+break_point onboard eclipse-ditto/ditto \
+  --compare-to config/ditto_knowledge.yaml --out /tmp/break_point-onboard \
+  | tee /tmp/break_point-onboard/transcript.txt      # clone + one LLM call; 20-40 s cold, a few seconds warm
 
 export CF=.cache/onboarding/ditto/deployment/docker/docker-compose.yml
-FAULTLINE_COMPOSE_FILE=$CF FAULTLINE_REPORTS_DIR=/tmp/faultline-onboard/rep-human \
-  faultline topology --no-live --knowledge config/ditto_knowledge.yaml | sed -n '3,13p' \
-  > /tmp/faultline-onboard/rank-human.txt
-FAULTLINE_COMPOSE_FILE=$CF FAULTLINE_REPORTS_DIR=/tmp/faultline-onboard/rep-generated \
-  faultline topology --no-live --knowledge /tmp/faultline-onboard/ditto_knowledge.yaml | sed -n '3,13p' \
-  > /tmp/faultline-onboard/rank-generated.txt
-diff /tmp/faultline-onboard/rank-human.txt /tmp/faultline-onboard/rank-generated.txt && echo "IDENTICAL RANKING"
+BREAK_POINT_COMPOSE_FILE=$CF BREAK_POINT_REPORTS_DIR=/tmp/break_point-onboard/rep-human \
+  break_point topology --no-live --knowledge config/ditto_knowledge.yaml | sed -n '3,13p' \
+  > /tmp/break_point-onboard/rank-human.txt
+BREAK_POINT_COMPOSE_FILE=$CF BREAK_POINT_REPORTS_DIR=/tmp/break_point-onboard/rep-generated \
+  break_point topology --no-live --knowledge /tmp/break_point-onboard/ditto_knowledge.yaml | sed -n '3,13p' \
+  > /tmp/break_point-onboard/rank-generated.txt
+diff /tmp/break_point-onboard/rank-human.txt /tmp/break_point-onboard/rank-generated.txt && echo "IDENTICAL RANKING"
 ```
 
-Three things about that block. **`--out` is not optional**: the slug for `eclipse-ditto/ditto` is `ditto`, so the default `--out config` writes `config/ditto_knowledge.yaml` — the hand-authored file you are comparing against — and the write happens before the comparison, so you would destroy the ground truth and then score the file against itself. **The two `FAULTLINE_*` variables are not optional either**: they point the mapper at the cloned repository's own nine-service compose (which is what the 9/9 result is measured on) and send `topology.json` to a scratch directory, so `reports/`, the blackboard and the control room's map are untouched. And `--no-live` means no Docker is involved, so each of those two runs takes about a second.
+Three things about that block. **`--out` is not optional**: the slug for `eclipse-ditto/ditto` is `ditto`, so the default `--out config` writes `config/ditto_knowledge.yaml` — the hand-authored file you are comparing against — and the write happens before the comparison, so you would destroy the ground truth and then score the file against itself. **The two `BREAK_POINT_*` variables are not optional either**: they point the mapper at the cloned repository's own nine-service compose (which is what the 9/9 result is measured on) and send `topology.json` to a scratch directory, so `reports/`, the blackboard and the control room's map are untouched. And `--no-live` means no Docker is involved, so each of those two runs takes about a second.
 
-Leave Terminal 3 with those commands in its history; during the demo you press Up rather than typing. Keep `transcript.txt` as the fallback if the model is unavailable on the day. (If the console script is not installed in the venv, `python -m faultline ...` is the same program with the same flags.)
+Leave Terminal 3 with those commands in its history; during the demo you press Up rather than typing. Keep `transcript.txt` as the fallback if the model is unavailable on the day. (If the console script is not installed in the venv, `python -m break_point ...` is the same program with the same flags.)
 
 Decide what the judges should see in the Experiments table when the page loads. An empty table is honest but the scorecard panel is then empty too, and you will not have time to run three experiments live. Recommended: keep **one** rehearsal experiment on the board and say so out loud ("this one is from a rehearsal ten minutes ago; the next one is live"). To start completely clean instead: `make clean-reports`, then re-run `topology` and `baseline`.
 
 Finally, start the two processes and check the room:
 
 ```bash
-faultline dashboard            # Terminal 1
-faultline guardian             # Terminal 2
+break_point dashboard            # Terminal 1
+break_point guardian             # Terminal 2
 ```
 
 Open tab 1 and verify, in the header: the model pill (the model name, or `rules only` — hover it for the provider and, if it is unavailable, the reason), a green **Guardian** pill, and a probe pill. Click **Arm probes** in the Operations block at the bottom of the left panel — the probe pill switches from `disarmed` to a sample count that climbs by about four per second, and the telemetry chart starts drawing a flat green line. Leave it armed. You want 2–3 minutes of flat history on the chart before the judges arrive, so the fall is obvious.
@@ -109,10 +109,10 @@ Open tab 1 and verify, in the header: the model pill (the model name, or `rules 
 Optional but worth doing once per venue, on the actual projector resolution:
 
 ```bash
-python scripts/verify_ui.py --url http://127.0.0.1:8765 --out /tmp/faultline-ui --expand
+python scripts/verify_ui.py --url http://127.0.0.1:8765 --out /tmp/break_point-ui --expand
 ```
 
-It loads the page in a real Chrome at five widths, fails on console errors, horizontal overflow or undersized controls, and leaves screenshots in `/tmp/faultline-ui`. It needs `pip install playwright && playwright install chrome`, which is not a project dependency.
+It loads the page in a real Chrome at five widths, fails on console errors, horizontal overflow or undersized controls, and leaves screenshots in `/tmp/break_point-ui`. It needs `pip install playwright && playwright install chrome`, which is not a project dependency.
 
 Last checks: browser zoom so the feed text is legible from 3 m (110–125 % on a 1440 px laptop); Docker Desktop memory ≥ 4 GB; laptop on mains power; notifications and screen sleep off; terminal font 18+.
 
@@ -122,7 +122,7 @@ Everything below happens in tab 1 unless it says otherwise.
 
 ### 0:00–0:40  What you are looking at
 
-Say: "This is Eclipse Ditto — an open-source IoT digital-twin platform. nginx in front of a gateway, four Java services in one Pekko cluster, one MongoDB behind them. Public repo, EPL-2.0, Docker Compose, running entirely on this laptop with Prometheus and Grafana watching it. Faultline is the agent system that is going to break it on purpose, and this is its control room."
+Say: "This is Eclipse Ditto — an open-source IoT digital-twin platform. nginx in front of a gateway, four Java services in one Pekko cluster, one MongoDB behind them. Public repo, EPL-2.0, Docker Compose, running entirely on this laptop with Prometheus and Grafana watching it. Break Point is the agent system that is going to break it on purpose, and this is its control room."
 
 Press **E** (or click **Explain** in the header). Every panel opens a plain-English explanation of what it shows and why it matters.
 
@@ -149,8 +149,8 @@ The map you just rebuilt leans on one input the Compose file cannot provide: `co
 Switch to Terminal 3, full screen, and press Up to the prepared command:
 
 ```bash
-faultline onboard eclipse-ditto/ditto \
-  --compare-to config/ditto_knowledge.yaml --out /tmp/faultline-onboard
+break_point onboard eclipse-ditto/ditto \
+  --compare-to config/ditto_knowledge.yaml --out /tmp/break_point-onboard
 ```
 
 Say while it runs: "This is the onboarding agent. Give it any Docker Compose repository — a path, `owner/name`, a GitHub URL. It shallow-clones it, finds the compose file, finds the README and the architecture documentation the project ships, runs the same structural parsers you just watched, and then makes exactly one LLM call that is told what is already known and asked only for what Compose cannot express."
@@ -159,19 +159,19 @@ On screen, in order: `reusing cached checkout`; `ditto: 9 services, 13 structura
 
 Point at the compose line: "Note which file it picked — `deployment/docker/docker-compose.yml`, not the toy one at the repository root." Point at an evidence string: "Every edge has to say why, and it cites the document it came from." Point at the `survived validation` line: "Same contract as the planner. The model proposes; code decides. Edges naming a service that does not exist are dropped, roles have to be legal, the cluster alias has to be a real network alias in the Compose file, and the health port is derived from the Compose healthchecks in code and overrides whatever the model said. Everything thrown away is printed."
 
-One guard is worth naming out loud: "In Faultline the roles `ui` and `other` mean *excluded from chaos testing*. If a model labels a product's own web front-end a UI, it quietly exempts it from every experiment — so an override to `ui` or `other` is refused for any service this repository builds from source."
+One guard is worth naming out loud: "In Break Point the roles `ui` and `other` mean *excluded from chaos testing*. If a model labels a product's own web front-end a UI, it quietly exempts it from every experiment — so an override to `ui` or `other` is refused for any service this repository builds from source."
 
 Then the comparison block, which is the point of the segment. Read the four numbers off the JSON: `final_graph_coverage` 9/9, `roles.accuracy` 1.0, `health_port.match` true, `cluster_alias.match` true.
 
 Now the headline. Press Up three more times for the ranking commands, or scroll back if you ran them at T-30:
 
 ```bash
-diff /tmp/faultline-onboard/rank-human.txt /tmp/faultline-onboard/rank-generated.txt && echo "IDENTICAL RANKING"
+diff /tmp/break_point-onboard/rank-human.txt /tmp/break_point-onboard/rank-generated.txt && echo "IDENTICAL RANKING"
 ```
 
 No output, then `IDENTICAL RANKING`.
 
-Say: "Those are the two criticality tables — the mapper run against the human's knowledge file, and against the one the agent just wrote. Not similar: byte-identical, all nine services, same order, same scores. The generated file has fewer edges, because the agent was told not to restate what `depends_on` already declares, and the merged graph comes out the same. That ranking is what the planner breaks things by, so this is the number I care about: the agent reproduced a human's architecture reading well enough that Faultline makes the same decisions."
+Say: "Those are the two criticality tables — the mapper run against the human's knowledge file, and against the one the agent just wrote. Not similar: byte-identical, all nine services, same order, same scores. The generated file has fewer edges, because the agent was told not to restate what `depends_on` already declares, and the merged graph comes out the same. That ranking is what the planner breaks things by, so this is the number I care about: the agent reproduced a human's architecture reading well enough that Break Point makes the same decisions."
 
 Close it honestly: "It is a draft for review, not a fact — documented edges change what gets broken first, and the file carries a header saying which repo, which compose file and which model produced it. And it stays honest on repositories nobody tuned it for: run it against `dockersamples/example-voting-app` and it returns zero documented edges, because that Compose file already declares every dependency it has — it does not invent a Pekko cluster out of the Ditto example it was shown. What onboarding does not do is make the remediation rules or the protected-service policy generic; those are still Ditto-shaped."
 
@@ -200,7 +200,7 @@ Point, in this order:
 
 Then watch the ribbon move to Recover and then Soak. Say: "The fault is gone. Soak exists because a system can look recovered and then relapse — twenty more seconds of watching before it is allowed to claim recovery, and a relapse resets the clock."
 
-The findings are computed from what happened, not scripted, so do not promise a specific one. The one to hope for is a readiness finding: a service on the request path kept answering `/ready` = 200 while real requests through it were failing. A paused container counts as down, so for this run it is reported as `dependency_blind_readiness` (the services that depend on `things` stayed "ready"); `health_check_masked_failure` is the variant raised when the faulted service itself stays up and keeps answering `/ready`, as under a latency, packet-loss or CPU fault. If either appears, say: "That is the pattern behind Eclipse Ditto issue 1865 — readiness does not consider subsystem health. An orchestrator would have kept routing traffic at it. Faultline detects that automatically by comparing what the platform claims with what the synthetic client actually experienced."
+The findings are computed from what happened, not scripted, so do not promise a specific one. The one to hope for is a readiness finding: a service on the request path kept answering `/ready` = 200 while real requests through it were failing. A paused container counts as down, so for this run it is reported as `dependency_blind_readiness` (the services that depend on `things` stayed "ready"); `health_check_masked_failure` is the variant raised when the faulted service itself stays up and keeps answering `/ready`, as under a latency, packet-loss or CPU fault. If either appears, say: "That is the pattern behind Eclipse Ditto issue 1865 — readiness does not consider subsystem health. An orchestrator would have kept routing traffic at it. Break Point detects that automatically by comparing what the platform claims with what the synthetic client actually experienced."
 
 ### 3:30–4:15  The kill switch
 
@@ -210,11 +210,11 @@ Wait for the ribbon to reach Inject and the p95 line to climb — about 10 secon
 
 What the audience sees, in about a second: a red toast, "Kill switch fired — rolling back"; a red line in the feed, "KILL SWITCH: stop requested. The running experiment rolls back within ~1 s and the guardian restores anything still down."; the ribbon leaving Observe for Recover; the p95 line dropping back to the baseline; and the STOP button turning into **RESUME**. The abort reason itself (`operator_stop`) is not in the live feed — it is in the report, which you open in the next segment, under `safety.abort_reason` with `operator_stop: true` and `status: aborted`.
 
-Say: "The stop is a file on disk, `reports/STOP`. Three things watch for it independently: the safety monitor inside the experiment checks it every second and rolls back — here, remove the Pumba sidecar and delete the `tc` qdisc on the target; once the API has recovered and soaked, the report is written with `status: aborted` and `abort_reason: operator_stop`; and the Guardian over there has its own Docker client: on STOP it removes chaos helpers and restores anything down straight away, and if the injector process itself had died it would clean up once the deadline in `ACTIVE_EXPERIMENT.json` passed. We do not trust a single agent with the kill switch. The same file is written by `faultline stop` from any shell, or by `touch reports/STOP`."
+Say: "The stop is a file on disk, `reports/STOP`. Three things watch for it independently: the safety monitor inside the experiment checks it every second and rolls back — here, remove the Pumba sidecar and delete the `tc` qdisc on the target; once the API has recovered and soaked, the report is written with `status: aborted` and `abort_reason: operator_stop`; and the Guardian over there has its own Docker client: on STOP it removes chaos helpers and restores anything down straight away, and if the injector process itself had died it would clean up once the deadline in `ACTIVE_EXPERIMENT.json` passed. We do not trust a single agent with the kill switch. The same file is written by `break_point stop` from any shell, or by `touch reports/STOP`."
 
 If the latency threshold (max(3000 ms, 5 x baseline p95)) fires before you press STOP, the report reads `abort_reason: latency` instead: that is the automatic kill switch, so say so rather than pressing STOP.
 
-Click **RESUME** before moving on (or `faultline resume`): no new experiment starts while the STOP file exists, so the next launch would be refused.
+Click **RESUME** before moving on (or `break_point resume`): no new experiment starts while the STOP file exists, so the next launch would be refused.
 
 ### 4:15–5:15  Step 5: analyse and report
 
@@ -233,9 +233,9 @@ Then the **Resilience scorecard** panel: "Zero to a hundred per service, graded,
 
 ### 5:15–6:00  Close
 
-Say: "Everything you saw is on disk in `reports/` as JSON that validates against one set of Pydantic schemas — the control room and the CLI are two front ends over the same files, and every button maps to a `faultline` subcommand. Limits we know about: single node, Compose only, and Java cold start dominates crash recovery times, so a killed Ditto service mostly measures JVM boot. Next: a Kubernetes backend, OpenTelemetry traces so cascades are attributed per hop instead of inferred, and a regression mode that re-runs an experiment after a fix and reports the delta."
+Say: "Everything you saw is on disk in `reports/` as JSON that validates against one set of Pydantic schemas — the control room and the CLI are two front ends over the same files, and every button maps to a `break_point` subcommand. Limits we know about: single node, Compose only, and Java cold start dominates crash recovery times, so a killed Ditto service mostly measures JVM boot. Next: a Kubernetes backend, OpenTelemetry traces so cascades are attributed per hop instead of inferred, and a regression mode that re-runs an experiment after a fix and reports the delta."
 
-If a judge asks about a human in the loop: "There is an approval gate, `faultline/agents/approval.py`. An experiment the protected-services policy would otherwise have needed `--allow-protected` for is held before injection while it emails one admin and waits for `APPROVE`, `APPROVE REDUCED`, `SKIP` or `STOP RUN` on the first line of the reply; after a high or critical result it asks again with `FIX <n>`, `WAIT` or `CONTINUE`. The vocabulary is closed, so nothing has to guess what the admin meant, and `APPROVE REDUCED` halves duration and intensity with the catalog's own bounds still clamping the result — no raw parameter ever arrives by email. The wait is 120 s on an independent watchdog, and a timeout, an unreachable mailbox or a missing credential all apply the safe default: skip before an injection, continue after one. A gate that cannot reach the admin never becomes a no-op that approves everything." Say plainly where it does and does not apply: it holds an experiment **you** picked that the policy would otherwise have refused, not one the planner proposed — a protected pair never enters the ranked list in the first place — and it is off unless `ADMIN_EMAIL` and the mail credentials are set, which on this machine they are not. `faultline approvals` shows that there is nothing pending, and nothing on the demo screen depends on it. Do not try to demonstrate it live: it waits up to 120 s for a reply.
+If a judge asks about a human in the loop: "There is an approval gate, `break_point/agents/approval.py`. An experiment the protected-services policy would otherwise have needed `--allow-protected` for is held before injection while it emails one admin and waits for `APPROVE`, `APPROVE REDUCED`, `SKIP` or `STOP RUN` on the first line of the reply; after a high or critical result it asks again with `FIX <n>`, `WAIT` or `CONTINUE`. The vocabulary is closed, so nothing has to guess what the admin meant, and `APPROVE REDUCED` halves duration and intensity with the catalog's own bounds still clamping the result — no raw parameter ever arrives by email. The wait is 120 s on an independent watchdog, and a timeout, an unreachable mailbox or a missing credential all apply the safe default: skip before an injection, continue after one. A gate that cannot reach the admin never becomes a no-op that approves everything." Say plainly where it does and does not apply: it holds an experiment **you** picked that the policy would otherwise have refused, not one the planner proposed — a protected pair never enters the ranked list in the first place — and it is off unless `ADMIN_EMAIL` and the mail credentials are set, which on this machine they are not. `break_point approvals` shows that there is nothing pending, and nothing on the demo screen depends on it. Do not try to demonstrate it live: it waits up to 120 s for a reply.
 
 Stop. Take questions with the control room on screen. If a judge asks whether any of this is specific to Ditto, that is the optional onboarding segment above: Terminal 3, one command, 60–90 seconds. If a judge asks to pick a target, switch to MANUAL and let them — the locked cards and clamped dials mean you cannot be talked into anything unsafe.
 
@@ -243,7 +243,7 @@ Stop. Take questions with the control room on screen. If a judge asks whether an
 
 **The model is slow, offline, or has no API key.** Turn off the LLM toggle next to the mode switch in the launcher (the UI equivalent of `--no-llm`), or just work in MANUAL mode, which does not consult the planner at all. The header pill reads `rules only` and its tooltip says why. Say it openly: "the model is optional by design — it picks from a list the code produced and the code validates the answer. Without it, the top-ranked candidate runs and the prose comes from templates. Every number in the risk score, the fix matching and the scorecard is computed either way." This is a feature to show, not a failure to hide. On the CLI the same switch is `--no-llm` on `plan`, `run` and `demo`.
 
-**The onboarding segment cannot run live.** It needs network for a first clone and a reachable model for the one LLM call, which is why the checklist pre-warms both: the clone is cached under `.cache/onboarding/`, and `/tmp/faultline-onboard/` holds the generated file, the transcript and the two ranking captures. If the model is down on the day, do not reach for `--no-llm` to rescue this segment — it runs the whole pipeline and writes a valid file, but with zero documented edges, so the comparison collapses to coverage 0.44 and F1 0.0. That proves the plumbing and undercuts the story. Instead `cat /tmp/faultline-onboard/transcript.txt` and `cat /tmp/faultline-onboard/ditto_knowledge.yaml`, then run the `diff` (which needs neither network nor a model), and say plainly that the file was generated half an hour ago by the command on screen. `--dry-run` is the other useful flag here: it prints and compares exactly as above and writes nothing, which is the safe way to demonstrate the command if a judge asks you to point it at a repository of their choosing.
+**The onboarding segment cannot run live.** It needs network for a first clone and a reachable model for the one LLM call, which is why the checklist pre-warms both: the clone is cached under `.cache/onboarding/`, and `/tmp/break_point-onboard/` holds the generated file, the transcript and the two ranking captures. If the model is down on the day, do not reach for `--no-llm` to rescue this segment — it runs the whole pipeline and writes a valid file, but with zero documented edges, so the comparison collapses to coverage 0.44 and F1 0.0. That proves the plumbing and undercuts the story. Instead `cat /tmp/break_point-onboard/transcript.txt` and `cat /tmp/break_point-onboard/ditto_knowledge.yaml`, then run the `diff` (which needs neither network nor a model), and say plainly that the file was generated half an hour ago by the command on screen. `--dry-run` is the other useful flag here: it prints and compares exactly as above and writes nothing, which is the safe way to demonstrate the command if a judge asks you to point it at a repository of their choosing.
 
 **Recovery is taking too long.** Expected for crash-type faults: Ditto's Java services need 60–120 s to restart and rejoin the Pekko cluster. Recovery waiting is capped by `recovery.timeout_seconds` in `config/thresholds.yaml` (currently 300 s), with automatic escalation at 50 % (150 s, restart the target) and 80 % (240 s, restart its direct dependents), and every such action is recorded against the score. While waiting: press **E** and read a panel explanation, or switch to tab 2 and talk through the Grafana panels. Do not launch a second experiment — the `ACTIVE_EXPERIMENT.json` lock and the single-job rule will refuse it with "already running".
 
@@ -251,21 +251,21 @@ Stop. Take questions with the control room on screen. If a judge asks whether an
 
 **The page looks wrong.** Reload it. All state lives in the server process: the probes keep running, and the first poll after a reload re-fetches the last 300 events, so even the feed comes back. If a toast says a module failed to load, the rest of the room still works — keep going and use the Experiments table instead of the graph or chart.
 
-**The page says it is offline.** The server died. Restart `faultline dashboard` in Terminal 1; note that this disarms the probes and empties the event log, so arm it again and expect an empty chart. Experiments already written to `reports/` are still there.
+**The page says it is offline.** The server died. Restart `break_point dashboard` in Terminal 1; note that this disarms the probes and empties the event log, so arm it again and expect an empty chart. Experiments already written to `reports/` are still there.
 
-**The stack is unhealthy before or during the demo.** In order of escalation: `faultline heal` (removes leftovers, unpauses, reconnects, starts anything stopped), `faultline heal --restart` (also restarts the Ditto services in dependency order — 1–2 min), `docker compose -f deploy/docker-compose.yml restart <service>` for a single sick service, `scripts/down.sh && scripts/up.sh` as a last resort at about 2–3 minutes. `faultline status` tells you which.
+**The stack is unhealthy before or during the demo.** In order of escalation: `break_point heal` (removes leftovers, unpauses, reconnects, starts anything stopped), `break_point heal --restart` (also restarts the Ditto services in dependency order — 1–2 min), `docker compose -f deploy/docker-compose.yml restart <service>` for a single sick service, `scripts/down.sh && scripts/up.sh` as a last resort at about 2–3 minutes. `break_point status` tells you which.
 
-**Pumba images missing (no network at the venue).** `faultline setup` pulls `gaiaadm/pumba` and `ghcr.io/alexei-led/pumba-alpine-nettools` in advance. Without them the network faults show up greyed out in the launcher with "missing helper image(s)" as the reason, and the planner drops them from the candidate list. Use **Process freeze (SIGSTOP)** on `things` for the kill-switch segment instead — it is just as visible and needs no helper image (the error-rate threshold may fire before you press STOP; the report then shows `abort_reason: error_rate`).
+**Pumba images missing (no network at the venue).** `break_point setup` pulls `gaiaadm/pumba` and `ghcr.io/alexei-led/pumba-alpine-nettools` in advance. Without them the network faults show up greyed out in the launcher with "missing helper image(s)" as the reason, and the planner drops them from the candidate list. Use **Process freeze (SIGSTOP)** on `things` for the kill-switch segment instead — it is just as visible and needs no helper image (the error-rate threshold may fire before you press STOP; the report then shows `abort_reason: error_rate`).
 
 **Docker or the laptop fails entirely.** Keep a rehearsal copy of a full blackboard: after a good dry run, `cp -r reports reports.rehearsal`. If live injection becomes impossible, `cp -r reports.rehearsal/. reports/`, reload the control room and walk through the map, the experiments table, the fixes and the scorecard from the captured reports. Say plainly that it is a rehearsal capture and that nothing is running.
 
 ## Reset between demo slots
 
 ```bash
-faultline resume                                       # clear any latched STOP
-faultline heal --restart                               # lock, leftovers, qdiscs, restart in dependency order, wait for UP
+break_point resume                                       # clear any latched STOP
+break_point heal --restart                               # lock, leftovers, qdiscs, restart in dependency order, wait for UP
 make clean-reports                                     # optional: empty the blackboard
-faultline topology && faultline baseline --duration 60 # only needed if you cleaned the reports
+break_point topology && break_point baseline --duration 60 # only needed if you cleaned the reports
 ```
 
-Then, in the control room: reload the page, **Arm probes**, and let the chart build a couple of minutes of flat history before the next slot. Restarting `faultline dashboard` is not required between slots and costs you that history, so do not.
+Then, in the control room: reload the page, **Arm probes**, and let the chart build a couple of minutes of flat history before the next slot. Restarting `break_point dashboard` is not required between slots and costs you that history, so do not.

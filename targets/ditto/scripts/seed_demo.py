@@ -1,10 +1,10 @@
 """Seed a fake but schema-valid blackboard so the control room can be shown without Docker.
 
-    FAULTLINE_TARGET=ditto .venv/bin/python targets/ditto/scripts/seed_demo.py [--out targets/ditto/reports-demo]
-    .venv/bin/python -m faultline.dashboard.server --reports targets/ditto/reports-demo --port 8790
+    BREAK_POINT_TARGET=ditto .venv/bin/python targets/ditto/scripts/seed_demo.py [--out targets/ditto/reports-demo]
+    .venv/bin/python -m break_point.dashboard.server --reports targets/ditto/reports-demo --port 8790
 
 Topology comes from the real static builder (compose + env scan + nginx, no docker), every report is
-built through faultline.schemas, and risk, fixes and the scorecard are derived by the real agents with
+built through break_point.schemas, and risk, fixes and the scorecard are derived by the real agents with
 the LLM disabled. Experiment ids are fixed, so re-running overwrites instead of piling up.
 """
 from __future__ import annotations
@@ -20,22 +20,22 @@ from typing import Any, Optional
 TARGET = Path(__file__).resolve().parents[1]
 ROOT = TARGET.parents[1]
 sys.path.insert(0, str(ROOT))
-os.environ["FAULTLINE_TARGET"] = TARGET.name   # the stories below are about this target's services
+os.environ["BREAK_POINT_TARGET"] = TARGET.name   # the stories below are about this target's services
 
-from faultline.agents import fix, risk, scorecard  # noqa: E402
-from faultline.agents.knowledge import rules_for  # noqa: E402
-from faultline.chaos.catalog import CATALOG, clamp, reproduce_commands  # noqa: E402
-from faultline.config import load_settings  # noqa: E402
-from faultline.observe.baseline import to_markdown as baseline_markdown  # noqa: E402
-from faultline.reporting.markdown import experiment_markdown  # noqa: E402
-from faultline.reporting.store import ReportStore  # noqa: E402
-from faultline.safety.thresholds import load_policy, thresholds_from  # noqa: E402
-from faultline.schemas import (  # noqa: E402
+from break_point.agents import fix, risk, scorecard  # noqa: E402
+from break_point.agents.knowledge import rules_for  # noqa: E402
+from break_point.chaos.catalog import CATALOG, clamp, reproduce_commands  # noqa: E402
+from break_point.config import load_settings  # noqa: E402
+from break_point.observe.baseline import to_markdown as baseline_markdown  # noqa: E402
+from break_point.reporting.markdown import experiment_markdown  # noqa: E402
+from break_point.reporting.store import ReportStore  # noqa: E402
+from break_point.safety.thresholds import load_policy, thresholds_from  # noqa: E402
+from break_point.schemas import (  # noqa: E402
     Baseline, ExperimentReport, Finding, HealthSummary, Hypothesis, HypothesisResult, RecoveryOutcome,
     SafetyOutcome, Thresholds, TimelineEvent, Topology, WindowStats,
 )
-from faultline.topology.graph import build as build_topology  # noqa: E402
-from faultline.topology.render import markdown as topology_markdown  # noqa: E402
+from break_point.topology.graph import build as build_topology  # noqa: E402
+from break_point.topology.render import markdown as topology_markdown  # noqa: E402
 
 # mirrors the synthetic probe's operation mix (3:2:2:1) and its rough per-operation latency spread
 OPS = (("get_thing", 3, 0.85, "200"), ("put_property", 2, 0.9, "204"), ("search", 2, 1.1, "200"), ("get_property", 1, 0.6, "200"))
@@ -43,7 +43,7 @@ MASKED = "/ready OK 100% of {n} checks while API success was 0%; cf. Ditto issue
 
 
 def eid(name: str) -> str:
-    return hashlib.sha1(f"faultline-demo:{name}".encode()).hexdigest()[:12]
+    return hashlib.sha1(f"break_point-demo:{name}".encode()).hexdigest()[:12]
 
 
 def window(n: int, failures: int = 0, p50: Optional[float] = None, p95: Optional[float] = None,
@@ -347,7 +347,7 @@ def seed(out_dir: Path, now: datetime) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Seed a demo blackboard for the Faultline control room (no Docker needed)")
+    p = argparse.ArgumentParser(description="Seed a demo blackboard for the Break Point control room (no Docker needed)")
     p.add_argument("--out", default=str(TARGET / "reports-demo"), help="target directory (default targets/ditto/reports-demo/)")
     a = p.parse_args(argv)
     out = Path(a.out)
@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in seed(out, datetime.now(timezone.utc)):
         print(line)
     print(f"wrote {out}")
-    print(f"serve it: .venv/bin/python -m faultline.dashboard.server --reports {os.path.relpath(out, ROOT)} --port 8790")
+    print(f"serve it: .venv/bin/python -m break_point.dashboard.server --reports {os.path.relpath(out, ROOT)} --port 8790")
     return 0
 
 
