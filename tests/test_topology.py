@@ -1,10 +1,10 @@
 import pytest
 
-compose = pytest.importorskip("faultline.topology.compose")
-graph = pytest.importorskip("faultline.topology.graph")
-render = pytest.importorskip("faultline.topology.render")
+compose = pytest.importorskip("break_point.topology.compose")
+graph = pytest.importorskip("break_point.topology.graph")
+render = pytest.importorskip("break_point.topology.render")
 
-from faultline.schemas import Topology  # noqa: E402
+from break_point.schemas import Topology  # noqa: E402
 
 NGINX_CONF = """
 upstream gw { server gateway:8080; }

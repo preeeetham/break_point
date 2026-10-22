@@ -1,7 +1,7 @@
 # Defaults. Anything here can be overridden by the selected target (targets/<name>/target.yaml),
 # by .env (see .env.example) or by the environment. Nothing here names a target application:
-# choose one with FAULTLINE_TARGET, see docs/ONBOARDING_A_TARGET.md.
-compose_project: faultline
+# choose one with BREAK_POINT_TARGET, see docs/ONBOARDING_A_TARGET.md.
+compose_project: break_point
 target_url: http://127.0.0.1:8080
 prometheus_url: http://127.0.0.1:9090
 llm_provider: ollama

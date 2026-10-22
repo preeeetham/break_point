@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from faultline.remediation import catalog as C
-from faultline.remediation import override as ov
-from faultline.schemas import Finding
-from faultline.topology import datastores
-from faultline.topology.compose import load_compose
-from faultline.topology.graph import build
+from break_point.remediation import catalog as C
+from break_point.remediation import override as ov
+from break_point.schemas import Finding
+from break_point.topology import datastores
+from break_point.topology.compose import load_compose
+from break_point.topology.graph import build
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = ROOT / "tests" / "fixtures" / "shop"

@@ -256,7 +256,7 @@ class _Conn(socketserver.StreamRequestHandler):
 class _SMTPConn(_Conn):
     def converse(self) -> None:
         cfg = self.cfg
-        self._send(b"220 %s Faultline fake ESMTP ready\r\n" % HOST.encode())
+        self._send(b"220 %s Break Point fake ESMTP ready\r\n" % HOST.encode())
         authed = not cfg.require_auth
         mailfrom, rcpttos = "", []
         while True:
@@ -389,7 +389,7 @@ class FakeSMTPServer(_Base):
     _modes = frozenset({"auth", "data", "refuse"})
 
     def __init__(self, mailbox: FakeMailbox, *, require_auth: bool = True,
-                 user: str = "faultline", password: str = "secret",
+                 user: str = "break_point", password: str = "secret",
                  fail_with: str | None = None) -> None:
         super().__init__(mailbox, user=user, password=password, fail_with=fail_with)
         self.require_auth = require_auth
@@ -402,7 +402,7 @@ class FakeSMTPServer(_Base):
 class _IMAPConn(_Conn):
     def converse(self) -> None:
         cfg = self.cfg
-        self._send(b"* OK Faultline fake IMAP4rev1 ready\r\n")
+        self._send(b"* OK Break Point fake IMAP4rev1 ready\r\n")
         self.state = "NONAUTH"
         while True:
             tokens = self._read_command()
@@ -423,7 +423,7 @@ class _IMAPConn(_Conn):
             elif cmd == b"NOOP":
                 done = b"OK NOOP completed"
             elif cmd == b"LOGOUT":
-                self._send(b"* BYE Faultline fake IMAP signing off\r\n")
+                self._send(b"* BYE Break Point fake IMAP signing off\r\n")
                 self._send(b"%s OK LOGOUT completed\r\n" % tag)
                 return
             elif cmd == b"LOGIN":
@@ -649,7 +649,7 @@ class FakeIMAPServer(_Base):
     _handler = _IMAPConn
     _modes = frozenset({"login", "refuse"})
 
-    def __init__(self, mailbox: FakeMailbox, *, user: str = "faultline", password: str = "secret",
+    def __init__(self, mailbox: FakeMailbox, *, user: str = "break_point", password: str = "secret",
                  fail_with: str | None = None) -> None:
         super().__init__(mailbox, user=user, password=password, fail_with=fail_with)
 

@@ -1,7 +1,7 @@
 import pytest
 
-from faultline.chaos.catalog import CATALOG, applicable, clamp, entry_tier, reproduce_commands
-from faultline.schemas import ServiceNode
+from break_point.chaos.catalog import CATALOG, applicable, clamp, entry_tier, reproduce_commands
+from break_point.schemas import ServiceNode
 
 
 def test_every_failure_type_has_duration_param():

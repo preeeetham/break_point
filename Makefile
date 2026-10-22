@@ -1,14 +1,14 @@
-# Faultline developer shortcuts. Every target assumes the repo root as cwd.
+# Break Point developer shortcuts. Every target assumes the repo root as cwd.
 #
-#   make venv      create .venv and install faultline in editable mode
-#   make up        start the selected target's stack (FAULTLINE_TARGET) and wait until it is healthy
+#   make venv      create .venv and install break_point in editable mode
+#   make up        start the selected target's stack (BREAK_POINT_TARGET) and wait until it is healthy
 #   make demo      topology -> baseline -> run -> risk -> fix -> scorecard -> narrate
 #
 # Override the experiment count with N=5, the LLM with LLM=--no-llm, etc.
 
 VENV      ?= .venv
 PY        ?= $(VENV)/bin/python
-FAULTLINE ?= $(VENV)/bin/faultline
+BREAK_POINT ?= $(VENV)/bin/break_point
 N         ?= 3
 LLM       ?=
 PORT      ?= 8765
@@ -31,28 +31,28 @@ status:
 	scripts/status.sh
 
 target:
-	$(FAULTLINE) target
+	$(BREAK_POINT) target
 
 setup:
-	$(FAULTLINE) setup
+	$(BREAK_POINT) setup
 
 topology:
-	$(FAULTLINE) topology
+	$(BREAK_POINT) topology
 
 baseline:
-	$(FAULTLINE) baseline
+	$(BREAK_POINT) baseline
 
 run:
-	$(FAULTLINE) run --experiments $(N) $(LLM)
+	$(BREAK_POINT) run --experiments $(N) $(LLM)
 
 demo:
-	$(FAULTLINE) demo --experiments $(N) $(LLM)
+	$(BREAK_POINT) demo --experiments $(N) $(LLM)
 
 dashboard:
-	$(FAULTLINE) dashboard --port $(PORT)
+	$(BREAK_POINT) dashboard --port $(PORT)
 
 guardian:
-	$(FAULTLINE) guardian
+	$(BREAK_POINT) guardian
 
 test:
 	$(PY) -m pytest -q

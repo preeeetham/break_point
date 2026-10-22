@@ -10,9 +10,9 @@ from typing import Any
 
 import pytest
 
-from faultline.reporting.store import ReportStore
-from faultline.safety.thresholds import load_policy, thresholds_from
-from faultline.schemas import (
+from break_point.reporting.store import ReportStore
+from break_point.safety.thresholds import load_policy, thresholds_from
+from break_point.schemas import (
     Criticality,
     Edge,
     ExperimentReport,

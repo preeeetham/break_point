@@ -4,7 +4,7 @@
 Loads the dashboard in a real Chrome, fails on console errors or failed requests, screenshots the
 documented breakpoints and reports anything that overflows horizontally.
 
-    .venv/bin/python scripts/verify_ui.py --url http://127.0.0.1:8777 --out /tmp/faultline-ui
+    .venv/bin/python scripts/verify_ui.py --url http://127.0.0.1:8777 --out /tmp/break_point-ui
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8777")
-    ap.add_argument("--out", default="/tmp/faultline-ui")
+    ap.add_argument("--out", default="/tmp/break_point-ui")
     ap.add_argument("--settle", type=float, default=3.5, help="seconds to let polling and modules settle")
     ap.add_argument("--expand", action="store_true", help="also expand the first experiment row")
     args = ap.parse_args()

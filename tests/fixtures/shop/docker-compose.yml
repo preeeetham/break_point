@@ -2,7 +2,7 @@
 # Scout and the remediation catalog meet every structure they handle in the wild. Never deployed: the
 # example/shop-* images do not exist. Five JVM services on one cluster alias behind nginx, one postgres
 # that no depends_on mentions (reached only through DB_HOST), a UI, and an observability stack.
-name: faultline
+name: break_point
 
 x-shop-java-opts: &shop-java-opts
   JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -XX:+UseContainerSupport -XX:MaxRAMPercentage=50 -XX:+UseG1GC -Dcluster.failure-detector.threshold=15.0 -Dcluster.failure-detector.acceptable-heartbeat-pause=20s

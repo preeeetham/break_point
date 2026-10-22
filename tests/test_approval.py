@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from faultline.config import Settings
-from faultline.schemas import ExperimentSpec, Hypothesis
+from break_point.config import Settings
+from break_point.schemas import ExperimentSpec, Hypothesis
 
 from .conftest import PROJECT, ROOT, SHOP
 from .fakemail import FakeIMAPServer, FakeMailbox, FakeSMTPServer
@@ -40,16 +40,16 @@ def settings(tmp_path, mail) -> Settings:
     return Settings(
         compose_project=PROJECT, reports_dir=str(tmp_path / "reports"),
         thresholds_file=str(SHOP / "thresholds.yaml"), llm_enabled=False,
-        admin_email=ADMIN, smtp_host=smtp.host, smtp_port=smtp.port, smtp_user="faultline",
-        smtp_password="secret", smtp_from="faultline@example.invalid", smtp_starttls=False,
-        imap_host=imap.host, imap_port=imap.port, imap_user="faultline", imap_password="secret",
+        admin_email=ADMIN, smtp_host=smtp.host, smtp_port=smtp.port, smtp_user="break_point",
+        smtp_password="secret", smtp_from="break_point@example.invalid", smtp_starttls=False,
+        imap_host=imap.host, imap_port=imap.port, imap_user="break_point", imap_password="secret",
         imap_ssl=False, approval_timeout_s=5.0, approval_poll_s=0.05,
     )
 
 
 @pytest.fixture
 def agent(settings, tmp_store):
-    from faultline.agents.approval import ApprovalAgent
+    from break_point.agents.approval import ApprovalAgent
 
     # tmp_store's root and settings.reports_dir are different tmp dirs; use the store explicitly.
     return ApprovalAgent(settings, tmp_store, log=lambda m: None)
@@ -87,7 +87,7 @@ def answer(mailbox: FakeMailbox, body: str, *, after: float = 0.0) -> threading.
 
 # ---------------------------------------------------------------- configuration check
 def test_preflight_names_every_unset_variable():
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     issues = approval.preflight(Settings())
     joined = " | ".join(issues)
     for var in ("ADMIN_EMAIL", "SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "IMAP_HOST", "IMAP_USER",
@@ -99,7 +99,7 @@ def test_preflight_names_every_unset_variable():
 
 
 def test_unconfigured_gate_fails_safe_to_skip_and_never_approves(tmp_store):
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     agent = approval.ApprovalAgent(Settings(), tmp_store, log=lambda m: None)
     assert agent.available() is False
     decision = agent.request_pre_injection(_spec())
@@ -133,7 +133,7 @@ def test_request_sends_a_real_email_carrying_every_planner_fact(agent, mailbox, 
     assert "SKIP is applied" in body                 # the timeout default is stated up front
     # the correlation token is in the subject, and is what the reply was matched on
     token = tmp_store.approvals()[0].token
-    assert token in msg["Subject"] and token.startswith("FL-")
+    assert token in msg["Subject"] and token.startswith("BP-")
 
 
 def test_credentials_never_reach_the_blackboard(agent, mailbox, tmp_store, settings):
@@ -147,7 +147,7 @@ def test_credentials_never_reach_the_blackboard(agent, mailbox, tmp_store, setti
 
 
 def test_send_failure_fails_safe_rather_than_approving(mailbox, tmp_store, settings):
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     with FakeSMTPServer(mailbox, fail_with="refuse") as dead:
         settings.smtp_host, settings.smtp_port = dead.host, dead.port
         agent = approval.ApprovalAgent(settings, tmp_store, log=lambda m: None)
@@ -160,7 +160,7 @@ def test_send_failure_fails_safe_rather_than_approving(mailbox, tmp_store, setti
 
 def test_unreachable_mailbox_times_out_to_the_safe_default(mailbox, tmp_store, settings):
     """Sending works, reading does not. Scenario A must still refuse to proceed."""
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     with FakeIMAPServer(mailbox, fail_with="refuse") as dead:
         settings.imap_host, settings.imap_port = dead.host, dead.port
         settings.approval_timeout_s = 1.0
@@ -230,8 +230,8 @@ def test_a_valid_reply_after_a_malformed_one_is_still_honoured(agent, mailbox):
 def test_a_reply_to_another_decision_is_ignored(agent, mailbox):
     """Matching is by correlation token, never by "the newest unread mail"."""
     agent.s.approval_timeout_s = 1.5
-    unrelated = ("From: someone@example.invalid\r\nTo: faultline@example.invalid\r\n"
-                 "Subject: [Faultline FL-00000000] approval needed: something else\r\n"
+    unrelated = ("From: someone@example.invalid\r\nTo: break_point@example.invalid\r\n"
+                 "Subject: [Break Point BP-00000000] approval needed: something else\r\n"
                  "Message-ID: <other@example.invalid>\r\n\r\nAPPROVE\r\n").encode()
     mailbox.append(unrelated)
     decision = agent.request_pre_injection(_spec())
@@ -309,9 +309,9 @@ def test_pending_file_is_written_while_waiting_and_cleared_after(agent, mailbox,
 
 
 def test_resend_keeps_the_same_token(agent, mailbox, tmp_store, settings):
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     req = agent._open("pre_injection", "exp-approval", "postgres", "container_crash")
-    req.subject, req.sent = f"[Faultline {req.token}] approval needed", True
+    req.subject, req.sent = f"[Break Point {req.token}] approval needed", True
     tmp_store.set_pending_approval(req)
     assert agent.resend(req.approval_id) is True
     assert agent.resend("not-the-pending-one") is False
@@ -343,7 +343,7 @@ def test_reduction_is_clamped_up_to_the_catalog_minimum_and_recorded(agent, mail
 
 
 def test_gate_applies_the_reduction_to_the_spec_the_injector_will_run(settings, tmp_store, mailbox):
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     spec = _spec()
     answer(mailbox, "APPROVE REDUCED")
     decision = approval.gate(settings, tmp_store, spec, log=lambda m: None)
@@ -363,8 +363,8 @@ def test_stop_run_writes_the_existing_stop_file(agent, mailbox, tmp_store):
 
 # ---------------------------------------------------------------- scenario B
 def test_problem_trigger_fires_on_severity_and_on_remediation(make_report, topology):
-    approval = pytest.importorskip("faultline.agents.approval")
-    risk_agent = pytest.importorskip("faultline.agents.risk")
+    approval = pytest.importorskip("break_point.agents.approval")
+    risk_agent = pytest.importorskip("break_point.agents.risk")
 
     quiet = make_report(during_success=1.0, ttr=2.0)
     fire, _ = approval.problem_occurred(quiet, risk_agent.assess(quiet, topology, None))
@@ -383,9 +383,9 @@ def test_problem_trigger_fires_on_severity_and_on_remediation(make_report, topol
 
 
 def test_problem_email_reuses_the_other_agents_output(agent, mailbox, tmp_store, make_report, topology):
-    narrator = pytest.importorskip("faultline.agents.narrator")
-    risk_agent = pytest.importorskip("faultline.agents.risk")
-    fix_agent = pytest.importorskip("faultline.agents.fix")
+    narrator = pytest.importorskip("break_point.agents.narrator")
+    risk_agent = pytest.importorskip("break_point.agents.risk")
+    fix_agent = pytest.importorskip("break_point.agents.fix")
 
     report = make_report(during_success=0.0, finding_codes=["health_check_masked_failure"])
     tmp_store.write_experiment(report)
@@ -409,8 +409,8 @@ def test_problem_email_reuses_the_other_agents_output(agent, mailbox, tmp_store,
 
 def test_chosen_fix_is_recorded_on_the_report_and_applies_nothing(agent, mailbox, tmp_store, make_report,
                                                                   topology):
-    risk_agent = pytest.importorskip("faultline.agents.risk")
-    fix_agent = pytest.importorskip("faultline.agents.fix")
+    risk_agent = pytest.importorskip("break_point.agents.risk")
+    fix_agent = pytest.importorskip("break_point.agents.fix")
 
     report = make_report(during_success=0.0, finding_codes=["health_check_masked_failure"])
     tmp_store.write_experiment(report)
@@ -458,7 +458,7 @@ def test_scenario_b_times_out_to_continue_never_to_wait(agent, tmp_store, make_r
 
 def test_run_post_experiment_is_silent_when_nothing_is_wrong(settings, tmp_store, make_report, topology,
                                                              mailbox):
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     tmp_store.write_topology(topology)
     quiet = make_report(during_success=1.0, ttr=2.0, finding_codes=[])
     tmp_store.write_experiment(quiet)
@@ -469,7 +469,7 @@ def test_run_post_experiment_is_silent_when_nothing_is_wrong(settings, tmp_store
 def test_run_post_experiment_fires_without_the_risk_agent_having_run(settings, tmp_store, make_report,
                                                                      topology, mailbox):
     """The trigger must not silently depend on `--analyze` having been passed."""
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     tmp_store.write_topology(topology)
     severe = make_report(during_success=0.0, finding_codes=["health_check_masked_failure"])
     tmp_store.write_experiment(severe)
@@ -505,7 +505,7 @@ class _StoreWithScout:
 
 
 def test_scout_hook_is_inert_until_the_scout_runs(tmp_store):
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     # No reports/weaknesses.json yet: the hook must simply answer None.
     assert approval.scout_predicted_severity(tmp_store, _spec()) is None
 
@@ -516,9 +516,9 @@ def test_scout_hook_is_inert_until_the_scout_runs(tmp_store):
 
 def test_scout_hook_reads_the_real_weakness_report(tmp_store):
     """The duck typing must match what the Weakness Scout actually writes, not just the stand-in."""
-    from faultline.schemas import PredictedWeakness, SuggestedExperiment, WeaknessReport
+    from break_point.schemas import PredictedWeakness, SuggestedExperiment, WeaknessReport
 
-    approval = pytest.importorskip("faultline.agents.approval")
+    approval = pytest.importorskip("break_point.agents.approval")
     tmp_store.write_weaknesses(WeaknessReport(project=PROJECT, compose_file="docker-compose.yml", weaknesses=[
         PredictedWeakness(
             weakness_id="w1", category="no_redundancy", services=["postgres"], title="single datastore",

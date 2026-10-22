@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from faultline import cli
-from faultline.agents import fix as fix_agent
-from faultline.config import Settings
-from faultline.remediation import catalog, override, propose
-from faultline.remediation import proposals as P
-from faultline.reporting.store import ReportStore
-from faultline.schemas import Finding, HealthSummary
-from faultline.topology.graph import build
+from break_point import cli
+from break_point.agents import fix as fix_agent
+from break_point.config import Settings
+from break_point.remediation import catalog, override, propose
+from break_point.remediation import proposals as P
+from break_point.reporting.store import ReportStore
+from break_point.schemas import Finding, HealthSummary
+from break_point.topology.graph import build
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = ROOT / "tests" / "fixtures" / "shop"
 COMPOSE = SHOP / "docker-compose.yml"
 NGINX = SHOP / "nginx" / "nginx.conf"
 KNOWLEDGE = SHOP / "shop_knowledge.yaml"
-PROJECT = "faultline-test"
+PROJECT = "break_point-test"
 EID = "exp-things-crash"
 
 
@@ -122,7 +122,7 @@ def test_proposals_have_code_built_preview_and_hash(settings, store, report):
         assert p.status == "pending" and p.rank == rank and p.ranked_by == "code"
         assert p.change_hash == P.change_hash(p.change_preview)
         assert p.change_preview == _expected_preview(settings, store, p)
-        assert p.audit[0].actor == "faultline" and "proposed by faultline" in p.audit[0].note
+        assert p.audit[0].actor == "break_point" and "proposed by break_point" in p.audit[0].note
         assert timedelta(seconds=1700) < p.expires_at - p.created_at <= timedelta(seconds=1801)
         assert store.proposal(p.proposal_id) == p
     orders = next(p for p in made if p.target_services == ["orders"])
@@ -153,7 +153,7 @@ def test_template_explanation_without_llm(settings, store, report):
         assert heading in md
     text = propose.render_text(p)
     assert p.change_preview.rstrip("\n") in text and p.change_hash in text
-    assert f"faultline approve {p.proposal_id}" in text and f"faultline reject {p.proposal_id}" in text
+    assert f"break_point approve {p.proposal_id}" in text and f"break_point reject {p.proposal_id}" in text
 
 
 def test_disabled_llm_is_never_called(settings, store, report):
@@ -266,12 +266,12 @@ def test_unknown_experiment_raises(settings, store):
 # ---------------------------------------------------------------- CLI
 @pytest.fixture
 def cli_env(monkeypatch, settings, store, report):
-    monkeypatch.setenv("FAULTLINE_REPORTS_DIR", settings.reports_dir)
-    monkeypatch.setenv("FAULTLINE_OVERRIDE_FILE", settings.remediation_override_file)
-    monkeypatch.setenv("FAULTLINE_COMPOSE_FILE", settings.compose_file)
-    monkeypatch.setenv("FAULTLINE_COMPOSE_PROJECT", PROJECT)
-    monkeypatch.setenv("FAULTLINE_KNOWLEDGE_FILE", settings.knowledge_file)
-    monkeypatch.setenv("FAULTLINE_LLM", "false")
+    monkeypatch.setenv("BREAK_POINT_REPORTS_DIR", settings.reports_dir)
+    monkeypatch.setenv("BREAK_POINT_OVERRIDE_FILE", settings.remediation_override_file)
+    monkeypatch.setenv("BREAK_POINT_COMPOSE_FILE", settings.compose_file)
+    monkeypatch.setenv("BREAK_POINT_COMPOSE_PROJECT", PROJECT)
+    monkeypatch.setenv("BREAK_POINT_KNOWLEDGE_FILE", settings.knowledge_file)
+    monkeypatch.setenv("BREAK_POINT_LLM", "false")
     return store
 
 
@@ -345,7 +345,7 @@ def test_cli_approve_hands_over_to_the_apply_engine(cli_env, monkeypatch, capsys
         st.write_proposal(q)
         return q
 
-    import faultline.remediation.apply as apply_mod
+    import break_point.remediation.apply as apply_mod
     monkeypatch.setattr(apply_mod, "apply_and_verify", fake_apply)
     assert cli.main(["approve", p.proposal_id, "--yes"]) == 0
     assert seen == {"pid": p.proposal_id, "allow": False}

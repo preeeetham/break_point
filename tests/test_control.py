@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import faultline.agents.approval as approval_mod
-import faultline.agents.scout as scout_mod
-import faultline.cli as cli
-import faultline.dashboard.control as control_mod
-from faultline.config import Settings
-from faultline.dashboard.control import (
+import break_point.agents.approval as approval_mod
+import break_point.agents.scout as scout_mod
+import break_point.cli as cli
+import break_point.dashboard.control as control_mod
+from break_point.config import Settings
+from break_point.dashboard.control import (
     TELEMETRY_SAMPLE_S,
     TELEMETRY_WINDOW_S,
     ControlPlane,
@@ -24,9 +24,9 @@ from faultline.dashboard.control import (
     Telemetry,
     infer_level,
 )
-from faultline.observe.window import SampleWindow
-from faultline.planning.planner import Policy
-from faultline.schemas import (
+from break_point.observe.window import SampleWindow
+from break_point.planning.planner import Policy
+from break_point.schemas import (
     PREDICTED_LABEL,
     CascadeAttribution,
     CascadeEdge,
@@ -36,8 +36,8 @@ from faultline.schemas import (
     SystemicPattern,
     WeaknessReport,
 )
-from faultline.safety.thresholds import thresholds_from
-from faultline.schemas import PRE_INJECTION_REPLIES, ApprovalDecision, ApprovalRequest, utcnow
+from break_point.safety.thresholds import thresholds_from
+from break_point.schemas import PRE_INJECTION_REPLIES, ApprovalDecision, ApprovalRequest, utcnow
 
 from .conftest import PROJECT, ROOT, SHOP
 
@@ -55,8 +55,8 @@ PREVIEW = ("--- deploy/docker-compose.override.yml\n+++ deploy/docker-compose.ov
 def make_proposal(proposal_id: str = "fx-0123456789", experiment_id: str = "exp-fix", preview: str = PREVIEW,
                   expires_in: float = 600.0, created_ago: float = 0.0, **kw):
     """A real FixProposal, hashed with proposals.change_hash, as the remediation engine would write it."""
-    from faultline.remediation import proposals as P
-    from faultline.schemas import FixProposal, ProposalExplanation
+    from break_point.remediation import proposals as P
+    from break_point.schemas import FixProposal, ProposalExplanation
 
     fields = dict(
         proposal_id=proposal_id, experiment_id=experiment_id, finding_code="health_check_masked_failure",
@@ -114,7 +114,7 @@ class FakeDocker:
 
 def make_session_cls(topology, policy_raw, built: list, delay: float = 0.0):
     class FakeSession:
-        """Stands in for faultline.cli.Session: no docker client, no probe threads."""
+        """Stands in for break_point.cli.Session: no docker client, no probe threads."""
 
         def __init__(self, s, store, need_probes=True, rebuild_topology=False):
             if delay:
@@ -505,7 +505,7 @@ def test_reconcile_job_without_a_scout_report_fails_clearly(control):
 
 def test_analyze_reconciles_after_every_run_and_survives_a_reconcile_error(control, tmp_store, make_report,
                                                                             topology, monkeypatch):
-    import faultline.agents.reconcile as reconcile_mod
+    import break_point.agents.reconcile as reconcile_mod
 
     tmp_store.write_topology(topology)
     tmp_store.write_experiment(make_report(service="orders", finding_codes=["health_check_masked_failure"]))
@@ -538,8 +538,8 @@ def test_control_room_planner_is_weakness_aware(control, tmp_store, topology):
 
 
 def test_baseline_job_drives_its_own_agent_entry(control, monkeypatch, make_report, thresholds):
-    import faultline.observe.baseline as baseline_mod
-    from faultline.schemas import Baseline, WindowStats, utcnow
+    import break_point.observe.baseline as baseline_mod
+    from break_point.schemas import Baseline, WindowStats, utcnow
 
     assert "baseline" in control_mod.AGENTS and control.state(0)["agents"]["baseline"]["state"] == "idle"
 
@@ -793,7 +793,7 @@ class FakeInjector:
 
 @pytest.fixture
 def injector(monkeypatch, make_report):
-    import faultline.agents.injector as injector_mod
+    import break_point.agents.injector as injector_mod
 
     monkeypatch.setattr(injector_mod, "Injector", FakeInjector)
     monkeypatch.setattr(FakeInjector, "instances", [])
@@ -843,7 +843,7 @@ def test_manual_run_uses_operator_plan_and_clears_stale_stop(control, injector, 
 # ---------------------------------------------------------------- approval gate (scenario A)
 def make_approval_request(**kw) -> ApprovalRequest:
     fields = dict(approval_id="7f3c1a9b4d02", scenario="pre_injection", experiment_id="exp0001",
-                  token="FL-1a2b3c4d", to="admin@example.test", target_service="postgres",
+                  token="BP-1a2b3c4d", to="admin@example.test", target_service="postgres",
                   failure_type="container_crash", created_at=utcnow(),
                   deadline=utcnow() + timedelta(seconds=90), timeout_s=90.0, default_on_timeout="skip",
                   options=list(PRE_INJECTION_REPLIES), sent=True)
@@ -921,7 +921,7 @@ def test_pending_approval_surfaces_in_state_and_degrades_to_none(control, tmp_st
     tmp_store.set_pending_approval(make_approval_request())
     pending = control.state(0)["pending_approval"]
     assert pending["approval_id"] == "7f3c1a9b4d02" and pending["scenario"] == "pre_injection"
-    assert pending["token"] == "FL-1a2b3c4d" and pending["status"] == "pending"
+    assert pending["token"] == "BP-1a2b3c4d" and pending["status"] == "pending"
     assert pending["default_on_timeout"] == "skip" and pending["decision"] is None
     assert 0 < pending["seconds_left"] <= 90
     tmp_store.pending_approval_file.write_text("{ not json")  # a half-written file must not break /api/state
@@ -1140,9 +1140,9 @@ def test_sampler_only_samples_once_armed(settings, tmp_store, sessions, monkeypa
 @pytest.fixture
 def fake_apply(monkeypatch):
     """Stands in for remediation.apply.apply_and_verify: approved -> applying -> applied -> verified."""
-    import faultline.remediation.apply as apply_mod
-    from faultline.remediation import proposals as P
-    from faultline.schemas import FixVerification, MetricComparison
+    import break_point.remediation.apply as apply_mod
+    from break_point.remediation import proposals as P
+    from break_point.schemas import FixVerification, MetricComparison
 
     calls: list[dict] = []
     # the room's Deps builder arms the session and may warm the probes up; that is its own test below
@@ -1154,11 +1154,11 @@ def fake_apply(monkeypatch):
         calls.append({"id": proposal_id, "allow_protected": allow_protected})
         p = store.proposal(proposal_id)
         if p.status != "approved":
-            P.note(p, "faultline", f"apply refused: proposal is {p.status}, not approved")
+            P.note(p, "break_point", f"apply refused: proposal is {p.status}, not approved")
             store.write_proposal(p)
             return p
         for to in ("applying", "applied", "verified"):
-            P.transition(p, to, "faultline")
+            P.transition(p, to, "break_point")
         p.verification = FixVerification(rerun_experiment_id="exp-rerun", targeted_metric="time_to_recover_s",
                                          outcome="verified", reason="recovered faster",
                                          comparisons=[MetricComparison(metric="time_to_recover_s", before=40.0,
@@ -1190,7 +1190,7 @@ def test_state_carries_proposals_summary_and_degrades(control, tmp_store):
 
 
 def test_fix_job_is_not_a_generic_job_and_needs_an_approved_proposal(control, tmp_store, fake_apply):
-    from faultline.remediation import proposals as P
+    from break_point.remediation import proposals as P
 
     assert "fix" in control_mod.JOB_KINDS and "fix" not in control_mod.GENERIC_JOB_KINDS
     tmp_store.write_proposal(make_proposal())
@@ -1210,12 +1210,12 @@ def test_fix_job_is_not_a_generic_job_and_needs_an_approved_proposal(control, tm
 
 
 def test_fix_job_surfaces_an_apply_refusal_as_a_failed_job(control, tmp_store, monkeypatch):
-    import faultline.remediation.apply as apply_mod
-    from faultline.remediation import proposals as P
+    import break_point.remediation.apply as apply_mod
+    from break_point.remediation import proposals as P
 
     def refuse(settings, store, proposal_id, allow_protected=False, log=print, **kw):
         p = store.proposal(proposal_id)
-        P.note(p, "faultline", "apply refused: this fix touches protected service(s) postgres")
+        P.note(p, "break_point", "apply refused: this fix touches protected service(s) postgres")
         store.write_proposal(p)
         return p
 
@@ -1230,7 +1230,7 @@ def test_fix_job_surfaces_an_apply_refusal_as_a_failed_job(control, tmp_store, m
 
 
 def test_fix_job_refuses_while_stop_is_latched(control, tmp_store, fake_apply):
-    from faultline.remediation import proposals as P
+    from break_point.remediation import proposals as P
 
     tmp_store.write_proposal(make_proposal())
     P.approve(tmp_store, "fx-0123456789", P.change_hash(PREVIEW), "test")
@@ -1241,7 +1241,7 @@ def test_fix_job_refuses_while_stop_is_latched(control, tmp_store, fake_apply):
 
 
 def test_approve_starts_the_apply_or_says_the_slot_is_busy(control, tmp_store, fake_apply, monkeypatch):
-    from faultline.remediation import proposals as P
+    from break_point.remediation import proposals as P
 
     tmp_store.write_proposal(make_proposal("fx-a"))
     tmp_store.write_proposal(make_proposal("fx-b"))
@@ -1266,8 +1266,8 @@ def test_approve_starts_the_apply_or_says_the_slot_is_busy(control, tmp_store, f
 
 def test_analyze_builds_proposals_for_findings_above_info_and_never_fails(control, tmp_store, make_report,
                                                                           topology, monkeypatch):
-    import faultline.remediation.propose as propose_mod
-    from faultline.schemas import Finding
+    import break_point.remediation.propose as propose_mod
+    from break_point.schemas import Finding
 
     tmp_store.write_topology(topology)
     tmp_store.write_experiment(make_report(experiment_id="exp-high", service="orders",
@@ -1306,7 +1306,7 @@ def test_analyze_builds_proposals_for_findings_above_info_and_never_fails(contro
 
 
 def test_analyze_passes_the_llm_only_when_asked(control, tmp_store, make_report, topology, monkeypatch):
-    import faultline.remediation.propose as propose_mod
+    import break_point.remediation.propose as propose_mod
 
     tmp_store.write_topology(topology)
     tmp_store.write_experiment(make_report(experiment_id="exp-llm", service="orders",
@@ -1321,7 +1321,7 @@ def test_analyze_passes_the_llm_only_when_asked(control, tmp_store, make_report,
 
 
 def test_fix_deps_reuse_the_rooms_armed_session(control, sessions, monkeypatch, tmp_store, make_report, topology):
-    import faultline.remediation.apply as apply_mod
+    import break_point.remediation.apply as apply_mod
 
     waits: list = []
     monkeypatch.setattr(control._cancel, "wait", lambda t=None: waits.append(t) or False)

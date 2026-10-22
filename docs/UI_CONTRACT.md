@@ -1,6 +1,6 @@
-# Faultline Control Room — UI contract
+# Break Point Control Room — UI contract
 
-Single source of truth for the dashboard rewrite. Backend (`faultline/dashboard/control.py`,
+Single source of truth for the dashboard rewrite. Backend (`break_point/dashboard/control.py`,
 `server.py`) and every frontend module are written against this file. Do not deviate; if something
 is missing, add it here first.
 
@@ -55,7 +55,7 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
                "source":"system|topology|scout|planner|injector|guardian|risk|fix|scorecard|probe|approval",
                "text":"...", "data":{} } ],   // only events with seq > `since`, max 300
   "session": { "armed": false, "error": null, "probe": {"running":false,"rps":4.0,
-               "canary":"faultline.probe:canary","samples":0},
+               "canary":"break_point.probe:canary","samples":0},
                "project":"shop", "target_url":"http://127.0.0.1:8080" },
   "job": { "id":"j7", "kind":"run|topology|scout|baseline|analyze|heal|plan|onboard|reconcile|fix", "status":"running|done|failed|cancelled",
            "label":"Crash orders", "started_at":..., "ended_at":null, "error":null } ,  // or null
@@ -81,8 +81,8 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
   "stop_requested": false,
   "pending_approval": {          // a human is being waited on; null when nothing is open
     "approval_id":"7f3c1a9b4d02", "scenario":"pre_injection|problem_occurred",
-    "experiment_id":"ab12...", "token":"FL-1a2b3c4d", "message_id":"<...@faultline.local>",
-    "subject":"[Faultline FL-1a2b3c4d] approval needed: ...", "to":"admin@example.com",
+    "experiment_id":"ab12...", "token":"BP-1a2b3c4d", "message_id":"<...@break-point.local>",
+    "subject":"[Break Point BP-1a2b3c4d] approval needed: ...", "to":"admin@example.com",
     "target_service":"postgres", "failure_type":"container_crash",
     "created_at":"ISO", "deadline":"ISO", "timeout_s":120.0,
     "seconds_left":84.3,         // computed per poll; negative once the deadline has passed
@@ -156,7 +156,7 @@ The single polled snapshot. Poll 1000 ms idle, 400 ms while `run.phase` is not `
 ```
 
 ### 2.2 `PredictedWeakness`
-Mirrors `faultline.schemas.PredictedWeakness`. `predicted_level` shares `RiskAssessment.level`'s
+Mirrors `break_point.schemas.PredictedWeakness`. `predicted_level` shares `RiskAssessment.level`'s
 domain (`low|medium|high|critical`), so the UI tones it with `riskTone()` — but only ever inside a
 row whose provenance channel is `data-tone="violet"` (= AI-authored / not measured, §1).
 ```jsonc
@@ -175,8 +175,8 @@ row whose provenance channel is `data-tone="violet"` (= AI-authored / not measur
 ```
 
 ### 2.3 Cascade attribution
-Mirrors `faultline.schemas.CascadeAttribution` / `CascadeHop` / `CascadeEdge`, built deterministically
-by `faultline/observe/cascade.py` (timing + topology, no LLM). The full record is only in
+Mirrors `break_point.schemas.CascadeAttribution` / `CascadeHop` / `CascadeEdge`, built deterministically
+by `break_point/observe/cascade.py` (timing + topology, no LLM). The full record is only in
 `GET /api/experiment/<id>` as `experiment.cascade` (`null` on reports written before it existed, and
 on skipped runs); the polled summary carries just the two `cascade_*` keys of §2.1. During a run the
 injector writes the attribution so far into `live.json`, surfaced as `run.blast.cascade_edges` /
@@ -256,7 +256,7 @@ the same object as `state.pending_approval`; `decided` is the newest 20 closed r
 ```jsonc
 {"pending": <pending_approval> | null,
  "decided":[{"approval_id":"7f3c1a9b4d02","scenario":"pre_injection","experiment_id":"ab12...",
-             "token":"FL-1a2b3c4d","to":"admin@example.com","target_service":"postgres",
+             "token":"BP-1a2b3c4d","to":"admin@example.com","target_service":"postgres",
              "failure_type":"container_crash","created_at":"ISO","deadline":"ISO","timeout_s":120.0,
              "options":[...],"default_on_timeout":"skip","sent":true,"send_error":"","resends":0,
              "status":"answered|timed_out|failed","decision":{...}}]}
@@ -308,7 +308,7 @@ Points the room at another compose and/or knowledge file (e.g. one `onboard` jus
   decided by a human, see §2.5. Event `source` adds `fix` (apply progress) for the apply engine.
 
 ### 2.5 Fix proposals ("Can I fix this?")
-A `FixProposal` (`faultline/schemas.py`, lifecycle in `faultline/remediation/proposals.py`) is one
+A `FixProposal` (`break_point/schemas.py`, lifecycle in `break_point/remediation/proposals.py`) is one
 code-defined catalog fix for one finding, waiting on a human. Nothing is applied without an approval
 that quotes the `change_hash` of the change the human was shown; proposals expire and are never
 approved by default. Lifecycle: `pending → approved | rejected | expired`, `approved → applying | expired`,
@@ -377,7 +377,7 @@ its `llm` flag, and never fails because of it (`job.result.proposals` is the cou
 
 ## 3. Frontend module contract
 
-ES modules in `faultline/dashboard/static/`, loaded by `index.html` via
+ES modules in `break_point/dashboard/static/`, loaded by `index.html` via
 `<script type="module" src="/static/app.js">`. Every module is side-effect free on import and
 exports a factory that returns an object with at least `update(state)` and `destroy()`.
 

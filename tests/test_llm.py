@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from faultline.planning.llm import LLMClient, OllamaClient
+from break_point.planning.llm import LLMClient, OllamaClient
 
 
 class FakeResponse:
