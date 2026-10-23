@@ -5,11 +5,14 @@ evidence that exists in the collected data, proposes a fix from the Action API's
 executes through the Action API only, verifies recovery (rolling back and escalating if it fails), and writes a
 JSON + Markdown incident report.
 
-> **Hackathon rule.** The brief says "All code is written on the day, from 09:15; commits before then are not
-> allowed." This package is the rehearsal and blueprint, not a submission. See docs/REQUIREMENTS.md §7.
+> **Status.** Tested live on the full running demo for the brief's first three faults: payment failure passes end
+> to end; the intermittent cart failure is missed (needs per-operation alerting); the one-product catalog failure
+> did not reach telemetry in its run. Details and open gaps: [LIVE_RESULTS](docs/LIVE_RESULTS.md).
 
 Docs: [REQUIREMENTS](docs/REQUIREMENTS.md) · [CHECKPOINTS](docs/CHECKPOINTS.md) · [BUILD_LOG](docs/BUILD_LOG.md)
-(what is built and how) · [report schema](schema/incident_report.schema.json) · [brief](docs/hackathon_brief.json)
+(what is built and how) · [LIVE_RESULTS](docs/LIVE_RESULTS.md) · [report schema](schema/incident_report.schema.json)
+· [brief](docs/hackathon_brief.json) · real reports: [INC-0002](docs/live_reports/INC-0002.md),
+[INC-0003](docs/live_reports/INC-0003.md)
 
 ## Setup
 

@@ -188,4 +188,24 @@ name once per session; browser notifications for approvals; dry-run/live toggle 
   service's guarding flags off for application, CPU and memory faults (+ restart for leaks); throttle the load
   generator for floods; propose nothing and escalate, with the reason, when a limit or a detached network is the
   cause. Scenario truth updated accordingly.
-- The brief forbids code written before the event; see REQUIREMENTS §7.
+- The brief forbids code written before the event; see REQUIREMENTS §7 (the owner has since said this repository is
+  a staging area, so it does not apply here).
+
+### All services and the live runs (CP8)
+
+- Default stack is now every service: `compose.yaml` + `compose.full.yaml` (Kafka, accounting, fraud-detection) +
+  `compose.observability.yaml`; the topology merges all layers (28 services; Kafka counts as a datastore whose
+  clients are checkout, accounting, fraud-detection). It runs in 8 GB of Docker memory.
+- `practice/campaign.py` + `incident_zero practice campaign`: drives the running server's HTTP API like a human
+  (inject, approve every incident the fault causes, wait, revert, score) and writes results and an evaluation note.
+- Live runs exposed seven problems, all fixed (Jaeger v3, dotted log fields, low-traffic thresholds, consumer
+  silence, late alerts, false alarms, early revert). Results of brief faults 1–3, and the gaps still open, are in
+  LIVE_RESULTS.md; two real reports the agents produced are in `live_reports/`.
+
+### How a fix is chosen (and its limit)
+
+The agents do not read the codebase. The Planner sees the audited diagnosis, container facts from the evidence,
+the Action API's allowed actions, and `runbook.yaml` (service → flags guarding its code, written by hand from the
+demo's source). The model (or a rule table) picks; code validates; the API previews; a human approves. Fixes are
+operational (restart, flag off, throttle), never code patches. Picking a flag by name is what went wrong in fault
+3; a `code_search` tool over the demo source is the proposed next step.
