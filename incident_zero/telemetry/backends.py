@@ -340,18 +340,49 @@ class Topology:
         return sorted({s for s, d, _ in self.edges if d == svc})
 
 
+QUEUE_RE = ("kafka", "rabbitmq", "nats", "pulsar")
+
+
+def _deps(raw: Any) -> list[str]:
+    if isinstance(raw, dict):
+        return list(raw.keys())
+    return [str(x) for x in raw or []]
+
+
+def merge_compose(docs: list[dict]) -> dict:
+    """Layer compose files the way `docker compose -f a -f b` does, for what the topology needs: later files add
+    services, extend depends_on and environment, and override scalar keys."""
+    merged: dict = {"services": {}, "volumes": {}}
+    for doc in docs:
+        merged["volumes"].update(doc.get("volumes") or {})
+        for name, spec in (doc.get("services") or {}).items():
+            cur = merged["services"].setdefault(name, {})
+            for k, v in (spec or {}).items():
+                if k == "depends_on":
+                    cur[k] = sorted(set(_deps(cur.get(k))) | set(_deps(v)))
+                elif k == "environment":
+                    old = cur.get(k) or []
+                    old = [f"{a}={b}" for a, b in old.items()] if isinstance(old, dict) else list(old)
+                    new = [f"{a}={b}" for a, b in v.items()] if isinstance(v, dict) else list(v or [])
+                    cur[k] = old + [x for x in new if x not in old]
+                else:
+                    cur[k] = v
+    return merged
+
+
 def load_topology(compose_paths: list[str]) -> Topology:
-    """Reuses Break Point's compose parser on the first compose file (the demo's base compose.yaml)."""
+    """Every compose layer merged (base + full + observability), parsed with Break Point's compose parser. Message
+    brokers count as datastores: their consumers fail when they do."""
     from break_point.topology.compose import load_compose, service_nodes, static_edges
 
+    docs = [load_compose(p) for p in compose_paths if Path(p).is_file()]
+    if not docs:
+        return Topology()
+    compose = merge_compose(docs)
+    nodes = service_nodes(compose)
     topo = Topology()
-    for path in compose_paths[:1]:
-        if not Path(path).is_file():
-            continue
-        compose = load_compose(path)
-        nodes = service_nodes(compose)
-        topo.roles = {n: node.role for n, node in nodes.items()}
-        topo.edges = [(e.src, e.dst, e.evidence) for e in static_edges(compose, nodes)]
+    topo.roles = {n: ("datastore" if any(q in n for q in QUEUE_RE) else node.role) for n, node in nodes.items()}
+    topo.edges = [(e.src, e.dst, e.evidence) for e in static_edges(compose, nodes)]
     return topo
 
 

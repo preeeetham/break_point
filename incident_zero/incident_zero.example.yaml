@@ -4,7 +4,7 @@
 
 demo_dir: ~/Developer/opentelemetry-demo        # a checkout of open-telemetry/opentelemetry-demo
 compose_project: opentelemetry-demo
-compose_files: [compose.yaml, compose.observability.yaml]   # add compose.full.yaml for Kafka (needs more memory)
+compose_files: [compose.yaml, compose.full.yaml, compose.observability.yaml]   # every service incl. the Kafka group
 frontend_url: http://127.0.0.1:8080
 
 # Telemetry endpoints: leave empty to discover them from the running stack's published ports.

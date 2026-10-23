@@ -39,7 +39,9 @@ class Settings:
     practice_dir: str = ""                   # practice ground truth; default <repo>/.incident_zero_practice
     compose_project: str = "opentelemetry-demo"
     demo_dir: str = ""                       # a checkout of open-telemetry/opentelemetry-demo
-    compose_files: list[str] = field(default_factory=lambda: ["compose.yaml", "compose.observability.yaml"])
+    # every service: base + Kafka group + observability, in the demo Makefile's own order
+    compose_files: list[str] = field(default_factory=lambda: ["compose.yaml", "compose.full.yaml",
+                                                              "compose.observability.yaml"])
     frontend_url: str = "http://127.0.0.1:8080"
     prometheus_url: str = ""
     jaeger_url: str = ""
@@ -67,7 +69,8 @@ class Settings:
     verify_consecutive: int = 2
     kill_rollback_window_s: float = 600.0
     thresholds: Thresholds = field(default_factory=Thresholds)
-    ignore_services: list[str] = field(default_factory=lambda: ["load-generator", "telemetry-docs", "flagd-ui"])
+    ignore_services: list[str] = field(default_factory=lambda: ["load-generator", "telemetry-docs", "flagd-ui",
+                                                                "grafana", "opamp-server"])
     notify_email: str = ""                   # approval mail goes here when SMTP is configured in .env
     report_schema_file: str = ""             # the official report schema from the template repo; default: ours
     loadgen_url: str = ""                    # Locust web UI; default <frontend_url>/loadgen
