@@ -49,7 +49,8 @@ include = ["break_point*", "incident_zero*"]
 [tool.setuptools.package-data]
 "break_point.dashboard" = ["static/*.html", "static/*.css", "static/*.js", "static/*.svg"]
 "break_point" = ["../config/*.yaml", "../config/examples/*.yaml"]
-"incident_zero" = ["ui/dist/*", "ui/dist/assets/*", "practice/*.yaml", "*.example.yaml"]
+"incident_zero" = ["ui/dist/*", "ui/dist/assets/*", "practice/*.yaml", "*.example.yaml", "runbook.yaml",
+                   "schema/*.json"]
 
 [tool.pytest.ini_options]
 # targets/<name>/tests hold the tests that need one target's real files; they run with the core suite

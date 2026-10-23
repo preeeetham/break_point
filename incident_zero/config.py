@@ -69,6 +69,9 @@ class Settings:
     thresholds: Thresholds = field(default_factory=Thresholds)
     ignore_services: list[str] = field(default_factory=lambda: ["load-generator", "telemetry-docs", "flagd-ui"])
     notify_email: str = ""                   # approval mail goes here when SMTP is configured in .env
+    report_schema_file: str = ""             # the official report schema from the template repo; default: ours
+    loadgen_url: str = ""                    # Locust web UI; default <frontend_url>/loadgen
+    normal_load_users: int = 5               # the demo's LOCUST_USERS: what throttle_load_generator restores
 
     def path(self, name: str) -> Path:
         return Path(getattr(self, name)).expanduser().resolve()

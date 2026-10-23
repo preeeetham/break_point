@@ -75,6 +75,15 @@ class FlagFile:
                 return name
         return next(iter(variants))
 
+    def on_variant(self, flag: str) -> str:
+        variants = (self._read()["flags"][flag].get("variants") or {})
+        off = self.off_variant(flag)
+        if "on" in variants:
+            return "on"
+        if "100%" in variants:
+            return "100%"
+        return next((n for n in variants if n != off), off)
+
     def faulty(self, service: str) -> dict[str, str]:
         """Flags of this service's release that are not at their off variant."""
         current = self.variants()

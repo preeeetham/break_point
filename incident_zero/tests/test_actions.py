@@ -21,13 +21,13 @@ class FakeRuntime:
     def services(self):
         return {"cart", "payment", "valkey-cart"}
 
-    def restart_service(self, service, dry):
+    def restart_service(self, dry, service):
         self.calls.append(("restart", service, dry))
         return (f"would restart {service}" if dry else f"restarted {service}"), None
 
-    def update_resources(self, service, dry, cpus=None, memory_mb=None):
-        self.calls.append(("resources", service, dry))
-        return "updated", (None if dry else {"kind": "resources", "service": service, "prev": {}})
+    def toggle_feature_flag(self, dry, flag, enabled):
+        self.calls.append(("toggle", flag, dry))
+        return "toggled", (None if dry else {"kind": "flags", "prev": {flag: "on"}})
 
     def undo(self, undo):
         self.undone.append(undo)
@@ -51,8 +51,12 @@ def test_validate_refuses_unknown_actions_and_bad_params():
     assert validate("restart_service", {}, MOCK_ACTIONS) == ["missing required parameter 'service'"]
     assert "unknown service 'billing'" in validate("restart_service", {"service": "billing"}, MOCK_ACTIONS, services)
     assert "unexpected parameter 'force'" in validate("restart_service", {"service": "cart", "force": 1}, MOCK_ACTIONS)
-    assert "cpus above 4" in validate("update_resources", {"service": "cart", "cpus": 9}, MOCK_ACTIONS)
-    assert "update_resources needs cpus or memory_mb" in validate("update_resources", {"service": "cart"}, MOCK_ACTIONS)
+    assert "users above 500" in validate("throttle_load_generator", {"users": 9000}, MOCK_ACTIONS)
+    assert "enabled must be true or false" in validate("toggle_feature_flag", {"flag": "x", "enabled": "no"},
+                                                      MOCK_ACTIONS)
+    assert validate("toggle_feature_flag", {"flag": "paymentFailure", "enabled": False}, MOCK_ACTIONS, services) == []
+    assert {a.name for a in MOCK_ACTIONS} == {"restart_service", "toggle_feature_flag", "throttle_load_generator",
+                                              "scale_service"}
 
 
 def test_dry_run_changes_nothing(api_server):
@@ -71,7 +75,7 @@ def test_execute_requires_reason_and_known_service(api_server):
 
 def test_kill_blocks_and_rollback_undoes(api_server):
     client, rt, _ = api_server
-    r = client.execute("update_resources", {"service": "cart", "cpus": 1.0}, "starved", dry_run=False)
+    r = client.execute("toggle_feature_flag", {"flag": "cartFailure", "enabled": False}, "faulty path", dry_run=False)
     assert r.ok and r.execution_id
     assert client.rollback(r.execution_id).message == "restored"
     assert client.rollback(r.execution_id).message == "already rolled back"
@@ -87,14 +91,14 @@ def test_kill_blocks_and_rollback_undoes(api_server):
 
 def test_actions_list(api_server):
     client, _, _ = api_server
-    assert {a.name for a in client.actions()} >= {"restart_service", "start_service", "rollback_release"}
+    assert {a.name for a in client.actions()} >= {"restart_service", "toggle_feature_flag", "throttle_load_generator"}
 
 
 def test_safety_stop_freezes_and_rolls_back_recent(api_server, store, bus, settings):
     client, rt, _ = api_server
     safety = Safety(store, bus, client, settings)
     assert safety.dry_run is True  # S1: dry run at start
-    r = client.execute("update_resources", {"service": "cart", "memory_mb": 512}, "x", dry_run=False)
+    r = client.execute("toggle_feature_flag", {"flag": "cartFailure", "enabled": False}, "x", dry_run=False)
     inc = Incident(id="INC-0001", title="t")
     inc.execution.results.append(r)
     inc.execution.results.append(ActionResult(action="restart_service", ok=True, dry_run=True, execution_id="X-dry"))
@@ -119,6 +123,7 @@ def test_flag_file_set_and_undo(tmp_path):
     ff = FlagFile(tmp_path)
     assert ff.faulty("payment") == {"paymentFailure": "on"}
     assert ff.faulty("cart") == {}
+    assert ff.on_variant("cartFailure") == "on" and ff.off_variant("cartFailure") == "off"
     prev = ff.set({"paymentFailure": "off"})
     assert prev == {"paymentFailure": "on"} and ff.faulty("payment") == {}
 

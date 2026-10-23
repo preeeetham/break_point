@@ -1,0 +1,26 @@
+# Runbook knowledge for the Remediation Planner: which feature flags guard each service's code paths in the
+# OpenTelemetry Demo, taken from the demo's SOURCE CODE (which flags each service evaluates), not from flagd.
+#
+# It is used only to choose a fix after the diagnosis has been made from telemetry: "payment's charge path fails ->
+# switch off the flags that guard payment's code". It is never read to diagnose, and the agent never reads flag
+# settings (their current values); the Action API's toggle is a write. Confirm with the organisers that toggling a
+# flag the agent did not read is acceptable; if not, delete `service_flags` and the Planner falls back to restarts.
+service_flags:
+  payment: [paymentFailure, paymentUnreachable]
+  checkout: [paymentUnreachable, kafkaQueueProblems]
+  cart: [cartFailure]
+  product-catalog: [productCatalogFailure, productCatalogLockContention]
+  recommendation: [recommendationCacheFailure]
+  ad: [adFailure, adHighCpu, adManualGc]
+  email: [emailMemoryLeak]
+  image-provider: [imageSlowLoad]
+  shipping: [intlShippingSlowdown]
+  load-generator: [loadGeneratorFloodHomepage]
+  frontend: [loadGeneratorFloodHomepage]
+  frontend-proxy: [loadGeneratorFloodHomepage]
+  accounting: [kafkaConsumerDead]
+  fraud-detection: [kafkaConsumerDead]
+
+# Below these limits a container is starved by its configuration; no allowed action changes limits, so escalate.
+starved_cpu_limit: 0.25
+starved_memory_limit_mb: 64

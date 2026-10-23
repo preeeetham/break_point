@@ -32,47 +32,81 @@ PREVENTION = {
 TIMELINE_KINDS = ("alert", "phase", "approval", "action", "verify", "report")
 APPROVAL_MAP = {"approved": "approved", "rejected": "rejected", "pending": "pending", "timed_out": "pending",
                 "sent_back": "pending", "not_requested": "not_requested"}
+# our evidence sources -> the schema's evidence.source enum
+SOURCE_MAP = {"prometheus": "metric", "sentinel": "metric", "jaeger": "trace", "logs": "log",
+              "docker": "container_health", "topology": "other", "action_api": "other"}
+# a restart clears the symptom of these but not their cause: the incident is mitigated, not resolved
+SYMPTOM_ONLY = ("application_error", "resource_memory", "resource_cpu")
 
 
-def build_report(inc: Incident, evidence: list[Evidence], events: list[Event]) -> dict:
+def report_status(inc: Incident) -> str:
+    """resolved | mitigated | unresolved | escalated | false_alarm"""
+    d = inc.diagnosis
+    if (not d or not d.root_causes) and inc.alerts and not any(a.active for a in inc.alerts):
+        return "false_alarm"
+    if inc.phase == "resolved":
+        executed = [r.action for r in inc.execution.results if r.ok and not r.dry_run]
+        cats = {rc.category for rc in (d.root_causes if d else [])}
+        if executed and set(executed) == {"restart_service"} and cats & set(SYMPTOM_ONLY):
+            return "mitigated"
+        return "resolved"
+    if inc.phase == "escalated":
+        return "escalated"
+    return "unresolved"  # dry run (nothing changed), rejected, failed, still open
+
+
+def _reference(e: Evidence) -> str:
+    a = e.args
+    if e.tool == "trace_detail":
+        return f"trace {a.get('trace_id')}"
+    if e.tool in ("promql", "alert_rule") and a.get("query"):
+        return str(a["query"])
+    if e.source == "logs":
+        return f"logs of {a.get('service')} via {a.get('source', 'opensearch')}" + (
+            f", containing {a['contains']!r}" if a.get("contains") else "")
+    if e.source == "docker":
+        return f"docker inspect/stats {a.get('service') or 'all containers'}"
+    return f"{e.tool}({', '.join(f'{k}={v}' for k, v in a.items() if v is not None)})"
+
+
+def build_report(inc: Incident, evidence: list[Evidence], events: list[Event], schema_path: str = "") -> dict:
     d = inc.diagnosis
     rcs = sorted(d.root_causes, key=lambda r: -r.confidence) if d else []
     main = rcs[0] if rcs else None
-    cited = []
+    by_id = {e.id: e for e in evidence}
+    ev_out, seen = [], set()
     for rc in rcs:
         for c in rc.claims:
-            if c.evidence_id not in cited:
-                cited.append(c.evidence_id)
-    alert_ev = [e.id for e in evidence if e.source == "sentinel" and e.id not in cited]
-    by_id = {e.id: e for e in evidence}
-    quotes = {c.evidence_id: c.quote for rc in rcs for c in rc.claims}
-    ev_out = []
-    for eid in cited + alert_ev:
-        e = by_id.get(eid)
-        if e is None:
-            continue
-        q = e.args.get("query") or (f"{e.tool}({', '.join(f'{k}={v}' for k, v in e.args.items() if v is not None)})")
-        ev_out.append({"id": e.id, "source": e.source, "query": str(q),
-                       "detail": (quotes.get(e.id) or e.summary)[:500]})
-    timeline = [{"timestamp": ev.ts, "actor": ev.agent, "event": ev.title[:300]}
+            e = by_id.get(c.evidence_id)
+            if e is None or (e.id, c.quote) in seen:
+                continue
+            seen.add((e.id, c.quote))
+            ev_out.append({"source": SOURCE_MAP.get(e.source, "other"), "observation": f"[{e.id}] {c.quote}"[:600],
+                           "timestamp": e.created_at, "reference": _reference(e),
+                           "supports": f"{rc.component} ({rc.category}): {c.text}"[:300]})
+    for e in evidence:
+        if e.source == "sentinel":
+            ev_out.append({"source": "metric", "observation": f"[{e.id}] {e.content}"[:600], "timestamp": e.created_at,
+                           "reference": _reference(e), "supports": "the alert that opened this incident"})
+    timeline = [{"timestamp": ev.ts, "event": ev.title[:300], "details": f"{ev.agent}"
+                 + (f"; evidence {ev.evidence_id}" if ev.evidence_id else "")}
                 for ev in events if ev.kind in TIMELINE_KINDS][:40]
+    alternatives = [f"{r.component} ({r.category}, confidence {r.confidence:.2f}): {r.cause}" for r in rcs[1:]]
+    alternatives += [f"an earlier diagnosis was rejected by the evidence audit: {'; '.join(a.problems)[:240]}"
+                     for a in inc.audits if not a.passed]
     first = inc.plan.actions[0] if inc.plan and inc.plan.actions else None
     executed = inc.execution.results
     report = {
-        "incident_id": inc.id,
-        "title": inc.title,
-        "status": inc.phase if inc.terminal else "open",
-        "detected_at": inc.created_at,
-        "resolved_at": inc.resolved_at,
-        "summary": inc.report_summary or (d.summary if d else "No diagnosis was reached."),
+        "incident_id": inc.external_id or inc.id,
+        "status": report_status(inc),
+        "summary": inc.report_summary or (d.summary if d else (inc.escalation_reason or "No diagnosis was reached.")),
         "timeline": timeline,
-        "root_cause": {
-            "component": main.component if main else "unknown",
-            "category": main.category if main else "unknown",
-            "description": main.cause if main else (inc.escalation_reason or "not established"),
+        "diagnosis": {
+            "affected_component": ", ".join(r.component for r in rcs) if rcs else "unknown",
+            "root_cause": ("; ".join(f"{r.component}: {r.cause} [{r.category}]" for r in rcs) if rcs
+                           else (inc.escalation_reason or "not established from the evidence")),
             "confidence": main.confidence if main else 0.0,
-            "additional_causes": [{"component": r.component, "category": r.category, "description": r.cause,
-                                   "confidence": r.confidence} for r in rcs[1:]],
+            "alternatives_considered": alternatives,
         },
         "evidence": ev_out,
         "proposed_action": ({"action": first.action, "parameters": first.parameters, "reason": first.reason,
@@ -99,20 +133,18 @@ def build_report(inc: Incident, evidence: list[Evidence], events: list[Event]) -
         "prevention": inc.prevention,
         "limitations": inc.limitations,
     }
-    validate(report)
+    validate(report, schema_path or None)
     return report
 
 
-def to_markdown(r: dict) -> str:
-    rc = r["root_cause"]
-    lines = [f"# {r['incident_id']}: {r['title']}", "", f"**Status:** {r['status']}  ",
-             f"**Detected:** {r['detected_at']}  ", f"**Resolved:** {r['resolved_at'] or '-'}", "", r["summary"], "",
-             "## Root cause", f"**{rc['component']}** ({rc['category']}, confidence {rc['confidence']:.2f}): "
-             f"{rc['description']}"]
-    for c in rc.get("additional_causes", []):
-        lines.append(f"- also **{c['component']}** ({c['category']}, {c['confidence']:.2f}): {c['description']}")
-    lines += ["", "## Evidence"] + [f"- `{e['id']}` {e['source']} — `{e['query']}`\n  > {e['detail']}"
-                                    for e in r["evidence"]]
+def to_markdown(r: dict, title: str = "") -> str:
+    dg = r["diagnosis"]
+    lines = [f"# {r['incident_id']}: {title or dg['affected_component']}", "", f"**Status:** {r['status']}", "",
+             r["summary"], "", "## Diagnosis",
+             f"**{dg['affected_component']}** (confidence {dg['confidence']:.2f}): {dg['root_cause']}"]
+    lines += [f"- considered: {x}" for x in dg.get("alternatives_considered", [])]
+    lines += ["", "## Evidence"] + [f"- {e['source']} — `{e['reference']}` — supports {e['supports']}\n"
+                                    f"  > {e['observation']}" for e in r["evidence"]]
     pa, ap, ex, ve = r["proposed_action"], r["approval"], r["execution"], r["verification"]
     lines += ["", "## Action", f"- Proposed: `{pa['action']}` {json.dumps(pa.get('parameters', {}))} — {pa['reason']}"
               f" (dry run: {str(pa['dry_run']).lower()})",
@@ -120,7 +152,7 @@ def to_markdown(r: dict) -> str:
               f"- Execution: {ex['action_result'] or 'not executed'}; rollback performed: "
               f"{str(ex['rollback_performed']).lower()}" + (f"; {ex['notes']}" if ex.get('notes') else ""),
               f"- Verification: checked {str(ve['checked']).lower()}, recovered {ve['recovered']}; {ve['notes']}",
-              "", "## Timeline"] + [f"- {t['timestamp']} **{t['actor']}** {t['event']}" for t in r["timeline"]]
+              "", "## Timeline"] + [f"- {t['timestamp']} {t['event']} ({t.get('details', '')})" for t in r["timeline"]]
     lines += ["", "## Prevention"] + [f"- {p}" for p in r["prevention"]]
     if r["limitations"]:
         lines += ["", "## Limitations"] + [f"- {x}" for x in r["limitations"]]
@@ -146,8 +178,9 @@ class Reporter:
                     max_tokens=300)
                 if data and isinstance(data.get("summary"), str):
                     inc.report_summary = data["summary"][:800]
-            report = build_report(inc, self.ctx.store.evidence(inc.id), self.ctx.store.events(incident_id=inc.id))
-            self.ctx.store.write_report(inc.id, report, to_markdown(report))
+            report = build_report(inc, self.ctx.store.evidence(inc.id), self.ctx.store.events(incident_id=inc.id),
+                                  self.ctx.settings.report_schema_file)
+            self.ctx.store.write_report(inc.id, report, to_markdown(report, inc.title))
         self.ctx.bus.publish("reporter", "report", f"report written for {inc.id} ({report['status']})",
                              incident_id=inc.id)
         return report

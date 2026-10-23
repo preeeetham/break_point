@@ -28,32 +28,26 @@ class Runtime:
     def services(self):
         return set(self.svcs)
 
-    def _act(self, name, service, dry, undo=None):
-        self.calls.append((name, service, dry))
+    def _act(self, name, target, dry, undo=None):
+        self.calls.append((name, target, dry))
         if dry:
-            return f"would {name} {service}", None
+            return f"would {name} {target}", None
         fn = self.fixes.get(name)
         if fn:
-            fn(self.svcs, service)
-        return f"did {name} {service}", undo
+            fn(self.svcs, target)
+        return f"did {name} {target}", undo
 
-    def restart_service(self, service, dry):
+    def restart_service(self, dry, service):
         return self._act("restart_service", service, dry)
 
-    def start_service(self, service, dry):
-        return self._act("start_service", service, dry)
+    def toggle_feature_flag(self, dry, flag, enabled):
+        return self._act("toggle_feature_flag", flag, dry, {"kind": "flags", "prev": {flag: "on"}})
 
-    def rollback_release(self, service, dry):
-        return self._act("rollback_release", service, dry, {"kind": "flags", "prev": {}})
+    def throttle_load_generator(self, dry, users):
+        return self._act("throttle_load_generator", users, dry, {"kind": "users", "prev": 50})
 
-    def update_resources(self, service, dry, cpus=None, memory_mb=None):
-        return self._act("update_resources", service, dry, {"kind": "resources", "service": service, "prev": {}})
-
-    def clear_network_impairment(self, service, dry):
-        return self._act("clear_network_impairment", service, dry)
-
-    def reconnect_network(self, service, dry):
-        return self._act("reconnect_network", service, dry)
+    def scale_service(self, dry, service, replicas):
+        raise RuntimeError("Kubernetes only")
 
     def undo(self, undo):
         self.undone.append(undo)
@@ -141,8 +135,10 @@ def test_application_fault_dry_run_end_to_end(settings, store, bus):
     rc = inc.diagnosis.root_causes[0]
     assert (rc.component, rc.category) == ("payment", "application_error")
     assert inc.audits[-1].passed
-    assert inc.plan.actions[0].action == "rollback_release" and inc.plan.actions[0].parameters == {"service": "payment"}
-    assert inc.plan.actions[0].preview == "would rollback_release payment"
+    assert [(a.action, a.parameters) for a in inc.plan.actions] == [
+        ("toggle_feature_flag", {"flag": "paymentFailure", "enabled": False}),
+        ("toggle_feature_flag", {"flag": "paymentUnreachable", "enabled": False})]
+    assert inc.plan.actions[0].preview == "would toggle_feature_flag paymentFailure"
     assert all(dry for _, _, dry in rt.calls)  # nothing but previews before approval
     with pytest.raises(ApprovalError):
         orch.approval.decide(inc_id, "approved", "", inc.plan.change_hash)
@@ -156,8 +152,10 @@ def test_application_fault_dry_run_end_to_end(settings, store, bus):
     assert report["approval"] == {"required": True, "decision": "approved", "approver": "preet",
                                   "timestamp": inc.approval.timestamp}
     assert report["execution"]["action_api_only"] is True and report["proposed_action"]["dry_run"] is True
-    assert report["root_cause"]["component"] == "payment"
-    assert any("Invalid token" in e["detail"] or "Payment request failed" in e["detail"] for e in report["evidence"])
+    assert report["status"] == "unresolved"  # a dry run changes nothing
+    assert report["diagnosis"]["affected_component"] == "payment"
+    assert any("Payment request failed" in e["observation"] and e["source"] == "trace" for e in report["evidence"])
+    assert {e["source"] for e in report["evidence"]} >= {"trace", "metric"}
     assert "# INC-0001" in md
     assert (store.root / "submission.json").is_file()
 
@@ -168,20 +166,17 @@ def test_stopped_cache_resolved_live(settings, store, bus):
     svcs["cart"].now = {"rps": 1.0, "error_ratio": 0.9, "p95": 40}
     svcs["cart"].logs = ["Wasn't able to connect to redis valkey-cart:6379: connection refused"]
 
-    def start(s, service):
-        heal_all(s, service)
-
-    orch, rt = build(settings, store, bus, svcs, fixes={"start_service": start})
+    orch, rt = build(settings, store, bus, svcs, fixes={"restart_service": heal_all})
     orch.ctx.safety.set_dry_run(False, "preet")
     inc_id = tick_until_incident(orch)
     orch.open(inc_id)
     inc = wait_phase(store, inc_id, ("awaiting_approval",))
     assert inc.diagnosis.root_causes[0].component == "valkey-cart"
     assert inc.diagnosis.root_causes[0].category == "container_down"
-    assert inc.plan.actions[0].action == "start_service"
+    assert inc.plan.actions[0].action == "restart_service"
     orch.approval.decide(inc_id, "approved", "preet", inc.plan.change_hash)
     inc = wait_phase(store, inc_id, ("resolved",))
-    assert ("start_service", "valkey-cart", False) in rt.calls
+    assert ("restart_service", "valkey-cart", False) in rt.calls
     assert inc.verification.recovered is True and inc.resolved_at
     assert store.report(inc_id)[0]["status"] == "resolved"
 
@@ -199,6 +194,7 @@ def test_failed_recovery_rolls_back_and_escalates(settings, store, bus):
     assert rt.undone and "recovery not confirmed" in inc.escalation_reason
     rep = store.report(inc_id)[0]
     assert rep["execution"]["rollback_performed"] is True and rep["verification"]["recovered"] is False
+    assert rep["status"] == "escalated"
 
 
 def test_reject_and_send_back(settings, store, bus):
@@ -232,7 +228,7 @@ def test_approval_timeout_escalates(settings, store, bus):
 
 def test_kill_switch_freezes_execution(settings, store, bus):
     svcs, traces = payment_failure()
-    orch, rt = build(settings, store, bus, svcs, traces, fixes={"rollback_release": heal_all})
+    orch, rt = build(settings, store, bus, svcs, traces, fixes={"toggle_feature_flag": heal_all})
     orch.ctx.safety.set_dry_run(False, "preet")
     inc_id = tick_until_incident(orch)
     orch.open(inc_id)
@@ -243,7 +239,7 @@ def test_kill_switch_freezes_execution(settings, store, bus):
     assert store.load(inc_id).phase == "executing" and not any(not dry for _, _, dry in rt.calls)
     orch.ctx.safety.resume("preet")
     inc = wait_phase(store, inc_id, ("resolved",))
-    assert ("rollback_release", "payment", False) in rt.calls
+    assert ("toggle_feature_flag", "paymentFailure", False) in rt.calls
 
 
 class ScriptedLLM(LLM):

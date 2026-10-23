@@ -96,11 +96,23 @@ day), and the Control Room decisions agreed with the project owner on 2026-10-23
 | N5 | Configurable endpoints, discovered from the running Compose project when not set |
 | N6 | Tested: unit tests for every agent and tool with fakes; the integrity rules R1–R4 as tests |
 
-## 7. Assumptions and open items
+## 7. What the full brief says (docs/hackathon_brief.json)
+
+| Topic | Brief | How Incident Zero handles it |
+|---|---|---|
+| Action API | Only way to change the system: restart a service, toggle a feature flag, throttle the load generator, scale a service (Kubernetes only); every call logged | The mock serves exactly these four (`restart_service`, `toggle_feature_flag`, `throttle_load_generator`, `scale_service`); scale is refused on Compose. Parameter names are our guess until the team's API is seen; the client is one adapter |
+| Report format | "required output format (JSON schema)" in the template repository; the brief extraction's notes say the official schema was not legible | **Ours, defined from what the agent produces**: `schema/incident_report.schema.json` (status, summary, timeline, diagnosis with confidence and alternatives, evidence with source/observation/reference/supports, proposed action, approval, execution, verification, prevention, limitations). Every report is validated against it; `report_schema_file` swaps in another schema without code changes |
+| faultctl | The organisers' tool injects practice incidents and resets | Our Simulator does the same for local practice; on the day faultctl replaces it. `incident_id` can carry faultctl's id (`external_id`) |
+| Faults with no allowed fix | CPU/memory starvation by limit, a detached network: the four actions cannot change limits or networks | The Planner proposes nothing and the incident escalates with the reason; the Judge scores escalation as correct for these |
+| Flags | Reading flag settings to diagnose = disqualification | Diagnosis never sees flag data (R1, R2). The Planner knows which flags guard each service's code from the demo source (`runbook.yaml`) and may propose toggling them off; to confirm with the organisers |
+| Deliverables | Source + README (setup, run, approval gate, kill switch, limitations), one-page architecture, incident reports (schema + readable), evaluation note, team form | README and BUILD_LOG cover the first two; reports come out as JSON + Markdown; the practice Judge produces the evaluation note's data |
+| **Rule: "All code is written on the day, from 09:15; commits before then are not allowed."** | | **This package cannot be submitted as written before the event.** It is the rehearsal and blueprint: architecture, prompts, safety design, practice harness and lessons, to be rebuilt on the day (AI coding assistants are allowed if declared) |
+
+## 8. Assumptions and open items
 
 | Item | Assumption until resolved |
 |---|---|
-| The jury's Action API spec (the slide was not in the extracted JSON) | A mock Action API with plausible runbook actions (`restart_service`, `start_service`, `update_resources`, `clear_network_impairment`, `reconnect_network`, `rollback_release`), served over HTTP with `GET /actions`, `POST /actions/execute` (with `dry_run`), `POST /actions/rollback`. The real one is a new adapter. |
-| The first half of the jury's report schema (only `proposed_action` onward was extracted) | Fields modelled from the brief (incident id, title, status, detection, timeline, diagnosis, evidence); kept in one module so it can be swapped for the real schema |
-| Whether code written before the event is allowed | Not answered; to confirm with the organisers |
+| Action API wire format and parameter names | Mock: `GET /actions`, `POST /actions/execute` (with `dry_run`), `POST /actions/rollback`; parameters `service`, `flag`+`enabled`, `users`, `service`+`replicas` |
+| Whether toggling a flag the agent did not read is acceptable | Assumed yes (it is a write through the Action API); delete `service_flags` in runbook.yaml if not |
+| Team size (5 vs "all three members must commit") and code freeze (16:30) | To confirm with the organisers |
 | Kafka group (`compose.full.yaml`) | Optional: the default local stack is `compose.yaml` + `compose.observability.yaml` to fit 8 GB of Docker memory |

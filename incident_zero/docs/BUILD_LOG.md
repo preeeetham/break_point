@@ -161,3 +161,31 @@ Facts established before writing code:
   validated, plus Markdown and `submission.json`.
 - Orchestrator: one worker per incident, phase saved after every step, Frozen pauses, any agent exception ends in
   `failed` with a report; a resumed incident whose actions were attempted never executes again.
+
+### CP5 / CP7 — server, CLI, practice
+
+- `server/http.py`: standard-library JSON API + server-sent events + the built UI with client-side routing fallback;
+  practice endpoints return 404 in eval mode. `finish()` now writes the report before saving the terminal phase, so a
+  closed incident always has its report (a race the tests caught).
+- `practice/`: 20 scenarios (8 application, 10 infrastructure, 2 combinations; tune/holdout split), Simulator (flags,
+  stop, pause, kill loop, CPU/memory limits, netem via Pumba, disconnect), Judge (10 points), runs and ground truth
+  only in `practice_dir`, never on the event bus.
+
+### CP6 — Control Room
+
+React 19 + React Router 7 + Vite, hand-written CSS from tokens (no CSS framework), IBM Plex bundled locally. Routes:
+`/` war room, `/incidents`, `/incidents/:id/{timeline,evidence,diagnosis,plan,report}`, `/approvals`, `/agents`,
+`/services`, `/practice`. One EventSource drives every page (each event bumps a version, pages refetch). Approver
+name once per session; browser notifications for approvals; dry-run/live toggle and Stop all in the top bar.
+
+### Alignment with the full brief (docs/hackathon_brief.json)
+
+- Report schema: ours, defined from the agent's output, in `schema/incident_report.schema.json`; the Reporter maps
+  status (`resolved`, `mitigated` when a restart only cleared the symptom of a code/resource fault, `unresolved` for
+  dry runs/rejections/failures, `escalated`, `false_alarm`), diagnosis (all causes, alternatives incl. audit
+  rejections), evidence (schema source categories, verbatim quote as observation, trace id/query as reference).
+- Action API: the brief's four actions. Planner rules: restart for stopped/crashed/unreachable/netem; toggle the
+  service's guarding flags off for application, CPU and memory faults (+ restart for leaks); throttle the load
+  generator for floods; propose nothing and escalate, with the reason, when a limit or a detached network is the
+  cause. Scenario truth updated accordingly.
+- The brief forbids code written before the event; see REQUIREMENTS §7.

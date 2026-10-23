@@ -138,13 +138,14 @@ def test_redact_attribute_dict_keys():
 # ---------------------------------------------------------------- report schema
 def _report(**over):
     r = {
-        "incident_id": "INC-0001", "title": "t", "status": "resolved", "detected_at": "2026-10-23T10:00:00Z",
-        "resolved_at": None, "summary": "s", "timeline": [{"timestamp": "x", "actor": "sentinel", "event": "e"}],
-        "root_cause": {"component": "payment", "category": "application_error", "description": "d",
-                       "confidence": 0.8},
-        "evidence": [{"id": "E1", "source": "prometheus", "query": "q", "detail": "d"}],
-        "proposed_action": {"action": "restart_service", "parameters": {"service": "payment"}, "reason": "r",
-                            "dry_run": False},
+        "incident_id": "INC-0001", "status": "resolved", "summary": "s",
+        "timeline": [{"timestamp": "2026-10-23T10:00:00Z", "event": "e", "details": "sentinel"}],
+        "diagnosis": {"affected_component": "payment", "root_cause": "charge path fails", "confidence": 0.8,
+                      "alternatives_considered": []},
+        "evidence": [{"source": "metric", "observation": "[E1] error_ratio=0.42", "timestamp": None,
+                      "reference": "q", "supports": "payment"}],
+        "proposed_action": {"action": "toggle_feature_flag", "parameters": {"flag": "x", "enabled": False},
+                            "reason": "r", "dry_run": False},
         "approval": {"required": True, "decision": "approved", "approver": "preet", "timestamp": "x"},
         "execution": {"attempted": True, "action_api_only": True, "action_result": "ok",
                       "rollback_performed": False, "notes": ""},
@@ -165,6 +166,9 @@ def test_report_schema_accepts_a_complete_report():
     {"approval": {"required": True, "decision": "sent_back"}},
     {"extra_field": 1},
     {"proposed_action": {"action": "x", "reason": "r"}},
+    {"status": "open"},
+    {"evidence": [{"source": "prometheus", "observation": "o", "supports": "s"}]},
+    {"diagnosis": {"affected_component": "payment", "root_cause": "x", "confidence": 1.5}},
 ])
 def test_report_schema_is_strict(over):
     with pytest.raises(ReportInvalid):

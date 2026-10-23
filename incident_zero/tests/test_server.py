@@ -148,14 +148,22 @@ def test_judge_scores_a_good_run():
                    claims=[Claim(text="x", evidence_id="E1", quote="state=exited")])
     inc = Incident(id="INC-0001", title="t", phase="resolved",
                    diagnosis=Diagnosis(summary="s", root_causes=[rc]),
-                   plan=Plan(actions=[ProposedAction(action="start_service", parameters={"service": "valkey-cart"},
+                   plan=Plan(actions=[ProposedAction(action="restart_service", parameters={"service": "valkey-cart"},
                                                      reason="r")], change_hash="h"))
     from incident_zero.models import AuditResult
 
     inc.audits.append(AuditResult(passed=True))
     inc.verification.recovered = True
-    truth = {"components": ["valkey-cart"], "categories": ["container_down"], "actions": ["start_service"]}
+    truth = {"components": ["valkey-cart"], "categories": ["container_down"], "actions": ["restart_service"]}
     s = score(truth, 0, [inc])
     assert s["points"] == 10
     combo = score({**truth, "components": ["valkey-cart", "payment"], "all_components": True}, 0, [inc])
     assert combo["points"] == 8.5
+    # a fault no allowed action fixes: proposing nothing and escalating earns the action and recovery points
+    starved = Incident(id="INC-0002", title="t", phase="escalated",
+                       diagnosis=Diagnosis(summary="s", root_causes=[rc.model_copy(update={"category": "resource_cpu"})]),
+                       plan=Plan(actions=[], change_hash="", no_action_reason="limit"))
+    starved.audits.append(AuditResult(passed=True))
+    esc = score({"components": ["valkey-cart"], "categories": ["resource_cpu"], "actions": [], "escalate": True},
+                0, [starved])
+    assert esc["points"] == 10 and esc["detail"]["action_ok"]

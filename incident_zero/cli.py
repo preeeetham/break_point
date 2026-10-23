@@ -71,7 +71,8 @@ def cmd_up(s, a) -> int:
 def cmd_action_api(s, a) -> int:
     from .actions.mock_server import ActionAPI, DockerRuntime, serve
 
-    rt = DockerRuntime(a.project or s.compose_project, a.network, a.demo_dir or s.demo_dir)
+    rt = DockerRuntime(a.project or s.compose_project, a.network, a.demo_dir or s.demo_dir,
+                       s.loadgen_url or s.frontend_url.rstrip("/") + "/loadgen")
     api = ActionAPI(rt, Path(s.data_dir) / "action_api" / "state.json")
     host, port = a.host, a.port
     srv = serve(api, host, port, s.action_api_token)

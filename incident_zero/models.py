@@ -157,6 +157,7 @@ class VerificationRecord(BaseModel):
 class Incident(BaseModel):
     id: str
     title: str
+    external_id: Optional[str] = None         # the practice incident id the environment (faultctl) supplies
     phase: Phase = "detected"
     created_at: str = Field(default_factory=iso)
     updated_at: str = Field(default_factory=iso)

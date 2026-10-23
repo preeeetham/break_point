@@ -2,7 +2,8 @@
 
 Out of 10: detected (1), right component (3), right category (1), evidence passed the audit (2), an appropriate
 allowed action (2), recovery verified (1). For combination scenarios (`all_components`), the component points are
-split across the components that had to be named.
+split across the components that had to be named. For faults no allowed action can fix (`escalate: true`), the
+action points go to proposing nothing and escalating, and the recovery point to escalating at all.
 """
 from __future__ import annotations
 
@@ -47,10 +48,14 @@ def score(truth: dict, started_at: float, incidents: list[Incident]) -> dict:
     out["points"] += 2 if audited else 0
     d["evidence_passed_audit"] = audited
     actions = {a.action for i in mine if i.plan for a in i.plan.actions}
-    act_ok = bool(actions & set(truth.get("actions", [])))
+    if truth.get("escalate"):
+        # no allowed action fixes this fault: the right move is to propose nothing and escalate
+        act_ok = not actions and any(i.phase == "escalated" for i in mine)
+    else:
+        act_ok = bool(actions & set(truth.get("actions", [])))
     out["points"] += 2 if act_ok else 0
     d["actions"], d["action_ok"] = sorted(actions), act_ok
-    rec = any(i.verification.recovered for i in mine)
+    rec = any(i.verification.recovered for i in mine) or (bool(truth.get("escalate")) and act_ok)
     out["points"] += 1 if rec else 0
     d["recovered"] = rec
     diag_times = [_ts(i.diagnosis.created_at) for i in mine if i.diagnosis]

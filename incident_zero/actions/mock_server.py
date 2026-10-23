@@ -25,100 +25,76 @@ class RuntimeErrorForAction(RuntimeError):
 
 
 class DockerRuntime:
-    """Acts on the Compose project through Break Point's DockerController."""
+    """Acts on the Compose project: Docker through Break Point's DockerController, flags through the demo's flagd
+    file, the load generator through Locust's web API (behind the demo's Envoy at /loadgen)."""
 
-    def __init__(self, project: str, network: str, demo_dir: str = "", tc_image: str = ""):
+    def __init__(self, project: str, network: str, demo_dir: str = "", loadgen_url: str = ""):
         from break_point.chaos.docker_ctl import DockerController
 
         self.d = DockerController(project, network)
         self.demo_dir = demo_dir
-        self.tc_image = tc_image or "ghcr.io/alexei-led/pumba-alpine-nettools:latest"
+        self.loadgen_url = loadgen_url.rstrip("/")
 
     def services(self) -> set[str]:
         return set(self.d.containers())
 
-    def describe(self, service: str) -> str:
-        st = self.d.state(service)
-        return f"{service} is {st.get('status')} (restarts={st.get('restart_count', st.get('restarts', '?'))})"
-
-    def restart_service(self, service: str, dry: bool) -> tuple[str, Optional[dict]]:
-        if dry:
-            return f"would restart {service}; now: {self.describe(service)}", None
-        self.d.restart(service)
-        ok = self.d.wait_running(service, 60)
-        return f"restarted {service}; running={ok}", None
-
-    def start_service(self, service: str, dry: bool) -> tuple[str, Optional[dict]]:
+    def restart_service(self, dry: bool, service: str) -> tuple[str, Optional[dict]]:
         c = self.d.container(service)
         if dry:
-            return f"would start/unpause {service}; now: {c.status}", None
+            return f"would restart {service} (now {c.status}, {c.attrs.get('RestartCount', 0)} restarts)", None
         if c.status == "paused":
             self.d.unpause(service)
-        elif c.status != "running":
-            self.d.start(service)
-        ok = self.d.wait_running(service, 60)
-        return f"started {service}; running={ok}", None
+        self.d.restart(service)  # also starts an exited container; a fresh start resets its network interface
+        ok = self.d.wait_running(service, 90)
+        return f"restarted {service}; running={ok}", None
 
-    def update_resources(self, service: str, dry: bool, cpus: Optional[float] = None,
-                         memory_mb: Optional[int] = None) -> tuple[str, Optional[dict]]:
-        c = self.d.container(service)
-        hc = c.attrs.get("HostConfig") or {}
-        prev = {"nano_cpus": hc.get("NanoCpus") or 0, "memory": hc.get("Memory") or 0,
-                "memswap": hc.get("MemorySwap") or 0}
-        kw: dict[str, Any] = {}
-        if cpus:
-            kw["nano_cpus"] = int(cpus * 1e9)
-        if memory_mb:
-            kw["mem_limit"] = int(memory_mb) * 2**20
-            kw["memswap_limit"] = int(memory_mb) * 2**20 * 2
-        if dry:
-            return (f"would set {service} limits {kw} (now cpus={prev['nano_cpus'] / 1e9 or 'unlimited'}, "
-                    f"memory_mb={prev['memory'] // 2**20 or 'unlimited'})"), None
-        c.update(**kw)
-        return f"updated {service} limits: {kw}", {"kind": "resources", "service": service, "prev": prev}
-
-    def clear_network_impairment(self, service: str, dry: bool) -> tuple[str, Optional[dict]]:
-        if dry:
-            return f"would remove any tc netem qdisc from {service} eth0", None
-        from break_point.chaos.actions import clear_qdisc
-
-        ok = clear_qdisc(self.d, self.tc_image, self.d.container(service).name)
-        return f"cleared netem on {service}: {'removed' if ok else 'nothing to remove'}", None
-
-    def reconnect_network(self, service: str, dry: bool) -> tuple[str, Optional[dict]]:
-        connected = self.d.is_connected(service)
-        if dry:
-            return f"would reconnect {service} to {self.d.network_name} (connected now: {connected})", None
-        if not connected:
-            self.d.connect(service, [service])
-        return f"{service} connected to {self.d.network_name}", None
-
-    def rollback_release(self, service: str, dry: bool) -> tuple[str, Optional[dict]]:
+    def toggle_feature_flag(self, dry: bool, flag: str, enabled: bool) -> tuple[str, Optional[dict]]:
         from .flags import FlagFile
 
         if not self.demo_dir:
-            raise RuntimeErrorForAction("rollback_release needs demo_dir (the demo checkout) in the mock's settings")
+            raise RuntimeErrorForAction("toggle_feature_flag needs demo_dir (the demo checkout) in the mock's settings")
         ff = FlagFile(self.demo_dir)
-        faulty = ff.faulty(service)
+        variants = ff.variants()
+        if flag not in variants:
+            raise RuntimeErrorForAction(f"unknown flag {flag!r}")
+        target = ff.off_variant(flag) if not enabled else ff.on_variant(flag)
         if dry:
-            return (f"would roll {service} back to its last good release" +
-                    (" (a faulty change is live)" if faulty else " (no faulty change found)")), None
-        if not faulty:
-            return f"{service} is already on its last good release; nothing rolled back", None
-        prev = ff.set({f: ff.off_variant(f) for f in faulty})
-        return f"rolled {service} back to its last good release", {"kind": "flags", "prev": prev}
+            return f"would turn {flag} {'on' if enabled else 'off'}", None
+        prev = ff.set({flag: target})
+        return f"turned {flag} {'on' if enabled else 'off'}", {"kind": "flags", "prev": prev}
+
+    def _users(self) -> Optional[int]:
+        import requests
+
+        r = requests.get(f"{self.loadgen_url}/stats/requests", timeout=10)
+        return int(r.json().get("user_count", 0)) if r.ok else None
+
+    def throttle_load_generator(self, dry: bool, users: int) -> tuple[str, Optional[dict]]:
+        import requests
+
+        if not self.loadgen_url:
+            raise RuntimeErrorForAction("throttle_load_generator needs loadgen_url")
+        prev = self._users()
+        if dry:
+            return f"would set the load generator to {users} users (now {prev})", None
+        r = requests.post(f"{self.loadgen_url}/swarm", data={"user_count": users, "spawn_rate": max(1, users)},
+                          timeout=15)
+        if not r.ok:
+            raise RuntimeErrorForAction(f"load generator answered {r.status_code}")
+        return f"load generator set to {users} users (was {prev})", {"kind": "users", "prev": prev}
+
+    def scale_service(self, dry: bool, service: str, replicas: int) -> tuple[str, Optional[dict]]:
+        raise RuntimeErrorForAction("scale_service is available on Kubernetes only; this stack runs on Docker Compose")
 
     def undo(self, undo: dict) -> str:
-        if undo["kind"] == "resources":
-            p = undo["prev"]
-            c = self.d.container(undo["service"])
-            c.update(nano_cpus=p["nano_cpus"], mem_limit=p["memory"] or -1, memswap_limit=p["memswap"] or -1)
-            return f"restored {undo['service']} limits"
         if undo["kind"] == "flags":
             from .flags import FlagFile
 
             FlagFile(self.demo_dir).set(undo["prev"])
-            return "restored the previous release"
+            return f"restored flags {undo['prev']}"
+        if undo["kind"] == "users" and undo["prev"] is not None:
+            self.throttle_load_generator(False, int(undo["prev"]))
+            return f"load generator back to {undo['prev']} users"
         raise RuntimeErrorForAction(f"cannot undo {undo['kind']}")
 
 
@@ -153,14 +129,13 @@ class ActionAPI:
             return 400, {"ok": False, "message": "; ".join(errs)}
         if not body.get("reason"):
             return 400, {"ok": False, "message": "a reason is required"}
-        svc = params["service"]
-        lock = self._svc_locks[svc]
+        target = str(params.get("service") or params.get("flag") or action)
+        lock = self._svc_locks[target]
         if not lock.acquire(timeout=0.1):
-            return 409, {"ok": False, "message": f"another action is running on {svc}"}
+            return 409, {"ok": False, "message": f"another action is running on {target}"}
         try:
             fn = getattr(self.runtime, action)
-            extra = {k: v for k, v in params.items() if k != "service"}
-            message, undo = fn(svc, dry, **extra)
+            message, undo = fn(dry, **params)
         except Exception as exc:
             return 500, {"ok": False, "message": f"{action} failed: {exc}"}
         finally:

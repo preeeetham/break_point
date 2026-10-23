@@ -1,8 +1,10 @@
 """Runbook actions and parameter validation.
 
-The jury's Action API defines the real list. Until its spec is known, the mock serves MOCK_ACTIONS; the Planner
-never uses this list directly but reads whatever `GET /actions` returns, so swapping APIs changes nothing upstream.
-`validate` is applied by code to every proposed action, whatever produced it (REQUIREMENTS S5).
+The brief names the Action API's actions: restart a service, toggle a feature flag, throttle the load generator,
+scale a service (Kubernetes only). MOCK_ACTIONS mirrors exactly those four; parameter names are our guess until the
+team's API spec is seen. The Planner never uses this list directly but reads whatever `GET /actions` returns, so
+swapping in the real API changes nothing upstream. `validate` is applied by code to every proposed action, whatever
+produced it (REQUIREMENTS S5).
 """
 from __future__ import annotations
 
@@ -30,23 +32,25 @@ class ActionDef(BaseModel):
 SERVICE = ParamDef(required=True, description="the compose service to act on")
 
 MOCK_ACTIONS: list[ActionDef] = [
-    ActionDef(name="restart_service", description="Restart a service's container (clears a leaked heap, a stuck "
-              "process or a bad in-memory cache).", parameters={"service": SERVICE},
-              fixes=["resource_memory", "resource_cpu", "application_error"]),
-    ActionDef(name="start_service", description="Start a stopped or exited container, or unpause a paused one.",
-              parameters={"service": SERVICE}, fixes=["container_down", "dependency_failure"]),
-    ActionDef(name="update_resources", description="Change a container's CPU and/or memory limit.",
+    ActionDef(name="restart_service", description="Restart a service's container. Starts a stopped one, unfreezes a "
+              "paused one, clears a leaked heap or a stuck process, and resets its network interface (removing "
+              "injected latency/loss). Does not change resource limits or network attachments.",
+              parameters={"service": SERVICE},
+              fixes=["container_down", "dependency_failure", "network", "resource_memory"]),
+    ActionDef(name="toggle_feature_flag", description="Turn a feature flag on or off (the demo's switch for a code "
+              "path). Use it to switch off the faulty code path a diagnosis points to.",
+              parameters={"flag": ParamDef(required=True, description="flag key"),
+                          "enabled": ParamDef(type="boolean", required=True, description="false switches it off")},
+              reversible=True, fixes=["application_error", "resource_memory", "resource_cpu", "traffic"]),
+    ActionDef(name="throttle_load_generator", description="Set the load generator's number of simulated users "
+              "(reduce a traffic flood).",
+              parameters={"users": ParamDef(type="integer", required=True, minimum=0, maximum=500,
+                                            description="concurrent simulated users")},
+              reversible=True, fixes=["traffic"]),
+    ActionDef(name="scale_service", description="Change a service's replica count (Kubernetes only).",
               parameters={"service": SERVICE,
-                          "cpus": ParamDef(type="number", minimum=0.1, maximum=4, description="CPU limit in cores"),
-                          "memory_mb": ParamDef(type="integer", minimum=64, maximum=4096, description="memory limit")},
-              reversible=True, fixes=["resource_cpu", "resource_memory"]),
-    ActionDef(name="clear_network_impairment", description="Remove injected latency/packet loss (tc netem) from a "
-              "container's network interface.", parameters={"service": SERVICE}, fixes=["network"]),
-    ActionDef(name="reconnect_network", description="Reattach a container that was disconnected from the "
-              "application network.", parameters={"service": SERVICE}, fixes=["network", "container_down"]),
-    ActionDef(name="rollback_release", description="Roll a service back to its last known good release "
-              "(reverts the faulty change in its code path).", parameters={"service": SERVICE}, reversible=True,
-              fixes=["application_error", "resource_memory", "resource_cpu", "traffic"]),
+                          "replicas": ParamDef(type="integer", required=True, minimum=1, maximum=10)},
+              reversible=True, fixes=["resource_cpu", "traffic"]),
 ]
 
 
@@ -81,6 +85,4 @@ def validate(action: str, params: dict[str, Any], catalog: list[ActionDef],
     svc = params.get("service")
     if services is not None and isinstance(svc, str) and svc not in services:
         errs.append(f"unknown service {svc!r}")
-    if action == "update_resources" and not ({"cpus", "memory_mb"} & set(params)):
-        errs.append("update_resources needs cpus or memory_mb")
     return errs
