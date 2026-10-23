@@ -28,7 +28,12 @@ Return one JSON object:
                   "confidence": <0..1>,
                   "claims": [{"text": "<what this evidence shows>", "evidence_id": "E<n>",
                               "quote": "<an EXACT substring copied character for character from that evidence>"}]}],
- "explained_alerts": ["A1", ...]}
+ "explained_alerts": ["A1", ...],
+ "false_alarm": false,
+ "claims": []}
+If the evidence shows the alerted services are healthy (the alert was noise, a measurement artifact, or a downstream
+consequence that has cleared), set "false_alarm": true, leave "root_causes" empty, and put the evidence that shows
+health in top-level "claims" (same quote rules). Never invent a fault to have something to fix.
 Rules:
 - Quotes are checked by code against the evidence text. Copy them exactly (numbers, spacing, punctuation). A quote
   that is not in the cited evidence rejects the whole diagnosis.

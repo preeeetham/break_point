@@ -294,6 +294,32 @@ def test_sentinel_debounce_and_suppression(settings, store, bus):
     assert len(store.list()) == 1      # same signals after an unresolved close: suppressed
 
 
+def test_late_alerts_open_a_new_incident(settings, store, bus):
+    """Found live: alerts that arrive after an incident is planned must not join it (they made a wrong fix look
+    like a recovery)."""
+    svcs, traces = payment_failure()
+    orch, _ = build(settings, store, bus, svcs, traces)
+    orch.sentinel.on_new_incident = lambda _id: None
+    first = tick_until_incident(orch)
+    inc = store.load(first)
+    inc.phase = "verifying"
+    store.save(inc)
+    svcs["cart"].now = {"rps": 1.0, "error_ratio": 0.7, "p95": 100}
+    orch.sentinel.tick()
+    orch.sentinel.tick()
+    assert all(a.service != "cart" for a in store.load(first).alerts)
+    assert any(a.service == "cart" for i in store.list() if i.id != first for a in i.alerts)
+
+
+def test_quiet_queue_consumer_is_not_an_alert(settings, store, bus):
+    svcs = fakes.healthy()
+    svcs["frontend"].base = {"rps": 0.09, "error_ratio": 0.0, "p95": 50}   # a sporadic consumer, now idle
+    svcs["frontend"].now = {"rps": 0.0, "error_ratio": 0.0, "p95": 0}
+    orch, _ = build(settings, store, bus, svcs)
+    orch.sentinel.tick()
+    assert orch.sentinel.tick() == []
+
+
 class ScriptedToolModel:
     """Stands in for a LangChain chat model in the Investigator's LangGraph loop."""
 

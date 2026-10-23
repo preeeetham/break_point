@@ -89,6 +89,17 @@ def test_audit_requires_every_alert_explained(store, bus):
     assert not res.passed
 
 
+def test_false_alarm_needs_quoted_health_evidence(store, bus):
+    led = _ledger(store, bus)
+    ok = Diagnosis(summary="noise", root_causes=[], false_alarm=True,
+                   claims=[Claim(text="healthy", evidence_id="E1", quote="rps=1.20")])
+    assert audit(ok, led.all(), ALERTS).passed
+    bare = Diagnosis(summary="noise", root_causes=[], false_alarm=True)
+    assert not audit(bare, led.all(), ALERTS).passed
+    fake = Diagnosis(summary="noise", false_alarm=True, claims=[Claim(text="x", evidence_id="E1", quote="all good")])
+    assert not audit(fake, led.all(), ALERTS).passed
+
+
 def test_audit_rejects_unknown_component_and_alert(store, bus):
     d = _diag([Claim(text="x", evidence_id="E1", quote="error_ratio=0.42")], explained=("A1", "A7"))
     d.root_causes[0].component = "billing"

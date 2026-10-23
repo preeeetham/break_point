@@ -152,6 +152,14 @@ def cmd_practice(s, a) -> int:
     elif a.what == "run":
         r = _api(s, "POST", "/api/practice/run", {"scenario_id": a.arg, "duration_s": a.duration})
         print(f"{r['id']} started: {r['title']} (auto-revert after {a.duration:.0f}s)")
+    elif a.what == "campaign":
+        from .practice.campaign import main_campaign
+
+        if not a.actor:
+            sys.exit("campaign needs --as <operator name>")
+        scen = [x for x in (a.arg or "").split(",") if x] or None
+        path = main_campaign(f"http://{s.host}:{s.port}", f"{a.actor} (test operator)", s.practice_dir, scen, a.live)
+        print(f"campaign results: {path}")
     elif a.what == "stop":
         r = _api(s, "POST", f"/api/practice/runs/{a.arg}/stop", {})
         print(json.dumps(r.get("score"), indent=2))
@@ -216,9 +224,11 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("incident")
     rp.add_argument("--json", action="store_true")
     pr = sub.add_parser("practice", help="practice incidents (not in eval mode)")
-    pr.add_argument("what", choices=["list", "run", "runs", "stop"])
-    pr.add_argument("arg", nargs="?")
+    pr.add_argument("what", choices=["list", "run", "runs", "stop", "campaign"])
+    pr.add_argument("arg", nargs="?", help="scenario id (run), run id (stop), comma-separated ids (campaign)")
     pr.add_argument("--duration", type=float, default=600)
+    pr.add_argument("--as", dest="actor", help="campaign: the test operator who approves plans")
+    pr.add_argument("--live", action="store_true", help="campaign: execute approved actions for real")
     dm = sub.add_parser("demo", help="the OpenTelemetry Demo stack")
     dm.add_argument("action", choices=["up", "down", "ps"])
     sub.add_parser("ui-build", help="build the Control Room front end")

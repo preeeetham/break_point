@@ -84,6 +84,18 @@ def audit(diagnosis: Diagnosis, evidence: Iterable[Evidence], alerts: Iterable[A
     active = {a.id: a for a in alerts if a.active}
     problems: list[str] = []
     checked = 0
+    if diagnosis.false_alarm:
+        # nothing to fix: every claim that the system is healthy must still quote real evidence
+        if not diagnosis.claims:
+            problems.append("a false alarm must cite evidence that the system is healthy")
+        for c in diagnosis.claims:
+            checked += 1
+            ev = by_id.get(c.evidence_id)
+            if ev is None:
+                problems.append(f"false alarm: cites {c.evidence_id}, which does not exist")
+            elif not quote_in(ev, c.quote):
+                problems.append(f"false alarm: quote {c.quote[:80]!r} is not in {c.evidence_id}")
+        return AuditResult(passed=not problems, problems=problems, checked_claims=checked)
     if not diagnosis.root_causes:
         problems.append("the diagnosis names no root cause")
     for rc in diagnosis.root_causes:

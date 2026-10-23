@@ -5,7 +5,7 @@ export const PHASE_LABEL: Record<Phase, string> = {
   detected: "Detected", investigating: "Investigating", diagnosing: "Diagnosing", auditing: "Auditing evidence",
   planning: "Planning", awaiting_approval: "Awaiting approval", executing: "Executing", verifying: "Verifying",
   reporting: "Reporting", resolved: "Resolved", dry_run_complete: "Dry run complete", escalated: "Escalated",
-  rejected: "Rejected", failed: "Failed",
+  rejected: "Rejected", failed: "Failed", false_alarm: "False alarm",
 };
 
 export function phaseTone(p: Phase): "ok" | "warn" | "crit" | "info" | "" {

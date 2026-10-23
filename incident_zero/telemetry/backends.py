@@ -10,7 +10,6 @@ A new backend (Loki, Tempo, Datadog, ...) is one more class with the same method
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -71,7 +70,66 @@ class Prometheus:
 
 
 # ---------------------------------------------------------------- Jaeger
+OTLP_KIND = {1: "internal", 2: "server", 3: "client", 4: "producer", 5: "consumer",
+             "SPAN_KIND_INTERNAL": "internal", "SPAN_KIND_SERVER": "server", "SPAN_KIND_CLIENT": "client",
+             "SPAN_KIND_PRODUCER": "producer", "SPAN_KIND_CONSUMER": "consumer"}
+
+
+def _otlp_value(v: dict) -> Any:
+    for k in ("stringValue", "boolValue", "intValue", "doubleValue"):
+        if k in v:
+            return int(v[k]) if k == "intValue" else v[k]
+    if "arrayValue" in v:
+        return [_otlp_value(x) for x in (v["arrayValue"].get("values") or [])]
+    return None
+
+
+def _rfc3339(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def otlp_to_traces(result: dict) -> list[dict]:
+    """Jaeger API v3 returns OTLP JSON (resourceSpans, mixed across traces). Convert to the Jaeger v1 trace shape
+    (spans with tags, logs, references; processes) that summarize_trace reads, one dict per trace."""
+    traces: dict[str, dict] = {}
+    for rs in result.get("resourceSpans") or []:
+        rattrs = {a["key"]: _otlp_value(a.get("value") or {}) for a in (rs.get("resource") or {}).get("attributes") or []}
+        svc = str(rattrs.get("service.name") or "?")
+        for ss in rs.get("scopeSpans") or []:
+            for sp in ss.get("spans") or []:
+                tid = sp.get("traceId", "")
+                t = traces.setdefault(tid, {"traceID": tid, "spans": [], "processes": {}})
+                pid = f"p-{svc}"
+                t["processes"][pid] = {"serviceName": svc}
+                status = sp.get("status") or {}
+                code = status.get("code")
+                tags = [{"key": "span.kind", "value": OTLP_KIND.get(sp.get("kind"), "internal")}]
+                if code in (2, "STATUS_CODE_ERROR"):
+                    tags += [{"key": "error", "value": True}, {"key": "otel.status_code", "value": "ERROR"}]
+                    if status.get("message"):
+                        tags.append({"key": "otel.status_description", "value": status["message"]})
+                tags += [{"key": a["key"], "value": _otlp_value(a.get("value") or {})} for a in sp.get("attributes") or []]
+                logs = [{"timestamp": int(ev.get("timeUnixNano", 0)) // 1000,
+                         "fields": [{"key": "event", "value": ev.get("name", "")}]
+                         + [{"key": a["key"], "value": _otlp_value(a.get("value") or {})}
+                            for a in ev.get("attributes") or []]} for ev in sp.get("events") or []]
+                start, end = int(sp.get("startTimeUnixNano", 0)), int(sp.get("endTimeUnixNano", 0))
+                t["spans"].append({
+                    "traceID": tid, "spanID": sp.get("spanId", ""), "operationName": sp.get("name", ""),
+                    "processID": pid, "startTime": start // 1000, "duration": max(end - start, 0) // 1000,
+                    "tags": tags, "logs": logs,
+                    "references": [{"refType": "CHILD_OF", "spanID": sp["parentSpanId"]}] if sp.get("parentSpanId") else [],
+                })
+    return list(traces.values())
+
+
+def _has_error(trace: dict) -> bool:
+    return any(t.get("key") == "error" and t.get("value") in (True, "true") for s in trace["spans"] for t in s["tags"])
+
+
 class Jaeger:
+    """Jaeger v2's query API (`<base>/api/v3`), which is all Jaeger 2.x serves under the demo's base path."""
+
     def __init__(self, url: str, session: Optional[requests.Session] = None):
         self.url = url.rstrip("/")
         self.http = session or requests.Session()
@@ -80,31 +138,37 @@ class Jaeger:
         if not self.url:
             raise BackendError("Jaeger URL unknown")
         try:
-            r = self.http.get(self.url + path, params=params, timeout=TIMEOUT)
+            r = self.http.get(self.url + "/api/v3" + path, params=params, timeout=TIMEOUT * 2)
         except requests.RequestException as exc:
             raise BackendError(f"Jaeger unreachable: {exc.__class__.__name__}") from exc
+        if r.status_code == 404 and "not found" in r.text.lower() and path.startswith("/traces"):
+            return {}
         if r.status_code != 200:
             raise BackendError(f"Jaeger {r.status_code}: {r.text[:200]}")
-        return r.json().get("data")
+        return r.json()
 
     def services(self) -> list[str]:
-        return sorted(self._get("/api/services") or [])
+        return sorted(self._get("/services").get("services") or [])
 
     def find_traces(self, service: str, operation: Optional[str] = None, errors_only: bool = False,
                     min_duration_ms: Optional[float] = None, lookback_s: float = 900, limit: int = 20) -> list[dict]:
-        params: dict[str, Any] = {"service": service, "limit": limit, "lookback": f"{int(lookback_s)}s",
-                                  "start": int((time.time() - lookback_s) * 1e6), "end": int(time.time() * 1e6)}
+        now = time.time()
+        params: dict[str, Any] = {"query.service_name": service, "query.start_time_min": _rfc3339(now - lookback_s),
+                                  "query.start_time_max": _rfc3339(now),
+                                  "query.num_traces": min(limit * (6 if errors_only else 1), 60)}
         if operation:
-            params["operation"] = operation
-        if errors_only:
-            params["tags"] = json.dumps({"error": "true"})
+            params["query.operation_name"] = operation
         if min_duration_ms:
-            params["minDuration"] = f"{int(min_duration_ms)}ms"
-        return self._get("/api/traces", params) or []
+            params["query.duration_min"] = f"{int(min_duration_ms)}ms"
+        traces = otlp_to_traces(self._get("/traces", params).get("result") or {})
+        if errors_only:
+            traces = [t for t in traces if _has_error(t)]
+        traces.sort(key=lambda t: -max((s["startTime"] for s in t["spans"]), default=0))
+        return traces[:limit]
 
     def trace(self, trace_id: str) -> Optional[dict]:
-        data = self._get(f"/api/traces/{trace_id}") or []
-        return data[0] if data else None
+        found = otlp_to_traces(self._get(f"/traces/{trace_id}").get("result") or {})
+        return found[0] if found else None
 
 
 # ---------------------------------------------------------------- logs
@@ -152,15 +216,24 @@ class OpenSearchLogs:
         return [self._line(h.get("_source") or {}) for h in (r.json().get("hits") or {}).get("hits") or []]
 
     def _line(self, src: dict) -> LogLine:
+        def lookup(d: Any, path: str) -> Any:
+            # keys may be nested objects or flat dotted names ("resource": {"service.name": ...}): try both
+            if not isinstance(d, dict) or not path:
+                return None
+            if path in d:
+                return d[path]
+            parts = path.split(".")
+            for i in range(1, len(parts)):
+                head, rest = ".".join(parts[:i]), ".".join(parts[i:])
+                if head in d:
+                    found = lookup(d[head], rest)
+                    if found is not None:
+                        return found
+            return None
+
         def pick(*paths: str) -> str:
             for p in paths:
-                cur: Any = src
-                for part in p.split("."):
-                    cur = cur.get(part) if isinstance(cur, dict) else None
-                    if cur is None:
-                        break
-                if cur is None and p in src:
-                    cur = src[p]
+                cur = lookup(src, p)
                 if cur not in (None, ""):
                     return str(cur)
             return ""

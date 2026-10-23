@@ -22,9 +22,9 @@ Phase = Literal[
     "detected", "investigating", "diagnosing", "auditing", "planning", "awaiting_approval", "executing",
     "verifying", "reporting",
     # terminal
-    "resolved", "dry_run_complete", "escalated", "rejected", "failed",
+    "resolved", "dry_run_complete", "escalated", "rejected", "failed", "false_alarm",
 ]
-TERMINAL: tuple[str, ...] = ("resolved", "dry_run_complete", "escalated", "rejected", "failed")
+TERMINAL: tuple[str, ...] = ("resolved", "dry_run_complete", "escalated", "rejected", "failed", "false_alarm")
 
 Category = Literal[
     "application_error",   # the service's own code fails requests
@@ -81,8 +81,10 @@ class RootCause(BaseModel):
 
 class Diagnosis(BaseModel):
     summary: str
-    root_causes: list[RootCause]
+    root_causes: list[RootCause] = []
     explained_alerts: list[str] = []          # alert ids the root causes account for
+    false_alarm: bool = False                 # the evidence shows nothing is wrong; `claims` must show it
+    claims: list[Claim] = []                  # evidence for a false alarm (root causes carry their own)
     produced_by: Literal["llm", "rules"] = "rules"
     created_at: str = Field(default_factory=iso)
 

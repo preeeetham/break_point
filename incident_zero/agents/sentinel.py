@@ -90,7 +90,7 @@ def evaluate(ctx: Context, learned: Optional[dict[str, dict]] = None, window: Op
             signals.append(Signal("traffic_spike", svc, f"{svc} rps={n['rps']:.2f} over {window} "
                                   f"(baseline {b['rps']:.2f}, factor {th.traffic_factor:g})", n["rps"],
                                   th.traffic_factor * b["rps"], b["rps"], "req/s", Q.rps(window, svc)))
-        if b.get("rps", 0) >= th.min_rps * 5 and n["rps"] == 0:
+        if b.get("rps", 0) >= th.silent_min_rps and n["rps"] == 0:
             signals.append(Signal("telemetry_silent", svc, f"{svc} rps=0 over {window} (baseline {b['rps']:.2f})",
                                   0.0, None, b["rps"], "req/s", Q.rps(window, svc)))
     try:
@@ -200,8 +200,9 @@ class Sentinel:
         signals = [sg for sg in signals if not self._suppressed(sg.key)]
         if not signals:
             return None
-        target = next((i for i in open_incs if i.phase in EARLY_PHASES
-                       or time.time() - _ts(i.created_at) < self.ctx.settings.correlation_window_s), None)
+        # join only an incident still being investigated: once one is planned, a new signal is a new incident
+        # (found live: late alerts attached to a verifying incident made it look resolved)
+        target = next((i for i in open_incs if i.phase in EARLY_PHASES), None)
         fresh: list[Signal] = []
         for sg in signals:
             owner = next((i for i in open_incs if any((a.rule, a.service) == sg.key for a in i.alerts)), None)

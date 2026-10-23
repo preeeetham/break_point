@@ -7,7 +7,8 @@ import { PHASE_LABEL, STEPS, clock, params, phaseTone, stepIndex } from "./util"
 
 export function PhaseLabel({ phase }: { phase: Phase }) {
   const tone = phaseTone(phase);
-  const moving = !["resolved", "dry_run_complete", "escalated", "rejected", "failed", "awaiting_approval"].includes(phase);
+  const moving = !["resolved", "dry_run_complete", "escalated", "rejected", "failed", "false_alarm",
+    "awaiting_approval"].includes(phase);
   return (
     <span className="phase">
       <span className={`dot ${tone} ${moving ? "pulse" : ""}`} />

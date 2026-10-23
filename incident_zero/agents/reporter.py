@@ -42,7 +42,8 @@ SYMPTOM_ONLY = ("application_error", "resource_memory", "resource_cpu")
 def report_status(inc: Incident) -> str:
     """resolved | mitigated | unresolved | escalated | false_alarm"""
     d = inc.diagnosis
-    if (not d or not d.root_causes) and inc.alerts and not any(a.active for a in inc.alerts):
+    if inc.phase == "false_alarm" or ((not d or not d.root_causes) and inc.alerts
+                                      and not any(a.active for a in inc.alerts)):
         return "false_alarm"
     if inc.phase == "resolved":
         executed = [r.action for r in inc.execution.results if r.ok and not r.dry_run]

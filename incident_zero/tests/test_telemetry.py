@@ -61,6 +61,27 @@ def test_trace_summary_shows_network_gap():
     assert "client-server gap: cart->valkey-cart HGET client_ms=900.0 server_ms=2.0 gap_ms=898.0" in content
 
 
+def test_otlp_conversion_from_jaeger_v3():
+    from incident_zero.telemetry.backends import otlp_to_traces
+
+    def attr(k, v):
+        return {"key": k, "value": {"stringValue": v}}
+
+    res = {"resourceSpans": [
+        {"resource": {"attributes": [attr("service.name", "checkout")]}, "scopeSpans": [{"spans": [
+            {"traceId": "t1", "spanId": "a1", "name": "oteldemo.PaymentService/Charge", "kind": 3,
+             "startTimeUnixNano": "1000000000", "endTimeUnixNano": "1250000000", "status": {"code": 2}}]}]},
+        {"resource": {"attributes": [attr("service.name", "payment")]}, "scopeSpans": [{"spans": [
+            {"traceId": "t1", "spanId": "b1", "parentSpanId": "a1", "name": "oteldemo.PaymentService/Charge", "kind": 2,
+             "startTimeUnixNano": "1010000000", "endTimeUnixNano": "1240000000",
+             "status": {"code": 2, "message": "Payment request failed. Invalid token."},
+             "events": [{"name": "exception", "attributes": [attr("exception.message", "Invalid token")]}]}]}]}]}
+    [tr] = otlp_to_traces(res)
+    content, data = summarize_trace(tr)
+    assert "error origin (deepest failing span): payment oteldemo.PaymentService/Charge: Invalid token" in content
+    assert "client-server gap: checkout->payment" in content and data["origins"] == ["payment"]
+
+
 def test_trace_tools_record_redacted_evidence(settings, store, bus):
     tr = fakes.payment_trace()
     tr["spans"][3]["tags"].append({"key": "feature_flag.key", "value": "paymentFailure"})

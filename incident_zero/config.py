@@ -26,11 +26,14 @@ FLAG_SERVICES = ("flagd", "flagd-ui")
 @dataclass
 class Thresholds:
     error_ratio: float = 0.05        # share of a service's server spans with status ERROR
-    min_rps: float = 0.02            # below this request rate a service's error ratio is noise
+    min_rps: float = 0.01            # below this request rate a service's error ratio is noise (payment and
+                                     # checkout run at ~0.02-0.03 req/s under the demo's default load)
     latency_p95_floor_ms: float = 800.0
     latency_factor: float = 3.0      # p95 above factor x baseline (and above the floor)
     traffic_factor: float = 3.0      # entry request rate above factor x baseline
     silence_after_s: float = 180.0   # a service that sent spans at baseline and none for this long
+    silent_min_rps: float = 0.5      # only services this busy at baseline count as "gone silent" (queue consumers
+                                     # like fraud-detection idle naturally when upstream traffic stops)
 
 
 @dataclass
@@ -70,7 +73,8 @@ class Settings:
     kill_rollback_window_s: float = 600.0
     thresholds: Thresholds = field(default_factory=Thresholds)
     ignore_services: list[str] = field(default_factory=lambda: ["load-generator", "telemetry-docs", "flagd-ui",
-                                                                "grafana", "opamp-server"])
+                                                                "grafana", "opamp-server", "otelcol-contrib",
+                                                                "jaeger", "frontend-web"])
     notify_email: str = ""                   # approval mail goes here when SMTP is configured in .env
     report_schema_file: str = ""             # the official report schema from the template repo; default: ours
     loadgen_url: str = ""                    # Locust web UI; default <frontend_url>/loadgen

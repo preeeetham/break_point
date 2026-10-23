@@ -160,6 +160,9 @@ class Orchestrator:
             assert inc.diagnosis is not None
             res = self.auditor.run(inc, inc.diagnosis, evidence)
             inc.audits.append(res)
+            if res.passed and inc.diagnosis.false_alarm:
+                inc.escalation_reason = ""
+                return self.finish(inc, "false_alarm")  # nothing to fix: no plan, no approval, no action
             if res.passed:
                 return self._goto(inc, "planning")
             failed_rounds = sum(1 for a in inc.audits if not a.passed)

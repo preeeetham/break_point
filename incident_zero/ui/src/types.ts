@@ -3,9 +3,9 @@
 export type Phase =
   | "detected" | "investigating" | "diagnosing" | "auditing" | "planning" | "awaiting_approval"
   | "executing" | "verifying" | "reporting"
-  | "resolved" | "dry_run_complete" | "escalated" | "rejected" | "failed";
+  | "resolved" | "dry_run_complete" | "escalated" | "rejected" | "failed" | "false_alarm";
 
-export const TERMINAL: Phase[] = ["resolved", "dry_run_complete", "escalated", "rejected", "failed"];
+export const TERMINAL: Phase[] = ["resolved", "dry_run_complete", "escalated", "rejected", "failed", "false_alarm"];
 
 export interface Alert {
   id: string; rule: string; service: string; signal: string;
@@ -17,6 +17,7 @@ export interface Claim { text: string; evidence_id: string; quote: string }
 export interface RootCause { component: string; category: string; cause: string; confidence: number; claims: Claim[] }
 export interface Diagnosis {
   summary: string; root_causes: RootCause[]; explained_alerts: string[]; produced_by: "llm" | "rules"; created_at: string;
+  false_alarm: boolean; claims: Claim[];
 }
 export interface AuditResult {
   passed: boolean; problems: string[]; unexplained_alerts: string[]; checked_claims: number; created_at: string;
