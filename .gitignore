@@ -18,6 +18,7 @@ reports/*
 # Incident Zero runtime state (incidents, events, evidence) and practice ground truth
 .incident_zero/
 .incident_zero_practice/
+/incident_zero.yaml
 
 # Logs
 *.log
