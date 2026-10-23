@@ -28,19 +28,32 @@ langgraph = [
     "langchain-anthropic>=1.7,<2",
     "langchain-ollama>=1.1,<2",
 ]
+# Opt-in: used only by the incident_zero/ package (the AI on-call engineer). break_point/ never imports it.
+# Install with: pip install -e '.[incident_zero]'
+incident_zero = [
+    "jsonschema>=4.20",
+    "langgraph>=1.2,<2",
+    "langchain-core>=1.6,<2",
+    "langchain-openai>=1.7,<2",
+    "langchain-anthropic>=1.7,<2",
+    "langchain-ollama>=1.1,<2",
+]
 
 [project.scripts]
 break_point = "break_point.cli:main"
+incident_zero = "incident_zero.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["break_point*"]
+include = ["break_point*", "incident_zero*"]
 
 [tool.setuptools.package-data]
 "break_point.dashboard" = ["static/*.html", "static/*.css", "static/*.js", "static/*.svg"]
 "break_point" = ["../config/*.yaml", "../config/examples/*.yaml"]
+"incident_zero" = ["ui/dist/*", "ui/dist/assets/*", "practice/*.yaml", "*.example.yaml", "runbook.yaml",
+                   "schema/*.json"]
 
 [tool.pytest.ini_options]
 # targets/<name>/tests hold the tests that need one target's real files; they run with the core suite
 # on a branch that carries the target.
-testpaths = ["tests", "targets"]
+testpaths = ["tests", "targets", "incident_zero/tests"]
 addopts = "-q"
