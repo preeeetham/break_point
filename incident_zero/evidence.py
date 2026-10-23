@@ -44,25 +44,32 @@ class EvidenceLedger:
             agent: str = "investigator") -> Evidence:
         with self._lock:
             ev = Evidence(
-                id=f"E{len(self._items) + 1}", source=source, tool=tool,  # type: ignore[arg-type]
+                id="pending", source=source, tool=tool,  # type: ignore[arg-type]
                 args=redact(args) or {}, summary=redact_text(summary)[:300],
                 content=redact_text(content)[:CONTENT_MAX], data=_trim_data(redact(data)),
             )
+            ev = self.store.append_evidence(self.incident_id, ev)  # the store assigns the id
             self._items[ev.id] = ev
-            self.store.append_evidence(self.incident_id, ev)
         self.bus.publish(agent, "tool", f"{tool}: {ev.summary}", incident_id=self.incident_id,
                          detail={"args": ev.args, "source": source}, evidence_id=ev.id)
         return ev
 
+    def _refresh(self) -> None:
+        # other writers (the Sentinel) may have added items for this incident
+        self._items = {e.id: e for e in self.store.evidence(self.incident_id)}
+
     def get(self, evidence_id: str) -> Optional[Evidence]:
+        if evidence_id not in self._items:
+            self._refresh()
         return self._items.get(evidence_id)
 
     def all(self) -> list[Evidence]:
+        self._refresh()
         return list(self._items.values())
 
     def index(self) -> str:
         """One line per item: what the Diagnostician is shown before it asks for content."""
-        return "\n".join(f"{e.id} [{e.source}/{e.tool}] {e.summary}" for e in self._items.values())
+        return "\n".join(f"{e.id} [{e.source}/{e.tool}] {e.summary}" for e in self.all())
 
 
 def quote_in(evidence: Evidence, quote: str) -> bool:

@@ -49,6 +49,9 @@ def test_ledger_ids_and_reload(store, bus):
     again = EvidenceLedger(store, bus, "INC-0001")
     assert again.get("E2").source == "logs"
     assert again.add("docker", "container_status", {}, "s", "c").id == "E3"
+    # two live ledgers for one incident (Sentinel + Investigator) never reuse an id
+    assert led.add("docker", "x", {}, "s", "c").id == "E4"
+    assert [e.id for e in led.all()] == ["E1", "E2", "E3", "E4"]
 
 
 def _diag(claims, explained=("A1",)):

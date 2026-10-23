@@ -56,6 +56,9 @@ class Settings:
     rate_window: str = "2m"                  # PromQL range for rates and quantiles
     baseline_s: float = 600.0                # how far back the baseline looks
     correlation_window_s: float = 180.0
+    confirm_ticks: int = 2                   # a signal must hold this many Sentinel ticks before it is an alert
+    realert_after_s: float = 900.0           # same signal after an unresolved incident closed: stay quiet this long
+    entry_services: list[str] = field(default_factory=lambda: ["frontend-proxy", "frontend"])
     investigator_budget: int = 16            # tool calls per investigation round
     audit_retries: int = 2                   # send-backs from the Auditor before rule-based diagnosis takes over
     max_plan_actions: int = 3

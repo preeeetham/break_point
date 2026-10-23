@@ -91,12 +91,17 @@ class IncidentStore:
         return [i for i in self.list() if not i.terminal]
 
     # ---------------------------------------------------------------- evidence
-    def append_evidence(self, incident_id: str, ev: Evidence) -> None:
+    def append_evidence(self, incident_id: str, ev: Evidence) -> Evidence:
+        """Assigns the id (E<n>) here, under the store lock, so concurrent writers (the Sentinel attaching an alert
+        while the Investigator runs) never hand out the same id."""
         with self._lock:
             p = self.incident_dir(incident_id) / "evidence.jsonl"
             p.parent.mkdir(parents=True, exist_ok=True)
+            n = sum(1 for ln in p.read_text().splitlines() if ln.strip()) if p.is_file() else 0
+            ev.id = f"E{n + 1}"
             with p.open("a") as f:
                 f.write(ev.model_dump_json() + "\n")
+            return ev
 
     def evidence(self, incident_id: str) -> list[Evidence]:
         p = self.incident_dir(incident_id) / "evidence.jsonl"

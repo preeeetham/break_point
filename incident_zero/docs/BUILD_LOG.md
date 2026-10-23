@@ -98,3 +98,66 @@ Facts established before writing code:
   host port).
 - Services recommendation, product-catalog, checkout, cart and shipping use OpenFeature tracing hooks, so spans carry
   `feature_flag.*` data: the reason for R2.
+
+### CP1 — foundation
+
+- `models.py` holds the agents' contract; `report_schema.py` the jury's schema as JSON Schema, validated with
+  `jsonschema` (added as the `incident_zero` extra). The extracted half is exact; the missing first half is marked
+  ASSUMED in one place.
+- `store.py` writes atomically (temp file + rename). Evidence ids are assigned by the store under its lock, so the
+  Sentinel attaching an alert while the Investigator runs can never produce two `E4`s (found and fixed in CP4).
+- `redact.py` drops flag tags, span events whose marker is a flag evaluation, flag-named attribute keys, log lines
+  mentioning flags, and masks the demo's 20 flag names in any string; it keeps `flagd` as a service name, because
+  flagd being down is a real fault the agent must see.
+- `evidence.audit`: ids must exist, quotes must appear verbatim (whitespace- and case-normalised, at least 3
+  characters), components must be known, every active alert explained, no invented alert ids.
+
+### CP2 — telemetry tools
+
+- `telemetry/backends.py`: Prometheus, Jaeger (`/jaeger/ui/api`), OpenSearch (`otel-logs-*`, several field layouts
+  tried) with `docker logs` fallback, a read-only Docker reader, topology from the stack's own compose file (found via
+  the containers' `com.docker.compose.project.config_files` label, parsed with Break Point's compose parser), and
+  endpoint discovery from published ports.
+- `telemetry/queries.py`: PromQL on the span metrics: inbound (server + consumer) rate, error rate and p95 per
+  service, now and `offset baseline_s`; outbound errors/latency per operation (which dependency fails a service);
+  seconds since last span (silence).
+- `telemetry/tools.py`: the Toolbox's ten tools: `overview`, `service_metrics`, `find_traces`, `trace_detail`,
+  `search_logs`, `container_status`, `container_resources`, `dependencies`, `datastore_metrics`, `promql`. Each
+  returns `E<n>: <content>`. Trace summaries name the deepest failing span ("error origin") and client-server
+  latency gaps (network delay). Backend failures are recorded as evidence (silence is a signal). Flag queries and
+  flagd logs are refused and record nothing.
+
+### CP3 — Action API and safety
+
+- `actions/catalog.py`: six mock runbook actions (`restart_service`, `start_service`, `update_resources`,
+  `clear_network_impairment`, `reconnect_network`, `rollback_release`) and `validate` (allowed name, required and
+  typed parameters, bounds, known service).
+- `actions/mock_server.py`: a separate HTTP process that owns every write: Docker through Break Point's
+  DockerController, netem cleanup through Break Point's `clear_qdisc`, and `rollback_release` through the flag file
+  (`actions/flags.py`, which agents and telemetry are forbidden to import: a test parses their imports). Records each
+  execution with its undo; its own kill switch returns 423; one action per service at a time (409).
+- `safety.py`: dry run persisted in `state.json` (on at first start); "Stop all" writes STOP, kills the API,
+  rolls back reversible actions from the last `kill_rollback_window_s`; explicit resume.
+
+### CP4 — agents and the orchestrator
+
+- Sentinel: six rules, `confirm_ticks` debounce (container rules fire at once), baseline learned from quiet ticks
+  (falls back to `offset`), correlation into the incident still being investigated, re-alert suppression after an
+  unresolved close (stops dry-run incidents re-opening every tick).
+- Investigator: a LangGraph `think`/`act` loop over the Toolbox with a budget and a `finish_investigation` tool;
+  node functions are unannotated (LangGraph resolves hints by name). Any model failure falls back to the playbook
+  on the same ledger: overview → containers → alerted and flagged services → follow outbound errors and trace origins
+  downstream → datastores → logs and resources of the origins.
+- Diagnostician: model JSON, or rules over `facts.py` (container state, OOM, trace origins, network gaps, CPU and
+  memory, stale datastores, traffic spikes). Rule claims quote evidence lines verbatim by construction.
+- Auditor → back to the Investigator with the problems (`audit_retries` rounds), then rules, then drop unsupported
+  claims; no supported cause → escalate.
+- Planner: model or rules by category, `validate` by code, a dry-run preview from the API for each action, sha256
+  of exactly what is shown.
+- Approval Gate: approver name required, hash must match, send-back needs a note, timeout escalates; email via
+  Break Point's SMTP settings.
+- Executor: kill switch before each call, mode read at execution time. Verifier: settle, then the Sentinel's rules on
+  a 1m window until clear `verify_consecutive` times; else roll back and escalate. Reporter: report built by code,
+  validated, plus Markdown and `submission.json`.
+- Orchestrator: one worker per incident, phase saved after every step, Frozen pauses, any agent exception ends in
+  `failed` with a report; a resumed incident whose actions were attempted never executes again.
