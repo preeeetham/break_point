@@ -113,9 +113,13 @@ class Orchestrator:
                              detail={"from": old, "to": phase})
 
     def finish(self, inc: Incident, phase: str) -> None:
+        """Terminal phase. The report is written before the phase is saved, so whoever sees a closed incident (the
+        Control Room, the practice Judge) always finds its report."""
         if phase == "resolved":
             inc.resolved_at = iso()
-        self._goto(inc, phase)
+        old, inc.phase = inc.phase, phase  # type: ignore[assignment]
+        self.ctx.bus.publish("system", "phase", f"{inc.id}: {old} -> {phase}", incident_id=inc.id,
+                             detail={"from": old, "to": phase})
         try:
             self.reporter.run(inc)
         except Exception as exc:

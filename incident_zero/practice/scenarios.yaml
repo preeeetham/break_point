@@ -1,0 +1,119 @@
+# Practice incidents (REQUIREMENTS P1–P4). `truth` is the hidden ground truth the Judge scores against; it is never
+# visible to the agents (they cannot import incident_zero.practice). `split: tune` scenarios are for improving the
+# agent; `split: holdout` ones are only for scoring it, to mimic the jury's unseen incidents.
+#
+# fault kinds: flag {flag, variant} | stop | pause | kill_loop {interval_s} | cpu {cpus} | memory {memory_mb}
+#              | delay {delay_ms, jitter_ms} | loss {percent} | disconnect
+scenarios:
+  # ---------------- application faults (the demo's own switches)
+  - id: payment-charge-fails
+    title: Payment service fails when charging
+    split: tune
+    faults: [{kind: flag, flag: paymentFailure, variant: "100%"}]
+    truth: {components: [payment], categories: [application_error], actions: [rollback_release]}
+  - id: cart-intermittent
+    title: Cart service fails intermittently
+    split: tune
+    faults: [{kind: flag, flag: cartFailure, variant: "50%"}]
+    truth: {components: [cart], categories: [application_error], actions: [rollback_release]}
+  - id: catalog-one-product
+    title: Product catalog fails for one specific product
+    split: tune
+    faults: [{kind: flag, flag: productCatalogFailure, variant: "on"}]
+    truth: {components: [product-catalog], categories: [application_error], actions: [rollback_release]}
+  - id: recommendation-cache-leak
+    title: Memory leak in recommendation from a runaway cache
+    split: tune
+    faults: [{kind: flag, flag: recommendationCacheFailure, variant: "on"}]
+    truth: {components: [recommendation], categories: [resource_memory, application_error, resource_cpu],
+            actions: [rollback_release, restart_service]}
+  - id: ad-high-cpu
+    title: High CPU in the ad service
+    split: tune
+    faults: [{kind: flag, flag: adHighCpu, variant: "on"}]
+    truth: {components: [ad], categories: [resource_cpu, application_error], actions: [rollback_release]}
+  - id: homepage-flood
+    title: Traffic flood on the homepage
+    split: tune
+    faults: [{kind: flag, flag: loadGeneratorFloodHomepage, variant: "on"}]
+    truth: {components: [frontend-proxy, frontend, load-generator], categories: [traffic], actions: [rollback_release]}
+  - id: payment-unreachable
+    title: Payment unreachable from checkout
+    split: holdout
+    faults: [{kind: flag, flag: paymentUnreachable, variant: "on"}]
+    truth: {components: [payment, checkout], categories: [application_error, dependency_failure, network],
+            actions: [rollback_release]}
+  - id: ad-gc-pressure
+    title: Heavy garbage collection in the ad service
+    split: holdout
+    faults: [{kind: flag, flag: adManualGc, variant: "on"}]
+    truth: {components: [ad], categories: [resource_cpu, resource_memory, application_error],
+            actions: [rollback_release, restart_service]}
+  # ---------------- infrastructure faults
+  - id: cart-stopped
+    title: Cart container stopped
+    split: tune
+    faults: [{kind: stop, service: cart}]
+    truth: {components: [cart], categories: [container_down], actions: [start_service, restart_service]}
+  - id: valkey-down
+    title: Cache (valkey) unavailable
+    split: tune
+    faults: [{kind: stop, service: valkey-cart}]
+    truth: {components: [valkey-cart], categories: [container_down, dependency_failure],
+            actions: [start_service, restart_service]}
+  - id: catalog-db-down
+    title: Database (astronomy-db) unavailable
+    split: holdout
+    faults: [{kind: stop, service: astronomy-db}]
+    truth: {components: [astronomy-db], categories: [container_down, dependency_failure],
+            actions: [start_service, restart_service]}
+  - id: payment-paused
+    title: Payment process frozen
+    split: holdout
+    faults: [{kind: pause, service: payment}]
+    truth: {components: [payment], categories: [container_down], actions: [start_service]}
+  - id: shipping-crash-loop
+    title: Shipping keeps restarting
+    split: holdout
+    faults: [{kind: kill_loop, service: shipping, interval_s: 20}]
+    truth: {components: [shipping], categories: [container_down], actions: [start_service, restart_service]}
+  - id: checkout-cpu-starved
+    title: Checkout starved of CPU
+    split: tune
+    faults: [{kind: cpu, service: checkout, cpus: 0.02}]
+    truth: {components: [checkout], categories: [resource_cpu], actions: [update_resources]}
+  - id: currency-memory-starved
+    title: Currency starved of memory
+    split: holdout
+    faults: [{kind: memory, service: currency, memory_mb: 6}]
+    truth: {components: [currency], categories: [resource_memory, container_down],
+            actions: [update_resources, start_service, restart_service]}
+  - id: catalog-latency
+    title: Network latency on product-catalog
+    split: tune
+    faults: [{kind: delay, service: product-catalog, delay_ms: 1500, jitter_ms: 200}]
+    truth: {components: [product-catalog], categories: [network], actions: [clear_network_impairment]}
+  - id: quote-packet-loss
+    title: Packet loss on quote
+    split: holdout
+    faults: [{kind: loss, service: quote, percent: 40}]
+    truth: {components: [quote], categories: [network], actions: [clear_network_impairment]}
+  - id: currency-partitioned
+    title: Currency disconnected from the network
+    split: holdout
+    faults: [{kind: disconnect, service: currency}]
+    truth: {components: [currency], categories: [network, container_down], actions: [reconnect_network]}
+  # ---------------- combinations
+  - id: combo-valkey-and-payment
+    title: Cache down while payment fails
+    split: holdout
+    faults: [{kind: stop, service: valkey-cart}, {kind: flag, flag: paymentFailure, variant: "100%"}]
+    truth: {components: [valkey-cart, payment], categories: [container_down, dependency_failure, application_error],
+            actions: [start_service, rollback_release], all_components: true}
+  - id: combo-latency-and-cpu
+    title: Catalog latency plus checkout CPU starvation
+    split: holdout
+    faults: [{kind: delay, service: product-catalog, delay_ms: 1200, jitter_ms: 100},
+             {kind: cpu, service: checkout, cpus: 0.02}]
+    truth: {components: [product-catalog, checkout], categories: [network, resource_cpu],
+            actions: [clear_network_impairment, update_resources], all_components: true}
